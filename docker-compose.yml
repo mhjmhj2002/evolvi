@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: evolvi_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evolvi
+      POSTGRES_PASSWORD: evolvi_secret
+      POSTGRES_DB: evolvi_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - evolvi_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolvi -d evolvi_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  evolvi_pgdata:
+    driver: local

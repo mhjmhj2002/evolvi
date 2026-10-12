@@ -1,0 +1,266 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TipoConta {
+  CONTA_CORRENTE
+  CARTAO_CREDITO
+  INVESTIMENTO
+  CARTEIRA_DINHEIRO
+
+  @@map("tipo_conta")
+}
+
+enum NaturezaMovimento {
+  RECEITA
+  DESPESA
+  TRANSFERENCIA_PROPRIA
+  APORTE_PATRIMONIAL
+
+  @@map("natureza_movimento")
+}
+
+enum StatusMovimento {
+  PREVISTO
+  CONCILIADO
+  CANCELADO
+
+  @@map("status_movimento")
+}
+
+enum StatusParcelamento {
+  ATIVO
+  QUITADO
+  CANCELADO
+
+  @@map("status_parcelamento")
+}
+
+enum StatusRecorrencia {
+  ATIVA
+  PAUSADA
+  CANCELADA
+
+  @@map("status_recorrencia")
+}
+
+enum SemaforoStatus {
+  VERDE
+  AMARELO
+  VERMELHO
+
+  @@map("semaforo_status")
+}
+
+enum RoleUsuario {
+  OWNER
+  ADMIN
+  USER
+  VISITANTE
+
+  @@map("role_usuario")
+}
+
+model Usuario {
+  id               String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nome             String      @db.VarChar(120)
+  email            String      @unique @db.VarChar(180)
+  senhaHash        String      @map("senha_hash") @db.VarChar(255)
+  role             RoleUsuario @default(USER)
+  rendaBaseMensal  Decimal     @default(0.00) @map("renda_base_mensal") @db.Decimal(12, 2)
+  faseAtual        Int         @default(1) @map("fase_atual")
+  criadoEm         DateTime    @default(now()) @map("criado_em") @db.Timestamptz(6)
+  atualizadoEm     DateTime    @default(now()) @updatedAt @map("atualizado_em") @db.Timestamptz(6)
+
+  contas           Conta[]
+  categorias       Categoria[]
+  movimentos       Movimento[]
+  recorrencias     Recorrencia[]
+  parcelamentos    Parcelamento[]
+  metasZeroAZero   MetaZeroAZero[]
+  conexoesBancarias ConexaoBancaria[]
+  configuracao     ConfiguracaoUsuario?
+
+  @@map("usuarios")
+}
+
+model ConfiguracaoUsuario {
+  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId             String   @unique @map("usuario_id") @db.Uuid
+  mesesJanelaTemporal   Int      @default(6) @map("meses_janela_temporal")
+  criadoEm              DateTime @default(now()) @map("criado_em") @db.Timestamptz(6)
+  atualizadoEm          DateTime @default(now()) @updatedAt @map("atualizado_em") @db.Timestamptz(6)
+
+  usuario               Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@map("configuracoes_usuario")
+}
+
+model Conta {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId     String    @map("usuario_id") @db.Uuid
+  nome          String    @db.VarChar(100)
+  tipo          TipoConta
+  diaFechamento Int?      @map("dia_fechamento")
+  diaVencimento Int?      @map("dia_vencimento")
+  saldoInicial  Decimal   @default(0.00) @map("saldo_inicial") @db.Decimal(12, 2)
+  ativo         Boolean   @default(true)
+  criadoEm      DateTime  @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  usuario       Usuario   @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  movimentos    Movimento[]
+  parcelamentos Parcelamento[]
+
+  @@index([usuarioId], map: "idx_contas_usuario")
+  @@map("contas")
+}
+
+model Categoria {
+  id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId               String?   @map("usuario_id") @db.Uuid
+  nome                    String    @db.VarChar(80)
+  descricao               String?   @db.VarChar(255)
+  categoriaPaiId          String?   @map("categoria_pai_id") @db.Uuid
+  pesoBrutoReferencia     Decimal?  @default(0.0000) @map("peso_bruto_referencia") @db.Decimal(6, 4)
+  referenciaNormalizadaPct Decimal? @default(0.00) @map("referencia_normalizada_pct") @db.Decimal(5, 2)
+  ordem                   Int?      @default(0)
+  criadoEm                DateTime  @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  usuario                 Usuario?   @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  categoriaPai            Categoria? @relation("CategoriaFilhas", fields: [categoriaPaiId], references: [id], onDelete: Restrict)
+  subcategorias           Categoria[] @relation("CategoriaFilhas")
+  movimentos              Movimento[]
+  recorrencias            Recorrencia[]
+  parcelamentos           Parcelamento[]
+  metasZeroAZero          MetaZeroAZero[]
+
+  @@index([usuarioId], map: "idx_categorias_usuario")
+  @@map("categorias")
+}
+
+model Movimento {
+  id                     String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId              String             @map("usuario_id") @db.Uuid
+  contaId                String             @map("conta_id") @db.Uuid
+  categoriaId            String?            @map("categoria_id") @db.Uuid
+  dataMovimento          DateTime           @map("data_movimento") @db.Date
+  competencia            String             @db.VarChar(7)
+  descricao              String             @db.VarChar(255)
+  valor                  Decimal            @db.Decimal(12, 2)
+  natureza               NaturezaMovimento
+  status                 StatusMovimento    @default(CONCILIADO)
+  chaveDedupe            String?            @map("chave_dedupe") @db.VarChar(255)
+  transferenciaVinculoId String?            @map("transferencia_vinculo_id") @db.Uuid
+  observacao             String?            @db.Text
+  origemDocumento        String?            @map("origem_documento") @db.VarChar(255)
+  criadoEm               DateTime           @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  usuario                Usuario            @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  conta                  Conta              @relation(fields: [contaId], references: [id], onDelete: Restrict)
+  categoria              Categoria?         @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+  transferenciaVinculo   Movimento?         @relation("TransferenciaRel", fields: [transferenciaVinculoId], references: [id], onDelete: SetNull)
+  movimentosVinculados   Movimento[]        @relation("TransferenciaRel")
+
+  @@index([usuarioId, competencia], map: "idx_movimentos_usuario_competencia")
+  @@index([chaveDedupe], map: "idx_movimentos_chave_dedupe")
+  @@index([categoriaId], map: "idx_movimentos_categoria")
+  @@map("movimentos")
+}
+
+model Recorrencia {
+  id              String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId       String             @map("usuario_id") @db.Uuid
+  categoriaId     String?            @map("categoria_id") @db.Uuid
+  descricao       String             @db.VarChar(150)
+  valorReferencia Decimal            @map("valor_referencia") @db.Decimal(12, 2)
+  diaPrevisto     Int?               @map("dia_previsto")
+  formaPagamento  String?            @map("forma_pagamento") @db.VarChar(50)
+  essencial       Boolean            @default(true)
+  status          StatusRecorrencia  @default(ATIVA)
+  criadoEm        DateTime           @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  usuario         Usuario            @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  categoria       Categoria?         @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+
+  @@index([usuarioId], map: "idx_recorrencias_usuario")
+  @@map("recorrencias")
+}
+
+model Parcelamento {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId         String             @map("usuario_id") @db.Uuid
+  contaId           String?            @map("conta_id") @db.Uuid
+  categoriaId       String?            @map("categoria_id") @db.Uuid
+  descricao         String             @db.VarChar(150)
+  valorTotal        Decimal            @map("valor_total") @db.Decimal(12, 2)
+  parcelaValor      Decimal            @map("parcela_valor") @db.Decimal(12, 2)
+  parcelaAtual      Int                @map("parcela_atual")
+  totalParcelas     Int                @map("total_parcelas")
+  primeiroVencimento String            @map("primeiro_vencimento") @db.VarChar(7)
+  ultimoVencimento  String             @map("ultimo_vencimento") @db.VarChar(7)
+  status            StatusParcelamento @default(ATIVO)
+  criadoEm          DateTime           @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  usuario           Usuario            @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  conta             Conta?             @relation(fields: [contaId], references: [id], onDelete: Restrict)
+  categoria         Categoria?         @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+
+  @@index([usuarioId], map: "idx_parcelamentos_usuario")
+  @@map("parcelamentos")
+}
+
+model MetaZeroAZero {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId       String         @map("usuario_id") @db.Uuid
+  categoriaId     String         @map("categoria_id") @db.Uuid
+  competencia     String         @db.VarChar(7)
+  baselineMensal  Decimal        @default(0.00) @map("baseline_mensal") @db.Decimal(12, 2)
+  metaProposta    Decimal        @map("meta_proposta") @db.Decimal(12, 2)
+  reducaoProposta Decimal        @default(0.00) @map("reducao_proposta") @db.Decimal(12, 2)
+  condicaoAcao    String?        @map("condicao_acao") @db.Text
+  statusSemaforo  SemaforoStatus @map("status_semaforo")
+  criadoEm        DateTime       @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  usuario         Usuario        @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  categoria       Categoria      @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+
+  @@unique([usuarioId, categoriaId, competencia], map: "uq_meta_usuario_categoria_competencia")
+  @@index([usuarioId, competencia], map: "idx_metas_usuario_comp")
+  @@map("metas_zero_a_zero")
+}
+
+enum StatusConexaoBancaria {
+  CONECTADO
+  EXPIRADO
+  ERRO_AUTENTICACAO
+  REVOGADO
+
+  @@map("status_conexao_bancaria")
+}
+
+model ConexaoBancaria {
+  id                    String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId             String                @map("usuario_id") @db.Uuid
+  instituicaoCodigo     String                @map("instituicao_codigo") @db.VarChar(20)
+  instituicaoNome       String                @map("instituicao_nome") @db.VarChar(100)
+  compe                 String?               @db.VarChar(10)
+  status                StatusConexaoBancaria @default(CONECTADO)
+  consentimentoId       String?               @map("consentimento_id") @db.VarChar(255)
+  consentimentoExpiraEm DateTime?             @map("consentimento_expira_em") @db.Timestamptz(6)
+  ultimaSincronizacaoEm DateTime?             @map("ultima_sincronizacao_em") @db.Timestamptz(6)
+  mensagemErro          String?               @map("mensagem_erro") @db.Text
+  parametrosExtras      String?               @map("parametros_extras") @db.Text
+  criadoEm              DateTime              @default(now()) @map("criado_em") @db.Timestamptz(6)
+  atualizadoEm          DateTime              @default(now()) @updatedAt @map("atualizado_em") @db.Timestamptz(6)
+
+  usuario               Usuario               @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId], map: "idx_conexoes_usuario")
+  @@index([instituicaoCodigo], map: "idx_conexoes_instituicao")
+  @@map("conexoes_bancarias")
+}

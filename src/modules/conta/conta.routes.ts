@@ -1,0 +1,182 @@
+import { FastifyInstance, FastifyPluginAsync } from 'fastify';
+import { prisma } from '../../infrastructure/database/prisma.js';
+import { ensureAuthenticated } from '../../middlewares/auth.middleware.js';
+import { createContaSchema, updateContaSchema } from './conta.schema.js';
+
+export const contaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
+  app.addHook('preHandler', ensureAuthenticated);
+
+  // GET /api/contas
+  app.get('/', async (request, reply) => {
+    const usuarioId = request.user.sub;
+
+    const contas = await prisma.conta.findMany({
+      where: { usuarioId },
+      orderBy: { criadoEm: 'asc' },
+    });
+
+    return reply.status(200).send({
+      contas: contas.map((conta) => ({
+        ...conta,
+        saldoInicial: Number(conta.saldoInicial),
+      })),
+    });
+  });
+
+  // POST /api/contas
+  app.post('/', async (request, reply) => {
+    const usuarioId = request.user.sub;
+
+    const parseResult = createContaSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Dados inválidos para criação da conta',
+        issues: parseResult.error.issues,
+      });
+    }
+
+    const data = parseResult.data;
+
+    const novaConta = await prisma.conta.create({
+      data: {
+        usuarioId,
+        nome: data.nome,
+        tipo: data.tipo,
+        diaFechamento: data.diaFechamento ?? null,
+        diaVencimento: data.diaVencimento ?? null,
+        saldoInicial: data.saldoInicial,
+        ativo: data.ativo ?? true,
+      },
+    });
+
+    return reply.status(201).send({
+      message: 'Conta criada com sucesso',
+      conta: {
+        ...novaConta,
+        saldoInicial: Number(novaConta.saldoInicial),
+      },
+    });
+  });
+
+  // PUT /api/contas/:id
+  app.put('/:id', async (request, reply) => {
+    const usuarioId = request.user.sub;
+    const { id } = request.params as { id: string };
+
+    const contaExistente = await prisma.conta.findFirst({
+      where: { id, usuarioId },
+    });
+
+    if (!contaExistente) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Conta não encontrada.',
+      });
+    }
+
+    const parseResult = updateContaSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Dados inválidos para atualização da conta',
+        issues: parseResult.error.issues,
+      });
+    }
+
+    const data = parseResult.data;
+
+    // Se o tipo resultante for CARTAO_CREDITO (atualizado ou mantido), validar diaFechamento e diaVencimento
+    const tipoFinal = data.tipo ?? contaExistente.tipo;
+    const diaFechamentoFinal = data.diaFechamento !== undefined ? data.diaFechamento : contaExistente.diaFechamento;
+    const diaVencimentoFinal = data.diaVencimento !== undefined ? data.diaVencimento : contaExistente.diaVencimento;
+
+    if (tipoFinal === 'CARTAO_CREDITO') {
+      if (diaFechamentoFinal === null || diaFechamentoFinal === undefined) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Dia de fechamento é obrigatório para cartão de crédito',
+        });
+      }
+      if (diaVencimentoFinal === null || diaVencimentoFinal === undefined) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Dia de vencimento é obrigatório para cartão de crédito',
+        });
+      }
+    }
+
+    const contaAtualizada = await prisma.conta.update({
+      where: { id },
+      data: {
+        ...(data.nome !== undefined && { nome: data.nome }),
+        ...(data.tipo !== undefined && { tipo: data.tipo }),
+        ...(data.diaFechamento !== undefined && { diaFechamento: data.diaFechamento }),
+        ...(data.diaVencimento !== undefined && { diaVencimento: data.diaVencimento }),
+        ...(data.saldoInicial !== undefined && { saldoInicial: data.saldoInicial }),
+        ...(data.ativo !== undefined && { ativo: data.ativo }),
+      },
+    });
+
+    return reply.status(200).send({
+      message: 'Conta atualizada com sucesso',
+      conta: {
+        ...contaAtualizada,
+        saldoInicial: Number(contaAtualizada.saldoInicial),
+      },
+    });
+  });
+
+  // DELETE /api/contas/:id
+  app.delete('/:id', async (request, reply) => {
+    const usuarioId = request.user.sub;
+    const { id } = request.params as { id: string };
+
+    const conta = await prisma.conta.findFirst({
+      where: { id, usuarioId },
+      include: {
+        _count: {
+          select: {
+            movimentos: true,
+            parcelamentos: true,
+          },
+        },
+      },
+    });
+
+    if (!conta) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Conta não encontrada.',
+      });
+    }
+
+    // Regra de Integridade: Bloqueio de exclusão caso haja registros vinculados
+    if (conta._count.movimentos > 0 || conta._count.parcelamentos > 0) {
+      return reply.status(409).send({
+        statusCode: 409,
+        error: 'Conflict',
+        message: 'Não é possível excluir esta conta pois existem movimentações ou parcelamentos vinculados a ela.',
+        detalhes: {
+          movimentosCount: conta._count.movimentos,
+          parcelamentosCount: conta._count.parcelamentos,
+        },
+      });
+    }
+
+    await prisma.conta.delete({
+      where: { id },
+    });
+
+    return reply.status(200).send({
+      message: 'Conta removida com sucesso.',
+      id,
+    });
+  });
+};

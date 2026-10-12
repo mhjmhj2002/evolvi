@@ -1,0 +1,551 @@
+{
+  "categorias": [
+    {
+      "ordem": 1,
+      "nome": "Moradia",
+      "pesoBrutoReferencia": 0.2448,
+      "referenciaNormalizadaPct": 35.65,
+      "mediaMensal": 4067.04,
+      "metaProposta": 2723.73,
+      "condicaoAcao": "FIN-150 — META FINAL DE MORADIA VALIDADA pelo usuario em 23/09/2026, pos-FIN-161: R$ 2.723,73/mes de envelope estrutural, composto por financiamento R$ 1.393,73; condominio R$ 700,00 (agua ordinaria incluida, sem linha separada); energia R$ 450,00 para absorver sazonalidade/ar-condicionado; gas R$ 30,00/mes como reserva media, com dois botijoes de R$ 115,00 observados em fevereiro e junho; material de limpeza nao parcelado R$ 150,00/mes. No pagamento de R$ 170,00 de junho, R$ 115,00 eram gas e R$ 55,00 agua emergencial; os R$ 55,00 ficam fora da recorrencia. Moveis/utensilios ja comprados permanecem exclusivamente em Parcelamentos ate o vencimento e fora do envelope de novas compras. Manutencao residencial extraordinaria/imprevistos permanece fora do consumo normal e usa reserva quando ocorrer."
+    },
+    {
+      "ordem": 2,
+      "nome": "Transporte",
+      "pesoBrutoReferencia": 0.0836,
+      "referenciaNormalizadaPct": 16.0,
+      "mediaMensal": 1389.18,
+      "metaProposta": 673.07,
+      "condicaoAcao": "FIN-150 — META FINAL DE TRANSPORTE VALIDADA pelo usuario em 23/09/2026, pos-FIN-161: R$ 673,07/mes, exatamente a base recorrente auditada. A FIN-161 retirou R$ 4.066,68 de CNH/DETRAN do consumo recorrente por serem formacao pontual; nao ha recorrentes fixos cadastrados nem parcelamentos ativos de Transporte. A folga anterior de R$ 26,93 (meta R$ 700,00) foi retirada por decisao explicita do usuario para fechar o plano zero a zero. O envelope cobre transporte por aplicativo, transporte publico e demais gastos correntes; qualquer excesso exige compensacao/replanejamento no proprio mes."
+    },
+    {
+      "ordem": 3,
+      "nome": "Alimentacao",
+      "pesoBrutoReferencia": 0.2133,
+      "referenciaNormalizadaPct": 14.44,
+      "mediaMensal": 3543.49,
+      "metaProposta": 3345.06,
+      "condicaoAcao": "FIN-150 — META FINAL DE ALIMENTACAO VALIDADA pelo usuario em 23/09/2026, pos-FIN-161: R$ 3.345,06/mes para consumo novo recorrente nao parcelado. Composicao de planejamento: Supermercado R$ 2.600,00/mes em media anual, derivado do envelope de R$ 600/semana (R$ 2.400 em meses com 4 compras e R$ 3.000 em meses com 5 compras); demais componentes de Alimentacao — feira, padaria, delivery, refeicao fora, bebidas, acougue/hortifruti etc. — compartilham R$ 745,06/mes. Parcelamentos ja contratados ficam fora deste envelope ate o vencimento: em out/26 a FIN-161 apurou R$ 543,66 de parcelas de Alimentacao; em nov/dez restam R$ 5,45/mês do rateio Amazon misto. Nao duplicar parcelas dentro da media recorrente."
+    },
+    {
+      "ordem": 4,
+      "nome": "Educacao",
+      "pesoBrutoReferencia": 0.1182,
+      "referenciaNormalizadaPct": 4.66,
+      "mediaMensal": 1963.9,
+      "metaProposta": 1621.83,
+      "condicaoAcao": "FIN-150 — META FINAL DE EDUCACAO VALIDADA pelo usuario em 23/09/2026: R$ 1.621,83/mes ate dez/2026, correspondente a mensalidade escolar obrigatoria. Parcelamentos ja contratados ficam fora do envelope estrutural ate o vencimento: out/26 inclui R$ 350,00 da ultima parcela UP + R$ 36,30 Kalunga; nov/26 inclui apenas R$ 36,30 Kalunga; dez/26 sem essas parcelas. A media historica auditada de R$ 44,36/mes em materiais/taxas nao vira automaticamente gasto recorrente: planejamento estrutural = R$ 0 para materiais/taxas sem obrigacao concreta; quando houver obrigacao real, replanejar explicitamente. Referencia provisoria para 2027 permanece R$ 800/mes, sujeita a confirmacao de preparatorio online e bale."
+    },
+    {
+      "ordem": 5,
+      "nome": "Viagem",
+      "pesoBrutoReferencia": 0.1289,
+      "referenciaNormalizadaPct": 2.6,
+      "mediaMensal": 2140.92,
+      "metaProposta": 0.0,
+      "condicaoAcao": "VERMELHO, primeira ordem. Meta proposta de R$ 0,00 para NOVAS viagens enquanto a Fase 1 nao atingir zero a zero real. Nao foi encontrado parcelamento ativo classificado como Viagem na checagem de 23/09/2026; qualquer compromisso futuro ja contratado que apareca permanece integral na Previsao_Mensal. Nenhuma compra/cancelamento foi executado."
+    },
+    {
+      "ordem": 6,
+      "nome": "Pets",
+      "pesoBrutoReferencia": 0.0329,
+      "referenciaNormalizadaPct": 0.72,
+      "mediaMensal": 545.92,
+      "metaProposta": 750.0,
+      "condicaoAcao": "FIN-150 validado: envelope operacional de R$ 750,00/mes para Pets. Inclui media real de compras Petz (racao, areia, higiene e petiscos), pate/sache Amazon, banho e tosa e reserva de medicamentos. Veterinario extraordinario ou medicacao antecipada exige replanejamento no mes."
+    },
+    {
+      "ordem": 7,
+      "nome": "Saude",
+      "pesoBrutoReferencia": 0.036,
+      "referenciaNormalizadaPct": 7.77,
+      "mediaMensal": 598.76,
+      "metaProposta": 598.76,
+      "condicaoAcao": "FIN-150 validado provisoriamente: manter Saude em R$ 598,76/mes apos reclassificacao do bale das filhas para Apoio familiar. Farmacia foi auditada e permanece sem corte nesta etapa; consultas, exames, odontologia, suplementos e aplicacoes seguem como despesas eventuais dentro da referencia historica."
+    },
+    {
+      "ordem": 8,
+      "nome": "Servicos digitais",
+      "pesoBrutoReferencia": 0.0167,
+      "referenciaNormalizadaPct": 0.98,
+      "mediaMensal": 277.34,
+      "metaProposta": 278.21,
+      "condicaoAcao": "FIN-150 validado: nenhuma nova reducao em Servicos digitais. Manter ChatGPT, Spotify, Google One, HBO e Netflix; Disney+ ja havia sido cancelado antes e nao deve gerar economia duplicada. Referencia operacional atual: R$ 278,21/mes."
+    },
+    {
+      "ordem": 9,
+      "nome": "Vestuario e acessorios",
+      "pesoBrutoReferencia": 0.0177,
+      "referenciaNormalizadaPct": 3.38,
+      "mediaMensal": 293.61,
+      "metaProposta": 50.0,
+      "condicaoAcao": "FIN-150 validado: R$ 50,00/mes para NOVAS compras de vestuario/acessorios. Se houver parcelamento, a soma mensal de novos compromissos de vestuario deve caber nesse teto de R$ 50,00; parcelas antigas continuam integralmente ate o fim e nao consomem esse novo envelope."
+    },
+    {
+      "ordem": 10,
+      "nome": "Impostos",
+      "pesoBrutoReferencia": 0.0134,
+      "referenciaNormalizadaPct": 1.84,
+      "mediaMensal": 221.89,
+      "metaProposta": 0.0,
+      "condicaoAcao": "FIN-150 validado: IPTU e taxa de lixo de 2026 ja foram pagos. Meta operacional de Impostos = R$ 0,00/mes de out a dez/2026, pois nao ha outro tributo conhecido projetado ate o fim do ano. Para 2027, reabrir provisao especifica para IPTU/taxa de lixo quando o novo exercicio for planejado; a referencia estrutural atual de R$ 110,95/mes permanece apenas como indicacao anual para 2027, nao como despesa de 2026."
+    },
+    {
+      "ordem": 11,
+      "nome": "Telecomunicacoes",
+      "pesoBrutoReferencia": 0.0129,
+      "referenciaNormalizadaPct": 3.02,
+      "mediaMensal": 214.19,
+      "metaProposta": 255.0,
+      "condicaoAcao": "FIN-150 validado: Telecomunicacoes = R$ 255,00/mes, composto por LOGA em media de R$ 135,00/mes + 4 recargas de celular de R$ 30,00 (4 celulares), total R$ 120,00/mes. O baseline historico de R$ 214,19/mes mistura Claro antiga, recargas e uma compra pontual de acessorio; a meta operacional passa a refletir a estrutura atual informada pelo usuario. Nenhum corte, cancelamento ou reclassificacao foi executado."
+    },
+    {
+      "ordem": 12,
+      "nome": "Cuidados pessoais",
+      "pesoBrutoReferencia": 0.0126,
+      "referenciaNormalizadaPct": 2.74,
+      "mediaMensal": 209.98,
+      "metaProposta": 100.0,
+      "condicaoAcao": "FIN-150 — META FINAL DE CUIDADOS PESSOAIS VALIDADA pelo usuario em 23/09/2026: R$ 100,00/mes para consumo novo recorrente (higiene, cosmeticos, barbearia e demais cuidados correntes). Parcelamentos ja contratados ficam fora deste envelope ate o vencimento. A FIN-161 apurou parcelas de R$ 144,34 em out/26, R$ 94,11 em nov/26 e R$ 74,33 em dez/26, incluindo Botoesthetic R$ 58,25/mes ate mar/2027 e rateios Amazon de higiene que terminam antes. A antiga meta de R$ 151,60 misturava consumo corrente com parcelas e foi substituida por envelope novo de R$ 100,00 + compromissos antigos temporarios."
+    },
+    {
+      "ordem": 13,
+      "nome": "Seguros",
+      "pesoBrutoReferencia": 0.0057,
+      "referenciaNormalizadaPct": 0.94,
+      "mediaMensal": 94.35,
+      "metaProposta": 92.45,
+      "condicaoAcao": "FIN-150 validado: manter apenas o seguro residencial Santander de R$ 92,45/mes como meta estrutural. SEG SUPERPROTEG ESSENCIAL Casas Bahia/Bradescard R$ 11,98: usuario informou em 23/09/2026 que o cancelamento ja foi solicitado; nao considerar encerrado ate confirmacao/cessarem cobrancas. Cartao + Protegido Inter R$ 1,90: usuario informou que nao se recorda de ter contratado e que vai solicitar cancelamento; ate confirmacao, eventual cobranca permanece como realizado, mas nao entra na meta estrutural. Nenhum cancelamento foi executado por esta planilha."
+    },
+    {
+      "ordem": 14,
+      "nome": "Outros",
+      "pesoBrutoReferencia": 0.0064,
+      "referenciaNormalizadaPct": 0.91,
+      "mediaMensal": 106.3,
+      "metaProposta": 0.0,
+      "condicaoAcao": "AMARELO. Meta proposta R$ 0,00 para NOVO gasto residual planejado. Isto nao muda a regra de classificacao: Outros continua dependendo de autorizacao do usuario caso a caso; qualquer gasto real deve ser classificado e orcado na categoria economica correspondente."
+    },
+    {
+      "ordem": 15,
+      "nome": "Lazer",
+      "pesoBrutoReferencia": 0.0123,
+      "referenciaNormalizadaPct": 2.29,
+      "mediaMensal": 204.9,
+      "metaProposta": 50.0,
+      "condicaoAcao": "FIN-150 validado: Lazer = R$ 50,00/mes. Usuario avaliou que meta zero seria pouco realista e definiu um teto enxuto, mas cumprivel. O historico mar-ago/2026 teve media bruta de R$ 204,90/mes, inflada por passeio na montanha e material esportivo; lazer cotidiano sem esses blocos ficou em cerca de R$ 91,62/mes. Nenhum gasto existente foi cancelado automaticamente."
+    },
+    {
+      "ordem": 16,
+      "nome": "Apoio familiar",
+      "pesoBrutoReferencia": 0.0261,
+      "referenciaNormalizadaPct": 0.62,
+      "mediaMensal": 433.47,
+      "metaProposta": 0.0,
+      "condicaoAcao": "FIN-150 validado: Apoio familiar = R$ 0,00/mes como meta planejada. O historico mar-ago/2026 teve media de R$ 433,47/mes, concentrada em ajudas pontuais e nao recorrentes. O usuario decidiu nao reservar envelope mensal para novos apoios; eventuais excecoes futuras exigem decisao e replanejamento explicitos. Nenhuma transferencia passada foi alterada."
+    },
+    {
+      "ordem": 17,
+      "nome": "Tarifas financeiras",
+      "pesoBrutoReferencia": 0.0079,
+      "referenciaNormalizadaPct": 1.01,
+      "mediaMensal": 131.04,
+      "metaProposta": 0.0,
+      "condicaoAcao": "FIN-150 validado: Tarifas financeiras = R$ 0,00/mes como meta estrutural. Juros, multas e anuidades evitaveis nao devem compor o orcamento mensal. Para o Santander SX, usuario decidiu evitar a anuidade concentrando no cartao pelo menos R$ 100/mes de compras/assinaturas ja previstas, com folga operacional e sem criar gasto novo. IOF e encargos eventuais permanecem no realizado quando ocorrerem, mas nao recebem envelope planejado."
+    },
+    {
+      "ordem": 18,
+      "nome": "Financeiro",
+      "pesoBrutoReferencia": 0.0,
+      "referenciaNormalizadaPct": 0.27,
+      "mediaMensal": 0.0,
+      "metaProposta": 0.0,
+      "condicaoAcao": "FIN-150 corrigido em 23/09/2026: Financeiro = R$ 0,00/mes no orcamento de consumo. O titulo Santander ICB48683937 foi confirmado como ativo de capitalizacao e seus debitos mensais passam a ser tratados como Investimento, nao Despesa. Manter alocacao patrimonial operacional de R$ 33,00/mes fora do total zero-a-zero para cobrir o debito atual de R$ 31,96 e pequenos reajustes ate o termino informado em 2028."
+    },
+    {
+      "ordem": 19,
+      "nome": "Trabalho",
+      "pesoBrutoReferencia": 0.0007,
+      "referenciaNormalizadaPct": 0.17,
+      "mediaMensal": 11.19,
+      "metaProposta": 0.0,
+      "condicaoAcao": "AMARELO. Meta proposta R$ 0,00 para novas compras de material profissional sem necessidade concreta. Se houver gasto necessario ao trabalho, ele prevalece e o plano deve ser reequilibrado."
+    },
+    {
+      "ordem": 20,
+      "nome": "Desconhecida",
+      "pesoBrutoReferencia": 0.0066,
+      "referenciaNormalizadaPct": 0.0,
+      "mediaMensal": 109.22,
+      "metaProposta": 109.22,
+      "condicaoAcao": "AMARELO de qualidade de dados, nao alavanca economica. Mantem R$ 109,22 no plano para nao fingir economia: classificar Desconhecida apenas redistribui gasto para a categoria correta."
+    },
+    {
+      "ordem": 21,
+      "nome": "Tecnologia",
+      "pesoBrutoReferencia": 0.0035,
+      "referenciaNormalizadaPct": 0.0,
+      "mediaMensal": 58.78,
+      "metaProposta": 352.67,
+      "condicaoAcao": "AMARELO, compromisso contratual. Meta sobe para R$ 352,67/mes para preservar a parcela do notebook ate ago/2027; o aumento de R$ 293,89 sobre a media N=6 reduz a economia liquida disponivel. Nenhum corte foi assumido."
+    }
+  ],
+  "subcategorias": {
+    "Alimentacao": [
+      {
+        "nome": "Supermercado",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Padaria",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Hortifruti",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Acougue",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Delivery",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Refeicao fora",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Feira",
+        "descricao": "Compras de feira confirmadas pelo usuario; padaria permanece separada. FIN-042"
+      },
+      {
+        "nome": "Bebidas",
+        "descricao": "Subcategoria criada para refrigerantes/bebidas confirmados pelo usuario; FIN-042."
+      },
+      {
+        "nome": "Guloseimas",
+        "descricao": "Subcategoria para chocolates, biscoitos, salgadinhos/batata frita e similares. Criada por confirmacao do usuario em 20/09/2026 para a regra de Americanas/LASA abaixo de R$ 100."
+      }
+    ],
+    "Educacao": [
+      {
+        "nome": "Mensalidade",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Equipamento para estudos",
+        "descricao": "Notebook da filha confirmado pelo usuario; FIN-042"
+      },
+      {
+        "nome": "Material escolar",
+        "descricao": "Subcategoria criada para material escolar confirmado pelo usuario; FIN-042"
+      },
+      {
+        "nome": "Cursos e treinamentos",
+        "descricao": "Subcategoria criada na FIN-095 em 21/09/2026 para cursos e treinamentos identificados por evidencia do produto/fornecedor, como o `HTM*CURSODZARP` da Hotmart/Investidor de Verdade."
+      }
+    ],
+    "Financeiro": [
+      {
+        "nome": "Titulo de capitalizacao",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Credito pessoal",
+        "descricao": "Subcategoria criada para saneamento historico; FIN-042"
+      },
+      {
+        "nome": "Educacao financeira",
+        "descricao": "Subcategoria criada em 22/09/2026 para cursos, assinaturas e treinamentos de educacao financeira/investimentos pagos como despesa familiar. Mantem o gasto visivel no eixo financeiro sem mistura-lo com educacao escolar; revisar necessidade antes de novas contratacoes."
+      }
+    ],
+    "Impostos": [
+      {
+        "nome": "Tributos municipais",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      }
+    ],
+    "Investimentos": [
+      {
+        "nome": "Rendimento FII",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Titulo de capitalizacao",
+        "descricao": "FIN-150 23/09/2026: debitos que formam saldo patrimonial em titulo de capitalizacao devem ser tratados como investimento/aporte, nao como despesa de consumo. Caso Santander ICB48683937."
+      }
+    ],
+    "Moradia": [
+      {
+        "nome": "Condominio",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Financiamento imobiliario",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Energia eletrica",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Gas/Agua",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Manutencao residencial",
+        "descricao": "Subcategoria criada para saneamento historico; FIN-042"
+      },
+      {
+        "nome": "Material de limpeza",
+        "descricao": "Uso domestico. MS Embalagens: compras de ate R$ 150 confirmadas pelo usuario como material de limpeza; valores acima disso exigem auditoria manual. FIN-042."
+      },
+      {
+        "nome": "Cama, mesa e banho",
+        "descricao": "Subcategoria criada na FIN-045 para itens domesticos texteis identificados por pedido Amazon."
+      },
+      {
+        "nome": "Utensilios e eletroportateis",
+        "descricao": "Subcategoria criada na FIN-057 para itens domesticos de cozinha identificados por evidencia de pedido/NF-e, como multifatiador e escorredor."
+      },
+      {
+        "nome": "Seguranca residencial",
+        "descricao": "Subcategoria criada na FIN-072 para cameras e equipamentos de seguranca residencial identificados por evidencia de pedido."
+      },
+      {
+        "nome": "Moveis",
+        "descricao": "Subcategoria criada na FIN-059 para taxas de inscricao e exames educacionais; caso inicial identificado por payee, valor, data e cronograma oficial do Enem 2026."
+      },
+      {
+        "nome": "Eletrodomesticos",
+        "descricao": "Subcategoria criada na FIN-127 em 20/09/2026 para eletrodomesticos residenciais de maior porte identificados por evidencia de pedido, como fogao. Nao inferir pela loja sem identificar o item."
+      },
+      {
+        "nome": "Eletronicos",
+        "descricao": "Subcategoria criada na FIN-126 em 20/09/2026 para eletronicos residenciais identificados por evidencia de pedido, como televisao. Nao inferir pela loja sem identificar o item."
+      },
+      {
+        "nome": "Flores e plantas",
+        "descricao": "Subcategoria criada na FIN-106 em 21/09/2026 para flores e plantas identificadas por evidencia direta do item. Caso inicial: compra em barraca de flores confirmada pelo usuario. Nao inferir finalidade de presente/evento sem evidencia adicional."
+      }
+    ],
+    "Pets": [
+      {
+        "nome": "Pet shop",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Veterinario",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Cuidador de pets",
+        "descricao": "Subcategoria criada na FIN-133 em 21/09/2026 para pagamento de pessoa que cuida dos pets durante ausencia/viagem, confirmado diretamente pelo usuario. Nao generalizar por recebedor sem confirmar a finalidade."
+      }
+    ],
+    "Saude": [
+      {
+        "nome": "Farmacia",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Exames",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Consulta",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Suplementos",
+        "descricao": "Subcategoria criada na FIN-072 para suplementacao nutricional, como whey protein, vitaminas e suplementos alimentares, quando a finalidade estiver confirmada."
+      },
+      {
+        "nome": "Odontologia",
+        "descricao": "Subcategoria criada na FIN-086 para despesas de clinica/servico odontologico identificadas com evidencia suficiente do estabelecimento. Nao inferir procedimento especifico nem pessoa atendida sem evidencia adicional."
+      },
+      {
+        "nome": "Aplicacao de medicamentos",
+        "descricao": "Subcategoria criada na FIN-133 em 21/09/2026 para servico de aplicacao de medicamentos/injecoes, inclusive vitaminas, quando a finalidade estiver confirmada. Separar do custo do medicamento/suplemento quando possivel."
+      },
+      {
+        "nome": "Atividade fisica",
+        "descricao": "Subcategoria criada em 22/09/2026 por decisao do usuario para academia, bale e atividades equivalentes quando a finalidade principal for condicionamento fisico e bem-estar corporal/mental; nao usar automaticamente para hobby ou lazer sem confirmar a finalidade."
+      }
+    ],
+    "Seguros": [
+      {
+        "nome": "Seguro do cartao",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Seguro residencial",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      }
+    ],
+    "Servicos digitais": [
+      {
+        "nome": "Assinaturas e ferramentas",
+        "descricao": "Categoria ampla e rastreavel para assinaturas/ferramentas digitais; FIN-014"
+      }
+    ],
+    "Tarifas financeiras": [
+      {
+        "nome": "IOF",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Juros",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Juros cheque especial",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Anuidade de cartao",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Outras tarifas",
+        "descricao": "Subcategoria criada para saneamento historico; FIN-042"
+      },
+      {
+        "nome": "Multas e encargos",
+        "descricao": "Subcategoria criada para saneamento historico; FIN-042"
+      }
+    ],
+    "Telecomunicacoes": [
+      {
+        "nome": "Recarga celular",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Acessorios de celular",
+        "descricao": "Subcategoria criada na FIN-072 para capas, peliculas e acessorios fisicos de celular identificados por evidencia de pedido."
+      }
+    ],
+    "Transporte": [
+      {
+        "nome": "Transporte por aplicativo",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Transporte publico",
+        "descricao": "Derivado de classificacoes seguras em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Bicicleta",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "CNH",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "CNH/Detran",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      }
+    ],
+    "Viagem": [
+      {
+        "nome": "Passagem aerea",
+        "descricao": "Categoria ja evidenciada em Movimentos; FIN-014"
+      },
+      {
+        "nome": "Hospedagem",
+        "descricao": "Subcategoria criada para saneamento historico; FIN-042"
+      }
+    ],
+    "Cuidados pessoais": [
+      {
+        "nome": "Cosmeticos",
+        "descricao": "Categoria/subcategoria criada para saneamento historico; FIN-042"
+      },
+      {
+        "nome": "Barbearia",
+        "descricao": "Categoria/subcategoria criada para saneamento historico; FIN-042"
+      },
+      {
+        "nome": "Estetica",
+        "descricao": "Categoria/subcategoria criada para saneamento historico; FIN-042"
+      },
+      {
+        "nome": "Higiene pessoal",
+        "descricao": "Subcategoria criada na FIN-046 para itens de higiene pessoal identificados por pedido Amazon (sabonete e creme dental)."
+      }
+    ],
+    "Apoio familiar": [
+      {
+        "nome": "Ajuda financeira",
+        "descricao": "Finalidade confirmada pelo usuario e registrada em observacao; FIN-042"
+      }
+    ],
+    "Lazer": [
+      {
+        "nome": "Sorveteria",
+        "descricao": "Categoria/subcategoria confirmada pelo usuario para sorveterias; FIN-042"
+      },
+      {
+        "nome": "Caminhada/passeio",
+        "descricao": "Gastos associados a caminhada/passeio; agua de coco confirmada pelo usuario; FIN-042"
+      },
+      {
+        "nome": "Cinema",
+        "descricao": "Subcategoria criada para despesas de cinema confirmadas pelo usuario; FIN-042"
+      },
+      {
+        "nome": "Loterias",
+        "descricao": "Subcategoria criada na FIN-059 para gastos inequivocamente identificados como loteria pelo proprio descritor da transacao; nao generalizar para descritores ambiguos."
+      },
+      {
+        "nome": "Fotografia esportiva",
+        "descricao": "Subcategoria criada na FIN-059 para compras na plataforma especializada Foco Radical, identificada por evidencia oficial como fotografia esportiva."
+      },
+      {
+        "nome": "Material esportivo",
+        "descricao": "Subcategoria criada na FIN-091 em 20/09/2026. Usuario confirmou que compras Decathlon devem ser classificadas como material esportivo."
+      },
+      {
+        "nome": "Apostas esportivas",
+        "descricao": "Subcategoria criada na FIN-110 em 21/09/2026 para apostas esportivas confirmadas diretamente pelo usuario. Caso inicial: Pix de R$ 20,00 para colega durante o Mundial. Nao generalizar por recebedor sem evidencia da finalidade."
+      }
+    ],
+    "Beneficios": [
+      {
+        "nome": "Cashback",
+        "descricao": "Cashback monetario convertido em dinheiro/credito; entrada positiva nao estrutural, sem reduzir a despesa de origem. FIN-032."
+      }
+    ],
+    "Trabalho": [
+      {
+        "nome": "Material profissional",
+        "descricao": "Categoria criada na FIN-057 para material de atividade profissional pago com recursos familiares; uso confirmado pelo usuario para a atividade de estetica da esposa."
+      }
+    ],
+    "Tecnologia": [
+      {
+        "nome": "Computadores e tablets",
+        "descricao": "Categoria criada na FIN-085 para equipamentos de computacao pessoal identificados por evidencia de pedido, como computadores e tablets. A finalidade de uso (estudo, trabalho ou lazer) nao deve ser inferida sem evidencia adicional."
+      },
+      {
+        "nome": "Celulares e smartphones",
+        "descricao": "Subcategoria criada na FIN-089 para compra de aparelho celular/smartphone identificada por confirmacao direta do usuario. Nao usar descritor de loja varejista como regra automatica de categoria."
+      }
+    ],
+    "Ganhos eventuais": [
+      {
+        "nome": "Apostas esportivas",
+        "descricao": "Subcategoria criada na FIN-110 em 21/09/2026 para retorno/ganho eventual de apostas esportivas confirmado pelo usuario. Tratar como entrada nao recorrente; nao usar como renda estrutural de previsao."
+      }
+    ],
+    "Vestuario e acessorios": [
+      {
+        "nome": "Conserto de roupas",
+        "descricao": "Subcategoria criada na FIN-136 em 21/09/2026 para servicos de costura, reparo e ajuste de roupas confirmados pelo usuario. Caso inicial: Atelie Michelie Elzi, usado para consertar roupas, incluindo short rasgado."
+      }
+    ]
+  }
+}

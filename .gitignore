@@ -1,6 +1,7 @@
 # Logs
 logs
 *.log
+docs/automacao/logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -147,3 +148,5 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+.local

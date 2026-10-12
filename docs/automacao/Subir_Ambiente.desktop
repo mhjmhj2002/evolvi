@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Subir Ambiente Evolvi
+Comment=Inicializa o banco de dados PostgreSQL, backend Fastify e frontend Vite do Evolvi
+Exec=/home/mhj/git/evolvi/docs/automacao/subir_ambiente.sh
+Path=/home/mhj/git/evolvi
+Icon=utilities-terminal
+Terminal=true
+Categories=Development;
+StartupNotify=true
