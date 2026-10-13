@@ -35,6 +35,9 @@ export const updateMovimentoSchema = z.object({
 
 export const queryMovimentosSchema = z.object({
   competencia: z.string().regex(/^\d{4}-\d{2}$/, { message: 'Competência deve estar no formato YYYY-MM' }).optional(),
+  dataInicio: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { message: 'Data de início deve estar no formato YYYY-MM-DD' }).optional(),
+  dataFim: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { message: 'Data de fim deve estar no formato YYYY-MM-DD' }).optional(),
+  busca: z.string().max(100).optional(),
   contaId: z.string().uuid().optional(),
   categoriaId: z.string().uuid().optional(),
   natureza: z.enum(['RECEITA', 'DESPESA', 'TRANSFERENCIA_PROPRIA', 'APORTE_PATRIMONIAL']).optional(),

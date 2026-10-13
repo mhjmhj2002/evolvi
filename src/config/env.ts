@@ -9,6 +9,10 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(16, 'JWT_SECRET deve ter ao menos 16 caracteres'),
   JWT_EXPIRES_IN: z.string().default('24h'),
   CORS_ORIGIN: z.string().default('*'),
+  OPEN_FINANCE_MODE: z.enum(['mock', 'real']).default('mock'),
+  OPEN_FINANCE_CLIENT_ID: z.string().optional(),
+  OPEN_FINANCE_CLIENT_SECRET: z.string().optional(),
+  OPEN_FINANCE_API_URL: z.string().url().optional().or(z.literal('')),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

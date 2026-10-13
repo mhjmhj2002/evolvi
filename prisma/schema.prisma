@@ -85,18 +85,20 @@ model Usuario {
   metasZeroAZero   MetaZeroAZero[]
   conexoesBancarias ConexaoBancaria[]
   configuracao     ConfiguracaoUsuario?
+  dadosBrutosOpenFinance DadoBrutoOpenFinance[]
 
   @@map("usuarios")
 }
 
 model ConfiguracaoUsuario {
-  id                    String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  usuarioId             String   @unique @map("usuario_id") @db.Uuid
-  mesesJanelaTemporal   Int      @default(6) @map("meses_janela_temporal")
-  criadoEm              DateTime @default(now()) @map("criado_em") @db.Timestamptz(6)
-  atualizadoEm          DateTime @default(now()) @updatedAt @map("atualizado_em") @db.Timestamptz(6)
+  id                         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId                  String   @unique @map("usuario_id") @db.Uuid
+  mesesJanelaTemporal        Int      @default(6) @map("meses_janela_temporal")
+  intervaloSincronizacaoHoras Int      @default(6) @map("intervalo_sincronizacao_horas")
+  criadoEm                   DateTime @default(now()) @map("criado_em") @db.Timestamptz(6)
+  atualizadoEm               DateTime @default(now()) @updatedAt @map("atualizado_em") @db.Timestamptz(6)
 
-  usuario               Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  usuario                    Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
 
   @@map("configuracoes_usuario")
 }
@@ -259,8 +261,51 @@ model ConexaoBancaria {
   atualizadoEm          DateTime              @default(now()) @updatedAt @map("atualizado_em") @db.Timestamptz(6)
 
   usuario               Usuario               @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  dadosBrutos           DadoBrutoOpenFinance[]
 
   @@index([usuarioId], map: "idx_conexoes_usuario")
   @@index([instituicaoCodigo], map: "idx_conexoes_instituicao")
   @@map("conexoes_bancarias")
 }
+
+enum TipoDadoBruto {
+  TRANSACOES
+  FATURAS
+  CONTAS
+  SALDOS
+
+  @@map("tipo_dado_bruto")
+}
+
+enum StatusDadoBruto {
+  PENDENTE_PROCESSAMENTO
+  PROCESSANDO
+  PROCESSADO
+  ERRO_PROCESSAMENTO
+
+  @@map("status_dado_bruto")
+}
+
+model DadoBrutoOpenFinance {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId         String          @map("usuario_id") @db.Uuid
+  conexaoId         String          @map("conexao_id") @db.Uuid
+  instituicaoCodigo String          @map("instituicao_codigo") @db.VarChar(20)
+  tipoDado          TipoDadoBruto   @map("tipo_dado")
+  payloadRaw        Json            @map("payload_raw")
+  hashCarga         String          @map("hash_carga") @db.VarChar(64)
+  status            StatusDadoBruto @default(PENDENTE_PROCESSAMENTO)
+  mensagemErro      String?         @map("mensagem_erro") @db.Text
+  tentativas        Int             @default(0)
+  coletadoEm        DateTime        @default(now()) @map("coletado_em") @db.Timestamptz(6)
+  processadoEm      DateTime?       @map("processado_em") @db.Timestamptz(6)
+
+  usuario           Usuario         @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  conexao           ConexaoBancaria @relation(fields: [conexaoId], references: [id], onDelete: Cascade)
+
+  @@unique([conexaoId, hashCarga], map: "uq_dados_brutos_conexao_hash")
+  @@index([usuarioId, status], map: "idx_dados_brutos_usuario_status")
+  @@index([conexaoId, coletadoEm], map: "idx_dados_brutos_conexao_coletado")
+  @@map("dados_brutos_open_finance")
+}
+

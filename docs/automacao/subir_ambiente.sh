@@ -152,7 +152,8 @@ echo -e "  ✔ Porta configurada Backend : ${BACKEND_PORT}"
 echo -e "  ✔ Porta configurada Frontend: ${FRONTEND_PORT}"
 
 # ------------------------------------------------------------------------------
-# 3. Verificação se o Ambiente Já Está em Execução
+# ------------------------------------------------------------------------------
+# 3. Verificação de Serviços Ativos (Rebuild e Restart automático se em execução)
 # ------------------------------------------------------------------------------
 echo ""
 echo -e "${BLUE}[3/5] Verificando se serviços do ambiente já estão em execução...${NC}"
@@ -171,41 +172,77 @@ PORT_IN_USE() {
   fi
 }
 
+KILL_PORT_PROCESSES() {
+  local p=$1
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k -TERM "${p}/tcp" >/dev/null 2>&1 || true
+    sleep 1
+    if PORT_IN_USE "${p}"; then
+      fuser -k -KILL "${p}/tcp" >/dev/null 2>&1 || true
+      sleep 1
+    fi
+  elif command -v lsof >/dev/null 2>&1; then
+    local pids
+    pids=$(lsof -t -iTCP:"${p}" -sTCP:LISTEN 2>/dev/null || true)
+    if [ -n "${pids}" ]; then
+      kill -TERM ${pids} >/dev/null 2>&1 || true
+      sleep 1
+      pids=$(lsof -t -iTCP:"${p}" -sTCP:LISTEN 2>/dev/null || true)
+      [ -n "${pids}" ] && kill -9 ${pids} >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
 JA_RODANDO_BACKEND=false
 JA_RODANDO_FRONTEND=false
 
 if PORT_IN_USE "${BACKEND_PORT}"; then
-  # Verificar se a porta ocupada responde pelo healthcheck do Evolvi
-  HEALTH_CHECK_RESULT=$(curl -s --connect-timeout 2 "http://localhost:${BACKEND_PORT}/health" 2>/dev/null || echo "")
-  if echo "${HEALTH_CHECK_RESULT}" | grep -q '"status":"ok"'; then
-    echo -e "${YELLOW}  ⚠ O backend do Evolvi já está em execução na porta ${BACKEND_PORT}!${NC}"
-    JA_RODANDO_BACKEND=true
-  else
-    echo -e "${YELLOW}  ⚠ Atenção: A porta ${BACKEND_PORT} já está em uso por outro processo.${NC}"
-    echo -e "    Resposta da porta: ${HEALTH_CHECK_RESULT:0:120}..."
-  fi
+  echo -e "${YELLOW}  ⚠ O backend já está em execução na porta ${BACKEND_PORT}.${NC}"
+  JA_RODANDO_BACKEND=true
 else
   echo -e "  ✔ Porta do Backend (${BACKEND_PORT}) livre."
 fi
 
 if PORT_IN_USE "${FRONTEND_PORT}"; then
-  echo -e "${YELLOW}  ⚠ O frontend (Vite) já está em execução na porta ${FRONTEND_PORT}!${NC}"
+  echo -e "${YELLOW}  ⚠ O frontend já está em execução na porta ${FRONTEND_PORT}.${NC}"
   JA_RODANDO_FRONTEND=true
 else
   echo -e "  ✔ Porta do Frontend (${FRONTEND_PORT}) livre."
 fi
 
-# Se ambos já estiverem respondendo
-if [ "${JA_RODANDO_BACKEND}" = true ] && [ "${JA_RODANDO_FRONTEND}" = true ]; then
+# Se algum dos projetos já estiver rodando, realizar parada e rebuild
+if [ "${JA_RODANDO_BACKEND}" = true ] || [ "${JA_RODANDO_FRONTEND}" = true ]; then
   echo ""
-  echo -e "${GREEN}${BOLD}==============================================================================${NC}"
-  echo -e "${GREEN}${BOLD}  O AMBIENTE COMPLETO JÁ ESTÁ EM EXECUÇÃO E PRONTO PARA USO!                 ${NC}"
-  echo -e "${GREEN}${BOLD}==============================================================================${NC}"
-  echo -e "• Frontend Web (Mobile-First) : ${CYAN}http://localhost:${FRONTEND_PORT}${NC}"
-  echo -e "• Backend API (Fastify)       : ${CYAN}http://localhost:${BACKEND_PORT}${NC}"
-  echo -e "• Healthcheck                 : ${CYAN}http://localhost:${BACKEND_PORT}/health${NC}"
-  echo ""
-  pause_exit 0
+  echo -e "${CYAN}${BOLD}⚡ Processo(s) ativo(s) detectado(s). Iniciando parada e rebuild antes de restartar...${NC}"
+
+  if [ "${JA_RODANDO_BACKEND}" = true ]; then
+    echo -e "  Encerrando backend na porta ${BACKEND_PORT}..."
+    KILL_PORT_PROCESSES "${BACKEND_PORT}"
+    echo -e "  ✔ Backend finalizado para restart."
+
+    echo -e "  Executando rebuild do Prisma Client e Backend..."
+    npm run prisma:generate || true
+    # Se houver comando de build no backend, executa
+    npm run build || true
+    echo -e "  ✔ Rebuild do Backend concluído."
+  fi
+
+  if [ "${JA_RODANDO_FRONTEND}" = true ]; then
+    echo -e "  Encerrando frontend na porta ${FRONTEND_PORT}..."
+    KILL_PORT_PROCESSES "${FRONTEND_PORT}"
+    echo -e "  ✔ Frontend finalizado para restart."
+
+    echo -e "  Executando rebuild do Frontend (npm run build:web)..."
+    if ! npm run build:web; then
+      echo -e "${RED}ERRO: Falha no build do Frontend (build:web).${NC}"
+      pause_exit 1
+    fi
+    echo -e "  ✔ Rebuild do Frontend concluído com sucesso."
+  fi
+
+  # Resetar flags para que o passo 5 inicialize ambos os serviços novamente
+  JA_RODANDO_BACKEND=false
+  JA_RODANDO_FRONTEND=false
 fi
 
 # ------------------------------------------------------------------------------

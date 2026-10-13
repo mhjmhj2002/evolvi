@@ -296,4 +296,56 @@ describe('Motor de Movimentos e Anti-Dupla Contagem (TASK-05)', () => {
     });
     expect(checkContrapartida).toBeNull();
   });
+
+  it('deve filtrar movimentos por intervalo de datas (dataInicio / dataFim) e busca textual', async () => {
+    // 1. Criar dois lançamentos com datas e descrições distintas
+    await app.inject({
+      method: 'POST',
+      url: '/api/movimentos',
+      headers: { authorization: `Bearer ${tokenUser}` },
+      payload: {
+        contaId: contaCorrenteId,
+        dataMovimento: '2026-10-05',
+        descricao: 'Supermercado Mensal Pão de Açúcar',
+        valor: 450.0,
+        natureza: 'DESPESA',
+      },
+    });
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/movimentos',
+      headers: { authorization: `Bearer ${tokenUser}` },
+      payload: {
+        contaId: contaCorrenteId,
+        dataMovimento: '2026-10-25',
+        descricao: 'Farmácia Droga Raia',
+        valor: 85.0,
+        natureza: 'DESPESA',
+      },
+    });
+
+    // 2. Filtro por dataInicio e dataFim pegando apenas o dia 05
+    const respData = await app.inject({
+      method: 'GET',
+      url: '/api/movimentos?dataInicio=2026-10-01&dataFim=2026-10-10',
+      headers: { authorization: `Bearer ${tokenUser}` },
+    });
+    expect(respData.statusCode).toBe(200);
+    const bodyData = JSON.parse(respData.body);
+    const descricoesData = bodyData.movimentos.map((m: any) => m.descricao);
+    expect(descricoesData).toContain('Supermercado Mensal Pão de Açúcar');
+    expect(descricoesData).not.toContain('Farmácia Droga Raia');
+
+    // 3. Filtro por busca textual
+    const respBusca = await app.inject({
+      method: 'GET',
+      url: '/api/movimentos?busca=droga',
+      headers: { authorization: `Bearer ${tokenUser}` },
+    });
+    expect(respBusca.statusCode).toBe(200);
+    const bodyBusca = JSON.parse(respBusca.body);
+    expect(bodyBusca.movimentos.length).toBe(1);
+    expect(bodyBusca.movimentos[0].descricao).toBe('Farmácia Droga Raia');
+  });
 });

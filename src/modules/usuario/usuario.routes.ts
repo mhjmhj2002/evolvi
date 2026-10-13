@@ -54,7 +54,7 @@ export const usuarioRoutes: FastifyPluginAsync = async (app: FastifyInstance) =>
     return reply.status(200).send(configuracao);
   });
 
-  // PUT /api/usuario/configuracoes (TASK-27)
+  // PUT /api/usuario/configuracoes (TASK-27 & TASK-28)
   app.put('/configuracoes', async (request, reply) => {
     const usuarioId = request.user.sub;
 
@@ -63,13 +63,16 @@ export const usuarioRoutes: FastifyPluginAsync = async (app: FastifyInstance) =>
       return reply.status(400).send({
         statusCode: 400,
         error: 'Bad Request',
-        message: 'Parâmetro de janela temporal inválido. Deve ser um número inteiro entre 3 e 12 meses.',
+        message: 'Parâmetros de configuração inválidos.',
         issues: parseResult.error.issues,
       });
     }
 
-    const { mesesJanelaTemporal } = parseResult.data;
-    const resultado = await configuracaoService.atualizarConfiguracao(usuarioId, mesesJanelaTemporal);
+    const { mesesJanelaTemporal, intervaloSincronizacaoHoras } = parseResult.data;
+    const resultado = await configuracaoService.atualizarConfiguracao(usuarioId, {
+      mesesJanelaTemporal,
+      intervaloSincronizacaoHoras,
+    });
 
     return reply.status(200).send({
       message: 'Configuração atualizada com sucesso.',

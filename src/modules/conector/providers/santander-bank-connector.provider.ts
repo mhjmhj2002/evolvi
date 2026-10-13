@@ -5,6 +5,8 @@ import {
   BankTransactionRaw,
   BankInvoiceRaw,
 } from '../types/bank-connector.interface.js';
+import { env } from '../../../config/env.js';
+import { OpenFinanceApiClient } from '../client/open-finance-api.client.js';
 
 export interface SantanderCredentials {
   clientId?: string;
@@ -16,14 +18,28 @@ export interface SantanderCredentials {
 
 /**
  * Conector Bancário Especializado para o Banco Santander Brasil (COMPE 033).
- * Implementa sincronização de contas correntes e cartões Santander (Way / SX / Elite),
- * normalização de transações típicas de extrato Santander, anti-dupla contagem
- * de fatura e classificação automática para as categorias POF.
+ * Implementa suporte dual (Alternância de Modo Mock vs Real via OPEN_FINANCE_MODE):
+ * - Modo Mock (padrão / sandbox): Mocks ricos para suíte de testes de regressão e simulação rápida
+ * - Modo Real (OPEN_FINANCE_MODE=real): Integração HTTP resiliente com APIs do Open Finance Brasil
+ * Mantém normalização de extratos Santander, anti-dupla contagem de faturas e mapeamento POF.
  */
 export class SantanderBankConnectorProvider implements IBankConnectorProvider {
   public readonly codigo: string = '033';
   public readonly nome: string = 'Santander';
   public readonly compe: string = '033';
+
+  private apiClient: OpenFinanceApiClient;
+
+  constructor(client?: OpenFinanceApiClient) {
+    this.apiClient = client || new OpenFinanceApiClient();
+  }
+
+  /**
+   * Indica se o conector está operando em modo real ou em modo mock/simulação
+   */
+  public get modoOperacao(): 'mock' | 'real' {
+    return env.OPEN_FINANCE_MODE === 'real' ? 'real' : 'mock';
+  }
 
   /**
    * Dicionário de classificação e categorização heurística para extratos Santander.
@@ -122,6 +138,42 @@ export class SantanderBankConnectorProvider implements IBankConnectorProvider {
    */
   async authenticate(credentials?: Record<string, unknown>): Promise<BankConsentResult> {
     const creds = (credentials || {}) as SantanderCredentials;
+    const isModoReal = this.modoOperacao === 'real';
+
+    if (isModoReal && (creds.clientId || env.OPEN_FINANCE_CLIENT_ID)) {
+      try {
+        const tokenResp = await this.apiClient.getAccessToken({
+          clientId: creds.clientId,
+          clientSecret: creds.clientSecret,
+        });
+
+        const consentId = `santander_live_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const expiraEm = new Date();
+        expiraEm.setDate(expiraEm.getDate() + 90);
+
+        return {
+          sucesso: true,
+          consentimentoId: consentId,
+          expiraEm,
+          urlAutorizacao: `https://auth.santander.com.br/open-banking/v1/auth?consent_id=${consentId}`,
+          detalhes: {
+            banco: 'Banco Santander Brasil S.A.',
+            compe: '033',
+            ambiente: 'OPEN_FINANCE_LIVE',
+            tokenAcesso: tokenResp.access_token,
+            agenciaMascarada: creds.agencia ? `${creds.agencia.substring(0, 2)}**` : '****',
+          },
+        };
+      } catch (err: unknown) {
+        // Fallback defensivo ou erro explicativo
+        console.warn('[SantanderBankConnector] Erro ao autenticar no modo real, verificando fallback:', err);
+        throw new Error(
+          `Falha na autenticação com a API Real do Santander: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
+    // Modo Mock / Sandbox
     const consentId = `santander_consent_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const expiraEm = new Date();
     expiraEm.setDate(expiraEm.getDate() + 90); // 90 dias padrão Banco Central / Open Finance
@@ -143,7 +195,22 @@ export class SantanderBankConnectorProvider implements IBankConnectorProvider {
   /**
    * Lista as contas e cartões Santander vinculados ao consentimento
    */
-  async listAccounts(_consentimentoId: string): Promise<BankAccountRaw[]> {
+  async listAccounts(consentimentoId: string): Promise<BankAccountRaw[]> {
+    if (this.modoOperacao === 'real') {
+      try {
+        const contasReais = await this.apiClient.fetchAccounts(consentimentoId);
+        if (contasReais && contasReais.length > 0) {
+          return contasReais;
+        }
+      } catch (err: unknown) {
+        console.warn(`[SantanderBankConnector] Falha na consulta de contas reais Open Finance:`, err);
+        throw new Error(
+          `Não foi possível obter contas reais do Santander: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
+    // Retorno do Modo Mock para testes e demonstrações
     return [
       {
         idExterno: 'santander_cc_2041_88765',
@@ -172,6 +239,33 @@ export class SantanderBankConnectorProvider implements IBankConnectorProvider {
     dataInicio: string;
     dataFim: string;
   }): Promise<BankTransactionRaw[]> {
+    if (this.modoOperacao === 'real') {
+      try {
+        const transacoesReais = await this.apiClient.fetchTransactions({
+          consentimentoId: params.consentimentoId,
+          contaIdExterno: params.contaIdExterno,
+          dataInicio: params.dataInicio,
+          dataFim: params.dataFim,
+        });
+
+        // Enriquecer com classificação POF e regra anti-dupla contagem
+        return transacoesReais.map((tx) => {
+          const classif = SantanderBankConnectorProvider.classificarTransacaoSantander(tx.descricao);
+          return {
+            ...tx,
+            natureza: classif.natureza,
+            isPagamentoFatura: classif.isPagamentoFatura || tx.isPagamentoFatura,
+            categoriaSugerida: tx.categoriaSugerida || classif.categoriaSugerida,
+          };
+        });
+      } catch (err: unknown) {
+        console.warn(`[SantanderBankConnector] Falha ao consultar transações reais Open Finance:`, err);
+        throw new Error(
+          `Não foi possível obter extrato real do Santander: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
     const dt = params.dataInicio;
     const isCartao = params.contaIdExterno.includes('card');
 
@@ -249,6 +343,35 @@ export class SantanderBankConnectorProvider implements IBankConnectorProvider {
     cartaoIdExterno: string;
     competencia?: string;
   }): Promise<BankInvoiceRaw[]> {
+    if (this.modoOperacao === 'real') {
+      try {
+        const faturasReais = await this.apiClient.fetchCreditCardInvoices({
+          consentimentoId: params.consentimentoId,
+          cartaoIdExterno: params.cartaoIdExterno,
+          competencia: params.competencia,
+        });
+
+        // Enriquecer itens com classificação POF e regra anti-dupla contagem
+        return faturasReais.map((fat) => ({
+          ...fat,
+          lancamentos: fat.lancamentos.map((l) => {
+            const classif = SantanderBankConnectorProvider.classificarTransacaoSantander(l.descricao);
+            return {
+              ...l,
+              natureza: classif.natureza,
+              isPagamentoFatura: classif.isPagamentoFatura,
+              categoriaSugerida: l.categoriaSugerida || classif.categoriaSugerida,
+            };
+          }),
+        }));
+      } catch (err: unknown) {
+        console.warn(`[SantanderBankConnector] Falha ao consultar faturas reais Open Finance:`, err);
+        throw new Error(
+          `Não foi possível obter faturas reais do cartão Santander: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
     const comp = params.competencia || '2026-10';
 
     const lancamentosSantander: Array<{ id: string; desc: string; valor: number; dia: string }> = [
@@ -291,7 +414,14 @@ export class SantanderBankConnectorProvider implements IBankConnectorProvider {
   /**
    * Revoga consentimento de acesso no Santander
    */
-  async revokeConsent(_consentimentoId: string): Promise<boolean> {
+  async revokeConsent(consentimentoId: string): Promise<boolean> {
+    if (this.modoOperacao === 'real') {
+      try {
+        await this.apiClient.revokeConsent(consentimentoId);
+      } catch (err) {
+        console.warn(`[SantanderBankConnector] Aviso ao revogar consentimento real:`, err);
+      }
+    }
     return true;
   }
 }

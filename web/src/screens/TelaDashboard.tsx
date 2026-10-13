@@ -26,7 +26,7 @@ interface TelaDashboardProps {
   semaforo: SemaforoResponse;
   cronograma: CronogramaVencimentosResponse;
   totalGastoMes: number;
-  onNavigateTab: (tab: 'dashboard' | 'semaforo' | 'compromissos' | 'fases') => void;
+  onNavigateTab: (tab: 'dashboard' | 'lancamentos' | 'semaforo' | 'compromissos' | 'cadastros' | 'fases') => void;
   onOpenNovaTransacao: () => void;
 }
 
@@ -258,15 +258,40 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
         </div>
       </div>
 
-      {/* Botão de Ação Rápida */}
-      <button
-        type="button"
-        className="btn-primary"
-        onClick={onOpenNovaTransacao}
-        style={{ marginTop: '8px', width: '100%' }}
-      >
-        <Sparkles size={18} /> Registrar Despesa / Pagamento
-      </button>
+      {/* Botões de Ação Rápida */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={onOpenNovaTransacao}
+          style={{ width: '100%' }}
+        >
+          <Sparkles size={18} /> Registrar Despesa / Pagamento
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onNavigateTab('lancamentos')}
+          style={{
+            width: '100%',
+            background: 'rgba(30, 41, 59, 0.7)',
+            border: '1px solid var(--border-subtle)',
+            color: 'var(--brand-primary)',
+            borderRadius: 'var(--radius-sm)',
+            minHeight: '44px',
+            fontSize: '0.9rem',
+            fontWeight: 700,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            transition: 'background 0.2s ease',
+          }}
+        >
+          <Receipt size={18} /> Ver Todos os Lançamentos (Extrato)
+        </button>
+      </div>
     </div>
   );
 };

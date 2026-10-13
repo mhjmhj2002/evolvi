@@ -61,7 +61,7 @@ JWT_EXPIRES_IN=7d
 CORS_ORIGIN=http://localhost:5173
 ```
 
-> **Atenção:** As variáveis de ambiente são estritamente validadas via Zod na inicialização da aplicação ([`src/config/env.ts`](file:///home/mhj/git/evolvi/src/config/env.ts)). O servidor encerra a inicialização se alguma variável obrigatória estiver ausente ou inválida.
+> **Atenção:** As variáveis de ambiente são estritamente validadas via Zod na inicialização da aplicação ([`src/config/env.ts`](../src/config/env.ts)). O servidor encerra a inicialização se alguma variável obrigatória estiver ausente ou inválida.
 
 ---
 

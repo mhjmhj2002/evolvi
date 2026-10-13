@@ -882,6 +882,28 @@ body::before {
   margin-left: auto;
 }
 
+.top-bar-user-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.top-bar-user-info .user-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  max-width: 140px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 480px) {
+  .top-bar-user-info .user-name {
+    display: none;
+  }
+}
+
 .user-role-badge {
   display: flex;
   align-items: center;

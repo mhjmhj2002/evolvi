@@ -26,6 +26,19 @@ export async function buildApp() {
     },
   });
 
+  // Parser flexível para application/json: permite corpo vazio sem disparar FST_ERR_CTP_EMPTY_JSON_BODY (ex: DELETE/GET)
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
+    if (!body || (typeof body === 'string' && body.trim() === '')) {
+      done(null, undefined);
+      return;
+    }
+    try {
+      done(null, JSON.parse(body as string));
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  });
+
   // Healthcheck
   app.get('/health', async () => {
     return {

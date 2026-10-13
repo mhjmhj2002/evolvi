@@ -51,6 +51,8 @@ Copie o arquivo de variáveis de ambiente:
 cp .env.example .env
 ```
 
+> **Open Finance (Mock vs Real):** Por padrão, o sistema opera em modo de simulação (`OPEN_FINANCE_MODE=mock`), garantindo execução dos testes sem dependência de serviços externos. Para conectar às APIs de produção/agregador, altere para `OPEN_FINANCE_MODE=real` e preencha as credenciais `OPEN_FINANCE_CLIENT_ID`, `OPEN_FINANCE_CLIENT_SECRET` e `OPEN_FINANCE_API_URL`.
+
 ### 3. Iniciar o Banco de Dados Local
 Suba o PostgreSQL via Docker Compose:
 ```bash
@@ -89,19 +91,19 @@ curl http://localhost:3000/health
 Toda a documentação técnica, arquitetura e guias operacionais estão disponíveis nos links abaixo:
 
 ### Guias Operacionais (`/docs`):
-- [**Configuração de Ambiente Local**](file:///home/mhj/git/evolvi/docs/CONFIGURACAO_AMBIENTE.md) — Passo a passo detalhado de setup e pré-requisitos.
-- [**Deploy em Ambiente de Desenvolvimento**](file:///home/mhj/git/evolvi/docs/DEPLOY_DEV.md) — Estratégias de deploy com Docker Compose, PM2, smoke tests e rollback.
+- [**Configuração de Ambiente Local**](docs/CONFIGURACAO_AMBIENTE.md) — Passo a passo detalhado de setup e pré-requisitos.
+- [**Deploy em Ambiente de Desenvolvimento**](docs/DEPLOY_DEV.md) — Estratégias de deploy com Docker Compose, PM2, smoke tests e rollback.
 
 ### Especificações Canônicas (`/.local/documentacao`):
-- [**01 — Arquitetura de Software e Tecnologias**](file:///home/mhj/git/evolvi/.local/documentacao/01_ARQUITETURA_E_TECNOLOGIAS.md)
-- [**02 — Modelagem do Banco PostgreSQL (DDL & ER)**](file:///home/mhj/git/evolvi/.local/documentacao/02_MODELAGEM_BANCO_POSTGRES.md)
-- [**03 — Especificação da Fase 1: Zero a Zero**](file:///home/mhj/git/evolvi/.local/documentacao/03_FASE_1_ZERO_A_ZERO.md)
-- [**05 — Design Responsivo, Mobile-First e UI/UX**](file:///home/mhj/git/evolvi/.local/documentacao/05_DESIGN_RESPONSIVO_E_UI_UX.md)
-- [**06 — Endpoints da API REST e Regras de Negócio**](file:///home/mhj/git/evolvi/.local/documentacao/06_API_ENDPOINTS_E_REGRAS.md)
-- [**Quadro de Andamento das Demandas**](file:///home/mhj/git/evolvi/.local/documentacao/ANDAMENTO_DEMANDAS.md)
+- [**01 — Arquitetura de Software e Tecnologias**](.local/documentacao/01_ARQUITETURA_E_TECNOLOGIAS.md)
+- [**02 — Modelagem do Banco PostgreSQL (DDL & ER)**](.local/documentacao/02_MODELAGEM_BANCO_POSTGRES.md)
+- [**03 — Especificação da Fase 1: Zero a Zero**](.local/documentacao/03_FASE_1_ZERO_A_ZERO.md)
+- [**05 — Design Responsivo, Mobile-First e UI/UX**](.local/documentacao/05_DESIGN_RESPONSIVO_E_UI_UX.md)
+- [**06 — Endpoints da API REST e Regras de Negócio**](.local/documentacao/06_API_ENDPOINTS_E_REGRAS.md)
+- [**Quadro de Andamento das Demandas**](.local/documentacao/ANDAMENTO_DEMANDAS.md)
 
 ---
 
 ## 📄 Licença
 
-Este projeto está sob a licença [Apache 2.0](file:///home/mhj/git/evolvi/LICENSE).
+Este projeto está sob a licença [Apache 2.0](LICENSE).

@@ -6,8 +6,8 @@ Este diretório contém os scripts de automação para subir todo o ecossistema 
 
 ## 📁 Arquivos
 
-- **[`subir_ambiente.sh`](file:///home/mhj/git/evolvi/docs/automacao/subir_ambiente.sh)**: Script principal Bash executável com permissão `+x`.
-- **[`Subir_Ambiente.desktop`](file:///home/mhj/git/evolvi/docs/automacao/Subir_Ambiente.desktop)**: Atalho para desktop/gerenciador de arquivos Linux (GNOME Files/Nautilus, Dolphin, etc.) configurado com `Terminal=true`.
+- **[`subir_ambiente.sh`](subir_ambiente.sh)**: Script principal Bash executável com permissão `+x`.
+- **[`Subir_Ambiente.desktop`](Subir_Ambiente.desktop)**: Atalho para desktop/gerenciador de arquivos Linux (GNOME Files/Nautilus, Dolphin, etc.) configurado com `Terminal=true`.
 - **`logs/`**: Diretório onde são salvos os registros de cada inicialização no padrão de nomenclatura `yyyy-mm-dd-hh-mm-ss.txt`.
 
 ---
@@ -26,9 +26,9 @@ Este diretório contém os scripts de automação para subir todo o ecossistema 
    - Valida variáveis obrigatórias (`DATABASE_URL`, `JWT_SECRET`).
    - Valida se `JWT_SECRET` possui ao menos 16 caracteres (regra de segurança do Zod).
 
-4. **Verificação de Serviços Já em Execução:**
+4. **Verificação de Serviços Já em Execução (Rebuild & Restart):**
    - Testa se as portas do backend (`PORT` ou padrão `3333`) e do frontend (`5173`) já estão ativas.
-   - Se os serviços já estiverem rodando e respondendo ao `/health`, avisa o usuário e exibe as URLs de acesso sem duplicar processos.
+   - Caso estejam em execução, encerra os processos em andamento, executa o rebuild das aplicações (`prisma:generate`, `build` e `build:web`) e sobe novamente os serviços atualizados.
 
 5. **Subida do Banco PostgreSQL:**
    - Verifica se o container `evolvi_postgres` está ativo via Docker Compose.
@@ -46,7 +46,7 @@ Este diretório contém os scripts de automação para subir todo o ecossistema 
 ## 🖱️ Como Usar em 2 Cliques
 
 ### Opção 1: Pelo gerenciador de arquivos (Nautilus / Dolphin)
-1. Dê um duplo clique em [`subir_ambiente.sh`](file:///home/mhj/git/evolvi/docs/automacao/subir_ambiente.sh) ou [`Subir_Ambiente.desktop`](file:///home/mhj/git/evolvi/docs/automacao/Subir_Ambiente.desktop).
+1. Dê um duplo clique em [`subir_ambiente.sh`](subir_ambiente.sh) ou [`Subir_Ambiente.desktop`](Subir_Ambiente.desktop).
 2. Se o sistema perguntar, selecione **"Executar no Terminal"** (ou **"Run in Terminal"**).
 
 ### Opção 2: Pela linha de comando

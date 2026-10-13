@@ -68,9 +68,12 @@ export const TopBar: React.FC<TopBarProps> = ({ faseAtiva, onSelectFase }) => {
 
       {usuario && (
         <div className="top-bar-user-area">
-          <div className="user-role-badge" title={`Autenticado como ${usuario.email} (${role})`}>
-            {getRoleIcon()}
-            <span className="role-label">{role}</span>
+          <div className="top-bar-user-info" title={`Logado como ${usuario.nome} (${usuario.email})`}>
+            <span className="user-name">{usuario.nome}</span>
+            <div className="user-role-badge" title={`Perfil: ${role}`}>
+              {getRoleIcon()}
+              <span className="role-label">{role}</span>
+            </div>
           </div>
 
           <button

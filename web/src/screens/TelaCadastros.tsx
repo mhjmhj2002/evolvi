@@ -52,8 +52,10 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
   const [mensagemSucesso, setMensagemSucesso] = useState<string | null>(null);
   const [mensagemErro, setMensagemErro] = useState<string | null>(null);
 
-  // Estado de Configurações da Janela Temporal (TASK-27)
+  // Estado de Configurações da Janela Temporal e Intervalo de Sincronização (TASK-27 e TASK-28)
   const [mesesInput, setMesesInput] = useState<number>(6);
+  const [intervaloSyncInput, setIntervaloSyncInput] = useState<number>(6);
+  const [intervaloSyncConfigurado, setIntervaloSyncConfigurado] = useState<number>(6);
   const [salvandoConfig, setSalvandoConfig] = useState(false);
   const [configSucesso, setConfigSucesso] = useState<string | null>(null);
   const [configErro, setConfigErro] = useState<string | null>(null);
@@ -66,9 +68,15 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
         setMesesConfigurados(cfg.mesesJanelaTemporal);
         setMesesInput(cfg.mesesJanelaTemporal);
       }
+      if (cfg && cfg.intervaloSincronizacaoHoras) {
+        setIntervaloSyncConfigurado(cfg.intervaloSincronizacaoHoras);
+        setIntervaloSyncInput(cfg.intervaloSincronizacaoHoras);
+      }
     } catch {
       setMesesConfigurados(6);
       setMesesInput(6);
+      setIntervaloSyncConfigurado(6);
+      setIntervaloSyncInput(6);
     }
   };
 
@@ -101,13 +109,13 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
 
   useEffect(() => {
     carregarConfiguracao();
-  }, []);
+  }, [perfil.id]);
 
   useEffect(() => {
     if (subAba === 'renda') {
       carregarMedia6M();
     }
-  }, [subAba]);
+  }, [subAba, perfil.id, perfil.rendaBaseMensal]);
 
   // Cálculo reativo da Renda Real Total Resultante: Média 6M + Complemento
   const compNum = parseFloat(complemento.replace(',', '.')) || 0;
@@ -197,7 +205,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
           onClick={() => setSubAba('configuracoes')}
         >
           <Settings2 size={16} />
-          <span>Janela Temporal ({mesesConfigurados}M)</span>
+          <span>Parâmetros ({mesesConfigurados}M / {intervaloSyncConfigurado}h)</span>
         </button>
       </div>
 
@@ -537,7 +545,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
         />
       )}
 
-      {/* 7. Conteúdo da Sub-aba: Janela Temporal Parametrizável (TASK-27) */}
+      {/* 7. Conteúdo da Sub-aba: Parâmetros do Sistema (TASK-27 & TASK-28) */}
       {subAba === 'configuracoes' && (
         <div className="login-card" style={{ maxWidth: '100%', margin: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -546,10 +554,10 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
             </div>
             <div>
               <h2 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0 }}>
-                Janela Temporal de Análise e Integração
+                Parâmetros do Sistema & Sincronização
               </h2>
               <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
-                Configuração transversal dos horizontes de meses para diagnósticos, histórico, previsões e Open Finance
+                Configuração transversal da Janela Temporal e do Agendamento (Schedule) Open Finance
               </p>
             </div>
           </div>
@@ -570,13 +578,10 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
           >
             <Info size={18} style={{ color: 'var(--brand-primary)', flexShrink: 0, marginTop: '2px' }} />
             <div>
-              Este parâmetro define a profundidade histórica dos cálculos em todo o sistema Evolvi:
+              Estes parâmetros determinam a periodicidade e a profundidade de dados em todo o Evolvi:
               <ul style={{ margin: '6px 0 0 16px', padding: 0 }}>
-                <li><strong>Diagnóstico Baseline & Semáforo:</strong> média móvel ponderada das despesas nos últimos {mesesInput} meses fechados.</li>
-                <li><strong>Histórico de Consumo (M-004):</strong> horizonte fechado de meses para consolidação analítica e tickets médios.</li>
-                <li><strong>Previsão e Projeção (M-005):</strong> quantidade de competências futuras simuladas no orçamento.</li>
-                <li><strong>Média de Entradas:</strong> média de receitas operacionais líquidas conciliadas.</li>
-                <li><strong>Conectores Open Finance:</strong> período retroativo padrão de carga e sincronização de movimentações financeiras.</li>
+                <li><strong>Janela Temporal:</strong> profundidade de {mesesInput} meses para média móvel do Baseline, Semáforo, histórico e projeções orçamentárias.</li>
+                <li><strong>Schedule Open Finance:</strong> frequência automatizada a cada {intervaloSyncInput} horas para busca de transações e saldos nas instituições conectadas.</li>
               </ul>
             </div>
           </div>
@@ -606,28 +611,40 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
                 return;
               }
 
+              if (intervaloSyncInput < 1 || intervaloSyncInput > 48) {
+                setConfigErro('O intervalo de sincronização Open Finance deve estar entre 1 e 48 horas.');
+                return;
+              }
+
               try {
                 setSalvandoConfig(true);
-                const res = await apiService.atualizarConfiguracoes(mesesInput);
+                const res = await apiService.atualizarConfiguracoes({
+                  mesesJanelaTemporal: mesesInput,
+                  intervaloSincronizacaoHoras: intervaloSyncInput,
+                });
                 setMesesConfigurados(res.mesesJanelaTemporal);
+                if (res.intervaloSincronizacaoHoras) {
+                  setIntervaloSyncConfigurado(res.intervaloSincronizacaoHoras);
+                }
                 setConfigSucesso(
-                  `Janela temporal configurada para ${res.mesesJanelaTemporal} meses com sucesso! Diagnósticos, previsões e sincronizações bancárias foram recalibrados.`
+                  `Configurações salvas com sucesso! Janela: ${res.mesesJanelaTemporal}M | Sincronização: a cada ${res.intervaloSincronizacaoHoras ?? intervaloSyncInput}h.`
                 );
                 // Atualizar também a média para refletir a nova janela
                 await carregarMedia6M();
               } catch (err: unknown) {
-                const msg = err instanceof Error ? err.message : 'Falha ao salvar configuração.';
+                const msg = err instanceof Error ? err.message : 'Falha ao salvar configurações.';
                 setConfigErro(msg);
               } finally {
                 setSalvandoConfig(false);
               }
             }}
-            style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}
+            style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}
           >
+            {/* 1. Janela Temporal Parametrizável */}
             <div className="form-group">
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                 <label className="form-label" style={{ margin: 0, fontWeight: 700 }}>
-                  Quantidade de Meses da Janela: <span style={{ color: 'var(--brand-primary)', fontSize: '1.1rem' }}>{mesesInput} meses</span>
+                  1. Quantidade de Meses da Janela: <span style={{ color: 'var(--brand-primary)', fontSize: '1.1rem' }}>{mesesInput} meses</span>
                 </label>
                 <span
                   style={{
@@ -643,7 +660,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
                 </span>
               </div>
 
-              {/* Slider ergonômico */}
+              {/* Slider ergonômico da janela */}
               <input
                 type="range"
                 min="3"
@@ -659,7 +676,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
                 }}
               />
 
-              {/* Botões rápidos de seleção ergonômica */}
+              {/* Botões rápidos da janela */}
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                 {[3, 6, 9, 12].map((opcao) => (
                   <button
@@ -691,6 +708,77 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
               </div>
             </div>
 
+            {/* 2. Intervalo de Sincronização Open Finance (TASK-28) */}
+            <div className="form-group" style={{ paddingTop: '16px', borderTop: '1px solid var(--border-subtle)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <label className="form-label" style={{ margin: 0, fontWeight: 700 }}>
+                  2. Periodicidade do Scheduler Open Finance: <span style={{ color: 'var(--brand-primary)', fontSize: '1.1rem' }}>A cada {intervaloSyncInput} horas</span>
+                </label>
+                <span
+                  style={{
+                    fontSize: '0.75rem',
+                    color: 'var(--text-muted)',
+                    background: 'var(--bg-elevated)',
+                    padding: '2px 8px',
+                    borderRadius: '10px',
+                    border: '1px solid var(--border-subtle)',
+                  }}
+                >
+                  Limites: 1 a 48 horas (Padrão: 6h)
+                </span>
+              </div>
+
+              {/* Slider ergonômico do intervalo */}
+              <input
+                type="range"
+                min="1"
+                max="48"
+                step="1"
+                value={intervaloSyncInput}
+                onChange={(e) => setIntervaloSyncInput(parseInt(e.target.value, 10))}
+                style={{
+                  width: '100%',
+                  cursor: 'pointer',
+                  accentColor: 'var(--brand-primary)',
+                  marginBottom: '10px',
+                }}
+              />
+
+              {/* Botões rápidos do intervalo */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {[1, 3, 6, 12, 24].map((opcao) => (
+                  <button
+                    key={opcao}
+                    type="button"
+                    onClick={() => setIntervaloSyncInput(opcao)}
+                    style={{
+                      flex: 1,
+                      padding: '8px 12px',
+                      borderRadius: 'var(--radius-sm)',
+                      border: intervaloSyncInput === opcao ? '2px solid var(--brand-primary)' : '1px solid var(--border-subtle)',
+                      background: intervaloSyncInput === opcao ? 'rgba(56, 189, 248, 0.15)' : 'var(--bg-elevated)',
+                      color: intervaloSyncInput === opcao ? 'var(--brand-primary)' : 'var(--text-secondary)',
+                      fontWeight: intervaloSyncInput === opcao ? 700 : 500,
+                      cursor: 'pointer',
+                      fontSize: '0.85rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '2px',
+                    }}
+                  >
+                    <span>{opcao}h</span>
+                    <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                      {opcao === 1 ? 'Horária' : opcao === 6 ? 'Padrão (6h)' : opcao === 24 ? 'Diária' : `${opcao} horas`}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <span className="role-helper-text" style={{ marginTop: '8px' }}>
+                O agendador verificará suas conexões bancárias ativas e coletará extratos e faturas brutos com tolerância a falhas e idempotência.
+              </span>
+            </div>
+
             <button
               type="submit"
               disabled={salvandoConfig}
@@ -708,12 +796,12 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
               {salvandoConfig ? (
                 <>
                   <Loader2 size={18} className="spinner" />
-                  <span>Salvando Janela...</span>
+                  <span>Salvando Parâmetros...</span>
                 </>
               ) : (
                 <>
                   <Save size={18} />
-                  <span>Aplicar Janela de {mesesInput} Meses</span>
+                  <span>Salvar Parâmetros do Sistema</span>
                 </>
               )}
             </button>

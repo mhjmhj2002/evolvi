@@ -217,7 +217,12 @@ NEWFILEUID:NONE
         headers: { authorization: `Bearer ${tokenUser}` },
         payload: {
           instituicaoCodigo: 'CON-HUB',
-          credentials: { clientId: 'teste-hub-client' },
+          consentimentoConfirmado: true,
+          escopo: ['accounts.read', 'transactions.read'],
+          credentials: {
+            clientId: 'teste-hub-client',
+            certificadoThumbprint: 'a1b2c3d4e5f6',
+          },
         },
       });
 
@@ -313,16 +318,42 @@ NEWFILEUID:NONE
       expect(bodyReimport.resultado.duplicadasIgnoradas).toBe(2);
     });
 
-    it('DELETE /api/conectores/conexoes/:id deve revogar a conexão bancária com segurança', async () => {
+    it('DELETE /api/conectores/conexoes/:id deve revogar a conexão bancária com segurança mesmo com content-type json sem body', async () => {
       const res = await app.inject({
         method: 'DELETE',
         url: `/api/conectores/conexoes/${conexaoCriadaId}`,
-        headers: { authorization: `Bearer ${tokenUser}` },
+        headers: {
+          authorization: `Bearer ${tokenUser}`,
+          'content-type': 'application/json',
+        },
       });
 
       expect(res.statusCode).toBe(200);
       const body = JSON.parse(res.body);
       expect(body.conexao.status).toBe('REVOGADO');
+    });
+
+    it('DELETE /api/conectores/conexoes/:id?purge=true deve excluir fisicamente a conexão', async () => {
+      const res = await app.inject({
+        method: 'DELETE',
+        url: `/api/conectores/conexoes/${conexaoCriadaId}?purge=true`,
+        headers: {
+          authorization: `Bearer ${tokenUser}`,
+          'content-type': 'application/json',
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.message).toContain('excluída');
+
+      // Tentativa seguinte deve retornar 404
+      const res404 = await app.inject({
+        method: 'DELETE',
+        url: `/api/conectores/conexoes/${conexaoCriadaId}`,
+        headers: { authorization: `Bearer ${tokenUser}` },
+      });
+      expect(res404.statusCode).toBe(404);
     });
   });
 
@@ -379,6 +410,8 @@ NEWFILEUID:NONE
         headers: { authorization: `Bearer ${tokenUser}` },
         payload: {
           instituicaoCodigo: '341',
+          consentimentoConfirmado: true,
+          escopo: ['accounts.read', 'transactions.read', 'credit-cards.read'],
           credentials: {
             agencia: '0910',
             conta: '54321-0',
@@ -499,6 +532,8 @@ NEWFILEUID:NONE
         headers: { authorization: `Bearer ${tokenUser}` },
         payload: {
           instituicaoCodigo: '033',
+          consentimentoConfirmado: true,
+          escopo: ['accounts.read', 'transactions.read', 'credit-cards.read'],
           credentials: {
             agencia: '2041',
             conta: '88765-4',
@@ -624,6 +659,8 @@ NEWFILEUID:NONE
         headers: { authorization: `Bearer ${tokenUser}` },
         payload: {
           instituicaoCodigo: '077',
+          consentimentoConfirmado: true,
+          escopo: ['accounts.read', 'transactions.read', 'credit-cards.read'],
           credentials: {
             contaCorrente: '1234567-8',
             chavePix: '123.456.789-00',
@@ -690,4 +727,258 @@ NEWFILEUID:NONE
       expect(movFatura?.natureza).toBe('TRANSFERENCIA_PROPRIA');
     });
   });
+
+  describe('6. Conector Bancário Nubank (TASK-19)', () => {
+    let conexaoNubankId: string;
+
+    it('deve obter o conector especializado Nubank via COMPE 260 e alias CON-NUBANK', () => {
+      const providerPorCompe = BankConnectorFactory.getProvider('260');
+      expect(providerPorCompe).toBeDefined();
+      expect(providerPorCompe.nome).toBe('Nubank');
+      expect(providerPorCompe.compe).toBe('260');
+
+      const providerPorAlias = BankConnectorFactory.getProvider('CON-NUBANK');
+      expect(providerPorAlias).toBeDefined();
+      expect(providerPorAlias.codigo).toBe('260');
+    });
+
+    it('deve classificar transações e tags do Nubank mapeando para as categorias POF corretas', () => {
+      const provider = BankConnectorFactory.getProvider('260') as any;
+
+      // 1. Anti-Dupla Contagem
+      const fatura = provider.constructor.classificarTransacaoNubank('PAGAMENTO DA FATURA NUBANK');
+      expect(fatura.natureza).toBe('TRANSFERENCIA_PROPRIA');
+      expect(fatura.isPagamentoFatura).toBe(true);
+
+      const faturaPorTag = provider.constructor.classificarTransacaoNubank('PAGAMENTO RECEBIDO', ['pagamento_fatura']);
+      expect(faturaPorTag.natureza).toBe('TRANSFERENCIA_PROPRIA');
+      expect(faturaPorTag.isPagamentoFatura).toBe(true);
+
+      // 2. Estorno
+      const estorno = provider.constructor.classificarTransacaoNubank('REEMBOLSO ESTORNO COMPRA DUPLICADA');
+      expect(estorno.natureza).toBe('RECEITA');
+
+      // 3. Proventos e Salário
+      const proventos = provider.constructor.classificarTransacaoNubank('TRANSFERENCIA RECEBIDA - PROVENTOS');
+      expect(proventos.natureza).toBe('RECEITA');
+      expect(proventos.categoriaSugerida).toBe('Rendimento do Trabalho');
+
+      const rendimento = provider.constructor.classificarTransacaoNubank('RENDIMENTO DE CONTA RDB NUBANK');
+      expect(rendimento.natureza).toBe('RECEITA');
+      expect(rendimento.categoriaSugerida).toBe('Rendimento do Trabalho');
+
+      // 4. Alimentação e Supermercados
+      const mercado = provider.constructor.classificarTransacaoNubank('SUPERMERCADO ATACADAO', ['supermercado']);
+      expect(mercado.natureza).toBe('DESPESA');
+      expect(mercado.categoriaSugerida).toBe('Alimentação');
+
+      const ifood = provider.constructor.classificarTransacaoNubank('IFOOD *RESTAURANTE');
+      expect(ifood.natureza).toBe('DESPESA');
+      expect(ifood.categoriaSugerida).toBe('Alimentação');
+
+      // 5. Transporte
+      const uber = provider.constructor.classificarTransacaoNubank('UBER *TRIP BRASIL', ['transporte']);
+      expect(uber.natureza).toBe('DESPESA');
+      expect(uber.categoriaSugerida).toBe('Transporte');
+
+      // 6. Saúde
+      const farmacia = provider.constructor.classificarTransacaoNubank('DROGA RAIA FARMACIA');
+      expect(farmacia.natureza).toBe('DESPESA');
+      expect(farmacia.categoriaSugerida).toBe('Saúde e Cuidados Pessoais');
+
+      // 7. IOF e Serviços Financeiros
+      const iof = provider.constructor.classificarTransacaoNubank('IOF COMPRA INTERNACIONAL');
+      expect(iof.natureza).toBe('DESPESA');
+      expect(iof.categoriaSugerida).toBe('Serviços Bancários e Financeiros');
+    });
+
+    it('POST /api/conectores/conexoes deve conectar o Nubank e persistir consentimento regulado', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/conectores/conexoes',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          instituicaoCodigo: '260',
+          consentimentoConfirmado: true,
+          escopo: ['accounts.read', 'transactions.read', 'credit-cards.read'],
+          credentials: {
+            cpf: '123.456.789-00',
+            senhaApp: 'senhaApp123',
+          },
+        },
+      });
+
+      expect(res.statusCode).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.conexao.instituicaoCodigo).toBe('260');
+      expect(body.conexao.instituicaoNome).toBe('Nubank');
+      expect(body.conexao.compe).toBe('260');
+      expect(body.conexao.status).toBe('CONECTADO');
+      conexaoNubankId = body.conexao.id;
+    });
+
+    it('POST /api/conectores/conexoes/:id/sincronizar deve sincronizar NuConta e Cartão Roxinho com faturas e deduplicação', async () => {
+      const resSync = await app.inject({
+        method: 'POST',
+        url: `/api/conectores/conexoes/${conexaoNubankId}/sincronizar`,
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          dataInicio: '2026-10-01',
+          dataFim: '2026-10-15',
+        },
+      });
+
+      expect(resSync.statusCode).toBe(200);
+      const bodySync = JSON.parse(resSync.body);
+      expect(bodySync.conexaoId).toBe(conexaoNubankId);
+      expect(bodySync.instituicaoNome).toBe('Nubank');
+      expect(bodySync.contasProcessadas.length).toBe(2);
+      expect(bodySync.resumo.novosMovimentosInseridos).toBeGreaterThan(0);
+
+      // Validar contas criadas no banco de dados para o Nubank (NuConta e Roxinho)
+      const contasNubank = await prisma.conta.findMany({
+        where: { usuarioId, nome: { contains: 'Nu' } },
+      });
+      expect(contasNubank.length).toBeGreaterThanOrEqual(1);
+
+      // Re-sincronizar e validar deduplicação 100% garantida
+      const resReSync = await app.inject({
+        method: 'POST',
+        url: `/api/conectores/conexoes/${conexaoNubankId}/sincronizar`,
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          dataInicio: '2026-10-01',
+          dataFim: '2026-10-15',
+        },
+      });
+
+      const bodyReSync = JSON.parse(resReSync.body);
+      expect(bodyReSync.resumo.novosMovimentosInseridos).toBe(0);
+      expect(bodyReSync.resumo.movimentosIgnoradosDedupe).toBeGreaterThan(0);
+
+      // Validar que o pagamento de fatura Nubank foi gravado com TRANSFERENCIA_PROPRIA
+      const movFaturaNu = await prisma.movimento.findFirst({
+        where: {
+          usuarioId,
+          descricao: { contains: 'PAGAMENTO DA FATURA NUBANK' },
+        },
+      });
+      expect(movFaturaNu).toBeDefined();
+      expect(movFaturaNu?.natureza).toBe('TRANSFERENCIA_PROPRIA');
+    });
+  });
+
+  describe('6. Validações Críticas de Conexão e Consentimento Open Finance (BUG-02)', () => {
+    it('deve rejeitar conexão quando o consentimento formal não for confirmado', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/conectores/conexoes',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          instituicaoCodigo: '341',
+          consentimentoConfirmado: false,
+          escopo: ['accounts.read'],
+          credentials: {
+            agencia: '0910',
+            conta: '54321-0',
+          },
+        },
+      });
+
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.message).toContain('Parâmetros de conexão inválidos');
+      expect(JSON.stringify(body.issues)).toContain('consentimento regulado do Open Finance');
+    });
+
+    it('deve rejeitar conexão sem escopo de dados selecionado', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/conectores/conexoes',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          instituicaoCodigo: '341',
+          consentimentoConfirmado: true,
+          escopo: [],
+          credentials: {
+            agencia: '0910',
+            conta: '54321-0',
+          },
+        },
+      });
+
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.message).toContain('Parâmetros de conexão inválidos');
+      expect(JSON.stringify(body.issues)).toContain('ao menos um escopo de permissão');
+    });
+
+    it('deve bloquear conexão Itaú sem credenciais obrigatórias (agência e conta)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/conectores/conexoes',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          instituicaoCodigo: '341',
+          consentimentoConfirmado: true,
+          escopo: ['accounts.read', 'transactions.read'],
+          credentials: {},
+        },
+      });
+
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.message).toContain('Campo obrigatório de conexão não informado');
+    });
+
+    it('deve bloquear conexão Itaú quando a agência tiver formato inválido (diferente de 4 dígitos)', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/conectores/conexoes',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          instituicaoCodigo: '341',
+          consentimentoConfirmado: true,
+          escopo: ['accounts.read', 'transactions.read'],
+          credentials: {
+            agencia: '12',
+            conta: '54321-0',
+          },
+        },
+      });
+
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.message).toContain('Formato inválido');
+    });
+
+    it('deve persistir escopo e confirmação de consentimento auditável em parametrosExtras ao autorizar com sucesso', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/conectores/conexoes',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          instituicaoCodigo: '341',
+          consentimentoConfirmado: true,
+          escopo: ['accounts.read', 'transactions.read', 'credit-cards.read'],
+          credentials: {
+            agencia: '1234',
+            conta: '99887-6',
+          },
+        },
+      });
+
+      expect(res.statusCode).toBe(201);
+      const body = JSON.parse(res.body);
+      expect(body.conexao.status).toBe('CONECTADO');
+      expect(body.conexao.parametrosExtras).toBeDefined();
+
+      const extras = JSON.parse(body.conexao.parametrosExtras);
+      expect(extras.agencia).toBe('1234');
+      expect(extras.conta).toBe('99887-6');
+      expect(extras.escopo).toContain('accounts.read');
+      expect(extras.consentimentoConfirmadoEm).toBeDefined();
+    });
+  });
 });
+

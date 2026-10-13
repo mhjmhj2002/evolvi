@@ -34,7 +34,7 @@ export interface TopBarProps {
   onSelectFase?: (fase: FaseAtiva) => void;
 }
 
-export type NavTab = 'dashboard' | 'semaforo' | 'compromissos' | 'cadastros' | 'fases';
+export type NavTab = 'dashboard' | 'lancamentos' | 'semaforo' | 'compromissos' | 'cadastros' | 'fases';
 
 export interface BottomNavProps {
   activeTab: NavTab;

@@ -156,7 +156,7 @@ export class PrevisaoProjecaoService {
       where: { id: usuarioId },
       select: { rendaBaseMensal: true },
     });
-    const rendaBase = usuario ? Number(usuario.rendaBaseMensal) : 11000.0;
+    const rendaBase = usuario ? Number(usuario.rendaBaseMensal) : 0.0;
 
     const mesesProjecao =
       mesesProjecaoParam && mesesProjecaoParam >= 3 && mesesProjecaoParam <= 12
@@ -307,7 +307,7 @@ export class PrevisaoProjecaoService {
       where: { id: usuarioId },
       select: { rendaBaseMensal: true },
     });
-    const rendaBase = usuario ? Number(usuario.rendaBaseMensal) : 11000.0;
+    const rendaBase = usuario ? Number(usuario.rendaBaseMensal) : 0.0;
 
     // Buscar as 21 categorias consolidadas POF do sistema
     const categorias = await prisma.categoria.findMany({

@@ -26,10 +26,14 @@ export interface UsuarioPerfil {
 
 export interface ConfiguracaoUsuarioResponse {
   mesesJanelaTemporal: number;
+  intervaloSincronizacaoHoras?: number;
   limites: {
     minimo: number;
     maximo: number;
     padrao: number;
+    intervaloSyncMinimo?: number;
+    intervaloSyncMaximo?: number;
+    intervaloSyncPadrao?: number;
   };
   atualizadoEm?: string;
   message?: string;
@@ -292,6 +296,7 @@ export interface CategoriaTreeItem {
 export interface MovimentoItem {
   id: string;
   contaId: string;
+  contaDestinoId?: string | null;
   conta?: { id: string; nome: string; tipo: string };
   categoriaId?: string | null;
   categoria?: { id: string; nome: string; categoriaPaiId?: string | null } | null;
@@ -300,7 +305,7 @@ export interface MovimentoItem {
   descricao: string;
   valor: number;
   natureza: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
-  status: 'PENDENTE' | 'CONCILIADO' | 'CANCELADO';
+  status: 'PREVISTO' | 'PENDENTE' | 'CONCILIADO' | 'CANCELADO';
   chaveDedupe?: string;
   observacao?: string | null;
 }
@@ -315,6 +320,155 @@ export interface MovimentosResponse {
   };
   movimentos: MovimentoItem[];
 }
+
+export interface FiltroMovimentosParams {
+  competencia?: string;
+  dataInicio?: string;
+  dataFim?: string;
+  busca?: string;
+  contaId?: string;
+  categoriaId?: string;
+  natureza?: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
+  status?: 'PREVISTO' | 'CONCILIADO' | 'CANCELADO';
+}
+
+export const mockMovimentosLista: MovimentoItem[] = [
+  {
+    id: 'mov-1',
+    contaId: 'cta-cc',
+    conta: { id: 'cta-cc', nome: 'Conta Corrente Principal', tipo: 'CONTA_CORRENTE' },
+    categoriaId: 'cat-renda',
+    categoria: { id: 'cat-renda', nome: 'Salário & Renda Mensal' },
+    dataMovimento: '2026-10-05',
+    competencia: '2026-10',
+    descricao: 'Salário Mensal da Empresa',
+    valor: 5500.0,
+    natureza: 'RECEITA',
+    status: 'CONCILIADO',
+    observacao: 'Depósito via Pix folha de pagamento',
+  },
+  {
+    id: 'mov-2',
+    contaId: 'cta-cc',
+    conta: { id: 'cta-cc', nome: 'Conta Corrente Principal', tipo: 'CONTA_CORRENTE' },
+    categoriaId: 'cat-hab',
+    categoria: { id: 'cat-hab', nome: 'Habitação e Utilidades' },
+    dataMovimento: '2026-10-05',
+    competencia: '2026-10',
+    descricao: 'Aluguel do Imóvel',
+    valor: 1100.0,
+    natureza: 'DESPESA',
+    status: 'CONCILIADO',
+    observacao: 'Transferência Pix proprietário',
+  },
+  {
+    id: 'mov-3',
+    contaId: 'cta-card',
+    conta: { id: 'cta-card', nome: 'Cartão Nubank Platinum', tipo: 'CARTAO_CREDITO' },
+    categoriaId: 'cat-alim-dom',
+    categoria: { id: 'cat-alim-dom', nome: 'Alimentação no Domicílio' },
+    dataMovimento: '2026-10-08',
+    competencia: '2026-10',
+    descricao: 'Supermercado Pão de Açúcar',
+    valor: 485.6,
+    natureza: 'DESPESA',
+    status: 'CONCILIADO',
+    observacao: 'Compras semanais do mês',
+  },
+  {
+    id: 'mov-4',
+    contaId: 'cta-card',
+    conta: { id: 'cta-card', nome: 'Cartão Nubank Platinum', tipo: 'CARTAO_CREDITO' },
+    categoriaId: 'cat-transp',
+    categoria: { id: 'cat-transp', nome: 'Transporte Individual e Combustível' },
+    dataMovimento: '2026-10-10',
+    competencia: '2026-10',
+    descricao: 'Posto Ipiranga - Gasolina Aditivada',
+    valor: 260.0,
+    natureza: 'DESPESA',
+    status: 'CONCILIADO',
+  },
+  {
+    id: 'mov-5',
+    contaId: 'cta-cc',
+    conta: { id: 'cta-cc', nome: 'Conta Corrente Principal', tipo: 'CONTA_CORRENTE' },
+    categoriaId: 'cat-hab',
+    categoria: { id: 'cat-hab', nome: 'Habitação e Utilidades' },
+    dataMovimento: '2026-10-11',
+    competencia: '2026-10',
+    descricao: 'Conta de Energia Enel',
+    valor: 145.7,
+    natureza: 'DESPESA',
+    status: 'CONCILIADO',
+    observacao: 'Débito em conta corrente',
+  },
+  {
+    id: 'mov-6',
+    contaId: 'cta-card',
+    conta: { id: 'cta-card', nome: 'Cartão Nubank Platinum', tipo: 'CARTAO_CREDITO' },
+    categoriaId: 'cat-alim-fora',
+    categoria: { id: 'cat-alim-fora', nome: 'Alimentação Fora do Domicílio' },
+    dataMovimento: '2026-10-12',
+    competencia: '2026-10',
+    descricao: 'Restaurante & Almoço Família',
+    valor: 168.0,
+    natureza: 'DESPESA',
+    status: 'CONCILIADO',
+  },
+  {
+    id: 'mov-7',
+    contaId: 'cta-cc',
+    conta: { id: 'cta-cc', nome: 'Conta Corrente Principal', tipo: 'CONTA_CORRENTE' },
+    categoriaId: 'cat-saude',
+    categoria: { id: 'cat-saude', nome: 'Saúde e Cuidados Pessoais' },
+    dataMovimento: '2026-10-14',
+    competencia: '2026-10',
+    descricao: 'Farmácia Droga Raia Medicamentos',
+    valor: 112.5,
+    natureza: 'DESPESA',
+    status: 'CONCILIADO',
+  },
+  {
+    id: 'mov-8',
+    contaId: 'cta-cc',
+    conta: { id: 'cta-cc', nome: 'Conta Corrente Principal', tipo: 'CONTA_CORRENTE' },
+    contaDestinoId: 'cta-card',
+    dataMovimento: '2026-10-15',
+    competencia: '2026-10',
+    descricao: 'Pagamento Fatura Cartão de Crédito',
+    valor: 1250.0,
+    natureza: 'TRANSFERENCIA_PROPRIA',
+    status: 'CONCILIADO',
+    observacao: 'Liquidação de fatura sem dupla contagem',
+  },
+  {
+    id: 'mov-9',
+    contaId: 'cta-cc',
+    conta: { id: 'cta-cc', nome: 'Conta Corrente Principal', tipo: 'CONTA_CORRENTE' },
+    categoriaId: 'cat-renda',
+    categoria: { id: 'cat-renda', nome: 'Renda Extra & Freelance' },
+    dataMovimento: '2026-10-18',
+    competencia: '2026-10',
+    descricao: 'Consultoria Freelancer Projeto Web',
+    valor: 850.0,
+    natureza: 'RECEITA',
+    status: 'CONCILIADO',
+    observacao: 'Pix recebido de cliente',
+  },
+  {
+    id: 'mov-10',
+    contaId: 'cta-card',
+    conta: { id: 'cta-card', nome: 'Cartão Nubank Platinum', tipo: 'CARTAO_CREDITO' },
+    categoriaId: 'cat-educ',
+    categoria: { id: 'cat-educ', nome: 'Educação e Cursos' },
+    dataMovimento: '2026-10-20',
+    competencia: '2026-10',
+    descricao: 'Livros Técnicos e Assinatura Dev',
+    valor: 94.0,
+    natureza: 'DESPESA',
+    status: 'CONCILIADO',
+  },
+];
 
 // DADOS DE REFERÊNCIA / DEMONSTRAÇÃO (SANDBOX/MOCK)
 export const mockPerfil: UsuarioPerfil = {
@@ -602,10 +756,20 @@ export const mockContas: ContaItem[] = [
 
 async function apiFetch<T>(url: string, options?: RequestInit, fallback?: T): Promise<T> {
   try {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('evolvi_auth_token') : null;
+    const authHeaders: Record<string, string> = {};
+    if (token && !token.startsWith('mock-token-')) {
+      authHeaders['Authorization'] = `Bearer ${token}`;
+    }
+
+    const hasBody = options?.body !== undefined && options?.body !== null;
+    const defaultHeaders: Record<string, string> = hasBody ? { 'Content-Type': 'application/json' } : {};
+
     const res = await fetch(url, {
       ...options,
       headers: {
-        'Content-Type': 'application/json',
+        ...defaultHeaders,
+        ...authHeaders,
         ...(options?.headers || {}),
       },
       credentials: 'include',
@@ -613,7 +777,20 @@ async function apiFetch<T>(url: string, options?: RequestInit, fallback?: T): Pr
 
     if (!res.ok) {
       if (fallback !== undefined) return fallback;
-      throw new Error(`Falha na requisição [${res.status}]: ${res.statusText}`);
+      let mensagemErro = `Falha na requisição [${res.status}]: ${res.statusText}`;
+      try {
+        const errJson = await res.json();
+        if (errJson && typeof errJson === 'object') {
+          if (typeof errJson.message === 'string') {
+            mensagemErro = errJson.message;
+          } else if (typeof errJson.error === 'string') {
+            mensagemErro = errJson.error;
+          }
+        }
+      } catch {
+        // Fallback para statusText se resposta não for JSON
+      }
+      throw new Error(mensagemErro);
     }
 
     return (await res.json()) as T;
@@ -903,12 +1080,104 @@ export const mockDecomposicaoCategorias: DecomposicaoCategoriasResponse = {
   ],
 };
 
+export const emptyBaseline: BaselineResponse = {
+  renda_base: 0,
+  meses_analisados: [],
+  total_periodo: 0,
+  media_mensal: 0,
+  gap_zero_a_zero: 0,
+  pct_excesso_renda: 0,
+  detalhes_categorias: [],
+};
+
+export const emptySemaforo: SemaforoResponse = {
+  total_categorias: 0,
+  renda_base: 0,
+  media_mensal_total: 0,
+  meses_analisados: [],
+  categorias: [],
+};
+
+export const emptyPlanoMetas: PlanoMetasResponse = {
+  competencia: '',
+  renda_base: 0,
+  total_baseline: 0,
+  total_meta_proposta: 0,
+  total_reducao_proposta: 0,
+  gap_pos_meta: 0,
+  equacionado: true,
+  metas: [],
+};
+
+export const emptyCronogramaVencimentos: CronogramaVencimentosResponse = {
+  competencia: '',
+  totalPrevistoMes: 0,
+  totalRecorrencias: 0,
+  totalParcelamentos: 0,
+  itens: [],
+};
+
+export const emptyParcelamentos: ParcelamentosResponse = {
+  saldoDevedorTotalGeral: 0,
+  totalParcelamentosAtivos: 0,
+  parcelamentos: [],
+};
+
+export const emptyHistoricoResumo: HistoricoResumoResponse = {
+  janela: {
+    inicio: '',
+    fim: '',
+    total_meses: 0,
+    meses_fechados: [],
+  },
+  renda_base_mensal: 0,
+  total_periodo_despesas: 0,
+  media_mensal_despesas: 0,
+  total_periodo_receitas: 0,
+  media_mensal_receitas: 0,
+  quantidade_total_lancamentos: 0,
+  ticket_medio_global: 0,
+  fechamentos_mensais: [],
+};
+
+export const emptyHistoricoCategorias: HistoricoCategoriasResponse = {
+  janela: {
+    inicio: '',
+    fim: '',
+    meses_fechados: [],
+  },
+  total_periodo: 0,
+  media_mensal: 0,
+  categorias: [],
+};
+
+export const emptyPrevisaoSeisMeses: PrevisaoSeisMesesResponse = {
+  competenciaReferencia: '',
+  rendaBaseMensal: 0,
+  mesesProjetados: [],
+  totalParcelamentosPeriodo: 0,
+  totalRecorrentesPeriodo: 0,
+  totalVariavelPeriodo: 0,
+  totalGeralProjetadoPeriodo: 0,
+  saldoAcumuladoPeriodo: 0,
+  meses: [],
+};
+
+export const emptyDecomposicaoCategorias: DecomposicaoCategoriasResponse = {
+  competencia: '',
+  rendaBase: 0,
+  totalPrevistoMes: 0,
+  totalRecorrentes: 0,
+  totalParcelas: 0,
+  totalVariavel: 0,
+  saldoMes: 0,
+  categorias: [],
+};
+
 export const apiService = {
   async getPerfil(): Promise<UsuarioPerfil> {
     const data = await apiFetch<{ usuario: UsuarioPerfil }>(
-      '/api/usuario/perfil',
-      undefined,
-      { usuario: mockPerfil }
+      '/api/usuario/perfil'
     );
     return data.usuario;
   },
@@ -921,7 +1190,7 @@ export const apiService = {
     return apiFetch<PrevisaoSeisMesesResponse>(
       `/api/fase1/previsao/seis-meses${query}`,
       undefined,
-      mockPrevisaoSeisMeses
+      emptyPrevisaoSeisMeses
     );
   },
 
@@ -929,7 +1198,7 @@ export const apiService = {
     return apiFetch<DecomposicaoCategoriasResponse>(
       `/api/fase1/previsao/decomposicao-categorias?competencia=${competencia}`,
       undefined,
-      mockDecomposicaoCategorias
+      emptyDecomposicaoCategorias
     );
   },
 
@@ -942,7 +1211,7 @@ export const apiService = {
 
   async getBaseline(competencia?: string): Promise<BaselineResponse> {
     const query = competencia ? `?competenciaReferencia=${competencia}` : '';
-    return apiFetch<BaselineResponse>(`/api/fase1/baseline${query}`, undefined, mockBaseline);
+    return apiFetch<BaselineResponse>(`/api/fase1/baseline${query}`, undefined, emptyBaseline);
   },
 
   async getHistoricoResumo(competencia?: string, mesesJanela = 6): Promise<HistoricoResumoResponse> {
@@ -953,7 +1222,7 @@ export const apiService = {
     return apiFetch<HistoricoResumoResponse>(
       `/api/fase1/historico/resumo${query}`,
       undefined,
-      mockHistoricoResumo
+      emptyHistoricoResumo
     );
   },
 
@@ -965,32 +1234,32 @@ export const apiService = {
     return apiFetch<HistoricoCategoriasResponse>(
       `/api/fase1/historico/categorias${query}`,
       undefined,
-      mockHistoricoCategorias
+      emptyHistoricoCategorias
     );
   },
 
   async getSemaforo(competencia?: string): Promise<SemaforoResponse> {
     const query = competencia ? `?competenciaReferencia=${competencia}` : '';
-    return apiFetch<SemaforoResponse>(`/api/fase1/semaforo${query}`, undefined, mockSemaforo);
+    return apiFetch<SemaforoResponse>(`/api/fase1/semaforo${query}`, undefined, emptySemaforo);
   },
 
   async getPlanoMetas(competencia?: string): Promise<PlanoMetasResponse> {
     const query = competencia ? `?competencia=${competencia}` : '';
-    return apiFetch<PlanoMetasResponse>(`/api/fase1/metas${query}`, undefined, mockPlanoMetas);
+    return apiFetch<PlanoMetasResponse>(`/api/fase1/metas${query}`, undefined, emptyPlanoMetas);
   },
 
   async salvarMetas(payload: { competencia?: string; metas: Array<{ categoriaId: string; metaProposta: number; condicaoAcao?: string | null }> }): Promise<PlanoMetasResponse> {
     return apiFetch<PlanoMetasResponse>('/api/fase1/metas', {
       method: 'POST',
       body: JSON.stringify(payload),
-    }, mockPlanoMetas);
+    });
   },
 
   async getVencimentos(competencia: string): Promise<CronogramaVencimentosResponse> {
     return apiFetch<CronogramaVencimentosResponse>(
       `/api/compromissos/vencimentos?competencia=${competencia}`,
       undefined,
-      mockCronogramaVencimentos
+      emptyCronogramaVencimentos
     );
   },
 
@@ -998,7 +1267,7 @@ export const apiService = {
     return apiFetch<ParcelamentosResponse>(
       '/api/parcelamentos',
       undefined,
-      mockParcelamentos
+      emptyParcelamentos
     );
   },
 
@@ -1006,9 +1275,9 @@ export const apiService = {
     const data = await apiFetch<{ contas: ContaItem[] }>(
       '/api/contas',
       undefined,
-      { contas: mockContas }
+      { contas: [] }
     );
-    return data.contas;
+    return data?.contas || [];
   },
 
   async getCategorias(): Promise<CategoriaTreeItem[]> {
@@ -1028,18 +1297,34 @@ export const apiService = {
     return data.categorias;
   },
 
-  async getMovimentos(competencia?: string): Promise<MovimentosResponse> {
-    const query = competencia ? `?competencia=${competencia}` : '';
+  async getMovimentos(params?: FiltroMovimentosParams | string): Promise<MovimentosResponse> {
+    let query = '';
+    if (typeof params === 'string') {
+      query = params ? `?competencia=${params}` : '';
+    } else if (params) {
+      const q = new URLSearchParams();
+      if (params.competencia) q.append('competencia', params.competencia);
+      if (params.dataInicio) q.append('dataInicio', params.dataInicio);
+      if (params.dataFim) q.append('dataFim', params.dataFim);
+      if (params.busca) q.append('busca', params.busca);
+      if (params.contaId) q.append('contaId', params.contaId);
+      if (params.categoriaId) q.append('categoriaId', params.categoriaId);
+      if (params.natureza) q.append('natureza', params.natureza);
+      if (params.status) q.append('status', params.status);
+      const str = q.toString();
+      if (str) query = `?${str}`;
+    }
+
     return apiFetch<MovimentosResponse>(
       `/api/movimentos${query}`,
       undefined,
       {
         resumo: {
-          totalReceitas: 5500.0,
-          totalDespesasConsumo: 4820.0,
+          totalReceitas: 0,
+          totalDespesasConsumo: 0,
           totalTransferenciasProprias: 0,
           totalAportesPatrimoniais: 0,
-          saldoOperacionalConsumo: 680.0,
+          saldoOperacionalConsumo: 0,
         },
         movimentos: [],
       }
@@ -1061,6 +1346,31 @@ export const apiService = {
     return apiFetch<{ message: string; movimento: MovimentoItem }>('/api/movimentos', {
       method: 'POST',
       body: JSON.stringify(payload),
+    });
+  },
+
+  async atualizarMovimento(
+    id: string,
+    payload: {
+      contaId?: string;
+      categoriaId?: string | null;
+      dataMovimento?: string;
+      descricao?: string;
+      valor?: number;
+      natureza?: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
+      status?: 'PREVISTO' | 'CONCILIADO' | 'CANCELADO';
+      observacao?: string | null;
+    }
+  ): Promise<{ message: string; movimento: MovimentoItem }> {
+    return apiFetch<{ message: string; movimento: MovimentoItem }>(`/api/movimentos/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async excluirMovimento(id: string): Promise<{ message: string; id: string }> {
+    return apiFetch<{ message: string; id: string }>(`/api/movimentos/${id}`, {
+      method: 'DELETE',
     });
   },
 
@@ -1124,11 +1434,34 @@ export const apiService = {
     }
   },
 
-  async atualizarConfiguracoes(mesesJanelaTemporal: number): Promise<ConfiguracaoUsuarioResponse> {
+  async atualizarConfiguracoes(params: number | { mesesJanelaTemporal?: number; intervaloSincronizacaoHoras?: number }): Promise<ConfiguracaoUsuarioResponse> {
+    const payload = typeof params === 'number' ? { mesesJanelaTemporal: params } : params;
     return apiFetch<ConfiguracaoUsuarioResponse>('/api/usuario/configuracoes', {
       method: 'PUT',
-      body: JSON.stringify({ mesesJanelaTemporal }),
+      body: JSON.stringify(payload),
     });
+  },
+
+  async executarScheduler(): Promise<{ message: string; resultado: any }> {
+    return apiFetch('/api/conectores/scheduler/executar', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  },
+
+  async coletarDadosBrutosConexao(conexaoId: string): Promise<{ message: string; resultado: any }> {
+    return apiFetch(`/api/conectores/conexoes/${conexaoId}/coletar-raw`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+  },
+
+  async getDadosBrutosHistorico(filtro?: { conexaoId?: string; status?: string }): Promise<{ dadosBrutos: any[] }> {
+    const query = new URLSearchParams();
+    if (filtro?.conexaoId) query.append('conexaoId', filtro.conexaoId);
+    if (filtro?.status) query.append('status', filtro.status);
+    const queryString = query.toString() ? `?${query.toString()}` : '';
+    return apiFetch(`/api/conectores/dados-brutos${queryString}`);
   },
 
   async getRendaMedia6M(competencia?: string, meses?: number): Promise<RendaMedia6MResponse> {
@@ -1198,10 +1531,18 @@ export const apiService = {
     });
   },
 
-  // Módulo de Conectores Bancários e Open Finance (TASK-15)
-  async getInstituicoesBancarias(): Promise<{ instituicoes: InstituicaoBancariaItem[] }> {
+  // Módulo de Conectores Bancários e Open Finance (TASK-15 / TASK-31)
+  async getInstituicoesBancarias(): Promise<{
+    instituicoes: InstituicaoBancariaItem[];
+    modoOpenFinance?: 'mock' | 'real';
+    apiRealConfigurada?: boolean;
+  }> {
     try {
-      return await apiFetch<{ instituicoes: InstituicaoBancariaItem[] }>('/api/conectores/instituicoes');
+      return await apiFetch<{
+        instituicoes: InstituicaoBancariaItem[];
+        modoOpenFinance?: 'mock' | 'real';
+        apiRealConfigurada?: boolean;
+      }>('/api/conectores/instituicoes');
     } catch {
       return {
         instituicoes: [
@@ -1217,6 +1558,8 @@ export const apiService = {
           { codigo: '237', nome: 'Banco Bradesco', compe: '237', corPrimaria: '#cc092f' },
           { codigo: '021', nome: 'Banestes', compe: '021', corPrimaria: '#004b93' },
         ],
+        modoOpenFinance: 'mock',
+        apiRealConfigurada: false,
       };
     }
   },
@@ -1231,6 +1574,8 @@ export const apiService = {
 
   async conectarBanco(payload: {
     instituicaoCodigo: string;
+    consentimentoConfirmado: boolean;
+    escopo: string[];
     credentials?: Record<string, unknown>;
   }): Promise<{ conexao: ConexaoBancariaItem; authResult: any }> {
     return apiFetch('/api/conectores/conexoes', {
@@ -1254,8 +1599,12 @@ export const apiService = {
     });
   },
 
-  async desconectarBanco(conexaoId: string): Promise<{ message: string; conexao: ConexaoBancariaItem }> {
-    return apiFetch(`/api/conectores/conexoes/${conexaoId}`, {
+  async desconectarBanco(
+    conexaoId: string,
+    options?: { purge?: boolean }
+  ): Promise<{ message: string; conexao: ConexaoBancariaItem }> {
+    const query = options?.purge ? '?purge=true' : '';
+    return apiFetch(`/api/conectores/conexoes/${conexaoId}${query}`, {
       method: 'DELETE',
     });
   },
@@ -1280,13 +1629,79 @@ export const apiService = {
       body: JSON.stringify(payload),
     });
   },
+
+  async listarDadosBrutos(params?: { conexaoId?: string; status?: string }): Promise<{
+    dadosBrutos: DadoBrutoOpenFinanceItem[];
+  }> {
+    const query = new URLSearchParams();
+    if (params?.conexaoId) query.append('conexaoId', params.conexaoId);
+    if (params?.status) query.append('status', params.status);
+    const qs = query.toString() ? `?${query.toString()}` : '';
+    return apiFetch(`/api/conectores/dados-brutos${qs}`);
+  },
+
+  async processarDadoBruto(id: string): Promise<{
+    message: string;
+    resultado: any;
+  }> {
+    return apiFetch(`/api/conectores/worker/processar/${id}`, {
+      method: 'POST',
+    });
+  },
+
+  async executarWorkerSweep(): Promise<{
+    message: string;
+    resultado: any;
+  }> {
+    return apiFetch('/api/conectores/worker/sweep', {
+      method: 'POST',
+    });
+  },
+
+  async reprocessarDLQ(dadoBrutoId?: string): Promise<{
+    message: string;
+    total: number;
+    resultados: any[];
+  }> {
+    return apiFetch('/api/conectores/worker/reprocessar-dlq', {
+      method: 'POST',
+      body: JSON.stringify({ dadoBrutoId }),
+    });
+  },
 };
+
+export interface DadoBrutoOpenFinanceItem {
+  id: string;
+  conexaoId: string;
+  instituicaoCodigo: string;
+  tipoDado: 'TRANSACOES' | 'FATURAS' | 'CONTAS' | 'SALDOS';
+  hashCarga: string;
+  status: 'PENDENTE_PROCESSAMENTO' | 'PROCESSANDO' | 'PROCESSADO' | 'ERRO_PROCESSAMENTO';
+  mensagemErro?: string | null;
+  tentativas: number;
+  coletadoEm: string;
+  processadoEm?: string | null;
+}
+
+export interface CredentialFieldRequirementItem {
+  id: string;
+  label: string;
+  placeholder?: string;
+  tipo: 'text' | 'password' | 'select';
+  obrigatorio: boolean;
+  maxLength?: number;
+  regexValidacao?: string;
+  mensagemAjuda?: string;
+}
 
 export interface InstituicaoBancariaItem {
   codigo: string;
   nome: string;
   compe?: string;
   corPrimaria?: string;
+  icone?: string;
+  camposRequeridos?: CredentialFieldRequirementItem[];
+  orientacaoOpenFinance?: string;
 }
 
 export interface ConexaoBancariaItem {
@@ -1300,6 +1715,7 @@ export interface ConexaoBancariaItem {
   consentimentoExpiraEm?: string | null;
   ultimaSincronizacaoEm?: string | null;
   mensagemErro?: string | null;
+  parametrosExtras?: string | null;
   criadoEm: string;
   atualizadoEm: string;
 }

@@ -26,7 +26,15 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       });
     }
 
-    const { competencia, contaId, categoriaId, natureza, status } = queryParse.data;
+    const { competencia, dataInicio, dataFim, busca, contaId, categoriaId, natureza, status } = queryParse.data;
+
+    const dataFiltro: any = {};
+    if (dataInicio) {
+      dataFiltro.gte = new Date(`${dataInicio}T00:00:00.000Z`);
+    }
+    if (dataFim) {
+      dataFiltro.lte = new Date(`${dataFim}T23:59:59.999Z`);
+    }
 
     const whereClause: any = {
       usuarioId,
@@ -35,6 +43,13 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       ...(categoriaId && { categoriaId }),
       ...(natureza && { natureza }),
       ...(status && { status }),
+      ...(Object.keys(dataFiltro).length > 0 && { dataMovimento: dataFiltro }),
+      ...(busca && {
+        OR: [
+          { descricao: { contains: busca, mode: 'insensitive' } },
+          { observacao: { contains: busca, mode: 'insensitive' } },
+        ],
+      }),
     };
 
     const movimentos = await prisma.movimento.findMany({

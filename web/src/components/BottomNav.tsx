@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Activity, CalendarClock, Compass, Plus, UserCog } from 'lucide-react';
+import { LayoutDashboard, ReceiptText, Activity, CalendarClock, Compass, Plus, UserCog } from 'lucide-react';
 import { BottomNavProps } from './types.ts';
 
 export const BottomNav: React.FC<BottomNavProps> = ({
@@ -18,6 +18,18 @@ export const BottomNav: React.FC<BottomNavProps> = ({
           <LayoutDashboard size={20} />
         </div>
         <span>Início</span>
+      </button>
+
+      <button
+        type="button"
+        className={`bottom-nav-item ${activeTab === 'lancamentos' ? 'active' : ''}`}
+        onClick={() => onSelectTab('lancamentos')}
+        title="Todos os Lançamentos e Extrato"
+      >
+        <div className="nav-icon-wrapper">
+          <ReceiptText size={20} />
+        </div>
+        <span>Extrato</span>
       </button>
 
       <button

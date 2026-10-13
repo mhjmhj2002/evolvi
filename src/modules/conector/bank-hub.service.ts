@@ -32,12 +32,55 @@ export class BankHubService {
   public async connectInstitution(params: {
     usuarioId: string;
     instituicaoCodigo: string;
+    consentimentoConfirmado?: boolean;
+    escopo?: string[];
     credentials?: Record<string, unknown>;
   }) {
-    const { usuarioId, instituicaoCodigo, credentials } = params;
+    const { usuarioId, instituicaoCodigo, credentials, consentimentoConfirmado, escopo } = params;
+
+    // 1. Validar consentimento formal regulado
+    if (!consentimentoConfirmado) {
+      throw new Error(
+        'Consentimento regulado não autorizado. O usuário deve aceitar expressamente o compartilhamento de dados Open Finance.'
+      );
+    }
+
+    if (!escopo || escopo.length === 0) {
+      throw new Error('Ao menos um escopo de permissão (ex: leitura de contas/extratos) deve ser selecionado.');
+    }
+
+    // 2. Obter metadados da instituição e validar credenciais obrigatórias
+    const meta = BankConnectorFactory.getInstitutionMeta(instituicaoCodigo);
+    if (meta && meta.camposRequeridos && meta.camposRequeridos.length > 0) {
+      const creds = credentials || {};
+      for (const campo of meta.camposRequeridos) {
+        if (campo.obrigatorio) {
+          const valor = creds[campo.id];
+          if (valor === undefined || valor === null || String(valor).trim() === '') {
+            throw new Error(`Campo obrigatório de conexão não informado: "${campo.label}".`);
+          }
+          if (campo.regexValidacao) {
+            const regex = new RegExp(campo.regexValidacao);
+            if (!regex.test(String(valor).trim())) {
+              throw new Error(`Formato inválido para "${campo.label}".`);
+            }
+          }
+        }
+      }
+    }
 
     const provider = BankConnectorFactory.getProvider(instituicaoCodigo);
     const authResult = await provider.authenticate(credentials);
+
+    if (!authResult.sucesso) {
+      throw new Error('Falha na autenticação com o provedor bancário.');
+    }
+
+    const parametrosExtrasObj = {
+      ...(credentials || {}),
+      escopo,
+      consentimentoConfirmadoEm: new Date().toISOString(),
+    };
 
     const conexao = await prisma.conexaoBancaria.create({
       data: {
@@ -45,11 +88,11 @@ export class BankHubService {
         instituicaoCodigo: provider.codigo,
         instituicaoNome: provider.nome,
         compe: provider.compe || null,
-        status: authResult.sucesso ? 'CONECTADO' : 'ERRO_AUTENTICACAO',
+        status: 'CONECTADO',
         consentimentoId: authResult.consentimentoId,
         consentimentoExpiraEm: authResult.expiraEm,
         ultimaSincronizacaoEm: new Date(),
-        parametrosExtras: credentials ? JSON.stringify(credentials) : null,
+        parametrosExtras: JSON.stringify(parametrosExtrasObj),
       },
     });
 
@@ -58,6 +101,7 @@ export class BankHubService {
       authResult,
     };
   }
+
 
   /**
    * Sincroniza uma conexão bancária existente (busca contas e transações recentes)
@@ -193,10 +237,10 @@ export class BankHubService {
   }
 
   /**
-   * Revoga consentimento e desconecta o banco
+   * Revoga consentimento e desconecta o banco (ou remove fisicamente se purge = true)
    */
-  public async disconnect(params: { usuarioId: string; conexaoId: string }) {
-    const { usuarioId, conexaoId } = params;
+  public async disconnect(params: { usuarioId: string; conexaoId: string; purge?: boolean }) {
+    const { usuarioId, conexaoId, purge = false } = params;
 
     const conexao = await prisma.conexaoBancaria.findFirst({
       where: { id: conexaoId, usuarioId },
@@ -213,6 +257,17 @@ export class BankHubService {
       } catch {
         // Ignora erro no revoke externo e atualiza status local
       }
+    }
+
+    if (purge) {
+      await prisma.conexaoBancaria.delete({
+        where: { id: conexaoId },
+      });
+      return {
+        ...conexao,
+        status: 'REVOGADO' as const,
+        removido: true,
+      };
     }
 
     return prisma.conexaoBancaria.update({

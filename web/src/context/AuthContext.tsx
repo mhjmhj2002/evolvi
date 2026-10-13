@@ -80,9 +80,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         const roleDefinida: RoleUsuario = (roleDesejada || 'USER').toUpperCase() as RoleUsuario;
+        const nomesPorEmail: Record<string, string> = {
+          'owner@evolvi.app': 'Owner Evolvi',
+          'admin@evolvi.app': 'Admin Evolvi',
+          'visitante@evolvi.app': 'Visitante Evolvi',
+          'usuario@evolvi.app': 'Usuário Evolvi',
+        };
+        const nomeFormatado =
+          nomesPorEmail[email.toLowerCase()] ||
+          (email.split('@')[0].charAt(0).toUpperCase() + email.split('@')[0].slice(1).toLowerCase());
+
         const mockUser: UsuarioPerfil = {
           id: `usr-${Date.now()}`,
-          nome: email.split('@')[0].toUpperCase(),
+          nome: nomeFormatado,
           email: email.toLowerCase(),
           role: roleDefinida,
           rendaBaseMensal: 5500.0,

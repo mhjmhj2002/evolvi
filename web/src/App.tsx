@@ -11,6 +11,7 @@ import {
 import { useAuth } from './context/AuthContext.tsx';
 import {
   TelaDashboard,
+  TelaLancamentos,
   TelaDiagnostico,
   TelaCompromissos,
   TelaCadastros,
@@ -19,16 +20,15 @@ import {
 import {
   apiService,
   mockPerfil,
-  mockBaseline,
-  mockSemaforo,
-  mockPlanoMetas,
-  mockCronogramaVencimentos,
-  mockParcelamentos,
-  mockContas,
-  mockHistoricoResumo,
-  mockHistoricoCategorias,
-  mockPrevisaoSeisMeses,
-  mockDecomposicaoCategorias,
+  emptyBaseline,
+  emptySemaforo,
+  emptyPlanoMetas,
+  emptyCronogramaVencimentos,
+  emptyParcelamentos,
+  emptyHistoricoResumo,
+  emptyHistoricoCategorias,
+  emptyPrevisaoSeisMeses,
+  emptyDecomposicaoCategorias,
   UsuarioPerfil,
   BaselineResponse,
   SemaforoResponse,
@@ -51,20 +51,20 @@ export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [isSheetOpen, setIsSheetOpen] = useState(false);
 
-  // Estados carregados da API
+  // Estados carregados da API - inicializados zerados para cada usuário logado
   const [perfil, setPerfil] = useState<UsuarioPerfil>(authUser || mockPerfil);
-  const [baseline, setBaseline] = useState<BaselineResponse>(mockBaseline);
-  const [semaforo, setSemaforo] = useState<SemaforoResponse>(mockSemaforo);
-  const [planoMetas, setPlanoMetas] = useState<PlanoMetasResponse>(mockPlanoMetas);
-  const [cronograma, setCronograma] = useState<CronogramaVencimentosResponse>(mockCronogramaVencimentos);
-  const [parcelamentos, setParcelamentos] = useState<ParcelamentosResponse>(mockParcelamentos);
-  const [contas, setContas] = useState<ContaItem[]>(mockContas);
+  const [baseline, setBaseline] = useState<BaselineResponse>(emptyBaseline);
+  const [semaforo, setSemaforo] = useState<SemaforoResponse>(emptySemaforo);
+  const [planoMetas, setPlanoMetas] = useState<PlanoMetasResponse>(emptyPlanoMetas);
+  const [cronograma, setCronograma] = useState<CronogramaVencimentosResponse>(emptyCronogramaVencimentos);
+  const [parcelamentos, setParcelamentos] = useState<ParcelamentosResponse>(emptyParcelamentos);
+  const [contas, setContas] = useState<ContaItem[]>([]);
   const [categorias, setCategorias] = useState<CategoriaTreeItem[]>([]);
-  const [historicoResumo, setHistoricoResumo] = useState<HistoricoResumoResponse>(mockHistoricoResumo);
-  const [historicoCategorias, setHistoricoCategorias] = useState<HistoricoCategoriasResponse>(mockHistoricoCategorias);
-  const [previsao6M, setPrevisao6M] = useState<PrevisaoSeisMesesResponse>(mockPrevisaoSeisMeses);
-  const [decomposicao6M, setDecomposicao6M] = useState<DecomposicaoCategoriasResponse>(mockDecomposicaoCategorias);
-  const [totalGastoMes, setTotalGastoMes] = useState<number>(4820.0);
+  const [historicoResumo, setHistoricoResumo] = useState<HistoricoResumoResponse>(emptyHistoricoResumo);
+  const [historicoCategorias, setHistoricoCategorias] = useState<HistoricoCategoriasResponse>(emptyHistoricoCategorias);
+  const [previsao6M, setPrevisao6M] = useState<PrevisaoSeisMesesResponse>(emptyPrevisaoSeisMeses);
+  const [decomposicao6M, setDecomposicao6M] = useState<DecomposicaoCategoriasResponse>(emptyDecomposicaoCategorias);
+  const [totalGastoMes, setTotalGastoMes] = useState<number>(0.0);
 
   // Sincroniza perfil se authUser for atualizado
   useEffect(() => {
@@ -82,9 +82,14 @@ export const App: React.FC = () => {
   const [formIsPagamentoFatura, setFormIsPagamentoFatura] = useState(false);
   const [formMensagemSucesso, setFormMensagemSucesso] = useState<string | null>(null);
 
-  // Carregar dados ao montar o componente ou quando autenticar
+  // Carregar dados ao montar o componente ou quando o usuário autenticado mudar
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated || !authUser) {
+      setCategorias([]);
+      setFormContaId('');
+      setFormCategoriaId('');
+      return;
+    }
 
     async function loadData() {
       try {
@@ -131,13 +136,21 @@ export const App: React.FC = () => {
         if (resContas && resContas.length > 0) {
           setContas(resContas);
           setFormContaId(resContas[0].id);
+        } else {
+          setContas([]);
+          setFormContaId('');
         }
         if (resCategorias && resCategorias.length > 0) {
           setCategorias(resCategorias);
           setFormCategoriaId(resCategorias[0].id);
+        } else {
+          setCategorias([]);
+          setFormCategoriaId('');
         }
         if (resMovimentos && resMovimentos.resumo) {
           setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
+        } else {
+          setTotalGastoMes(0);
         }
       } catch (err) {
         console.warn('Erro ao sincronizar dados com o backend, utilizando estado local.', err);
@@ -145,7 +158,7 @@ export const App: React.FC = () => {
     }
 
     loadData();
-  }, [isAuthenticated]);
+  }, [isAuthenticated, authUser?.id]);
 
   const [isIaModalOpen, setIsIaModalOpen] = useState(false);
   const [formAvisoIa, setFormAvisoIa] = useState<string | null>(null);
@@ -222,6 +235,25 @@ export const App: React.FC = () => {
             totalGastoMes={totalGastoMes}
             onNavigateTab={(tab) => setActiveTab(tab)}
             onOpenNovaTransacao={() => setIsSheetOpen(true)}
+          />
+        )}
+
+        {activeTab === 'lancamentos' && (
+          <TelaLancamentos
+            usuarioId={authUser?.id}
+            contas={contas}
+            categorias={categorias}
+            onOpenNovoLancamento={() => setIsSheetOpen(true)}
+            onMovimentoModificado={async () => {
+              try {
+                const resMovimentos = await apiService.getMovimentos('2026-10');
+                if (resMovimentos?.resumo) {
+                  setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
+                }
+              } catch (e) {
+                console.warn('Erro ao atualizar resumo pós-modificação:', e);
+              }
+            }}
           />
         )}
 
