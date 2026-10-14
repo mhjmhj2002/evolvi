@@ -2,7 +2,11 @@ import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import multipart from '@fastify/multipart';
 import { ensureAuthenticated } from '../../middlewares/auth.middleware.js';
 import { ImportacaoStorageService, SalvarArquivoInput } from './importacao-storage.service.js';
-import { queryLotesImportacaoSchema, loteIdParamSchema } from './importacao.schema.js';
+import {
+  queryLotesImportacaoSchema,
+  loteIdParamSchema,
+  processarLoteIaBodySchema,
+} from './importacao.schema.js';
 
 export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   const storageService = new ImportacaoStorageService();
@@ -167,8 +171,11 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
         });
       }
 
+      const bodyResult = processarLoteIaBodySchema.safeParse(request.body || {});
+      const opcoesIa = bodyResult.success ? bodyResult.data : undefined;
+
       const { importacaoIaWorkerService } = await import('./worker/importacao-ia-worker.service.js');
-      const resultado = await importacaoIaWorkerService.processarLote(lote.id);
+      const resultado = await importacaoIaWorkerService.processarLote(lote.id, opcoesIa);
 
       return reply.status(200).send({
         statusCode: 200,

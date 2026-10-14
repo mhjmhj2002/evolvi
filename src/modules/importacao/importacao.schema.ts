@@ -21,3 +21,10 @@ export const loteIdParamSchema = z.object({
 
 export type QueryLotesImportacaoInput = z.infer<typeof queryLotesImportacaoSchema>;
 export type LoteIdParamInput = z.infer<typeof loteIdParamSchema>;
+
+export const processarLoteIaBodySchema = z.object({
+  provedorIa: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'OPENROUTER']).optional(),
+  modeloIa: z.string().optional(),
+});
+
+export type ProcessarLoteIaBodyInput = z.infer<typeof processarLoteIaBodySchema>;

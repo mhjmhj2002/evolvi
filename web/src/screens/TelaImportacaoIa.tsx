@@ -71,6 +71,8 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
   // Validação prévia de configuração da IA
   const [statusIa, setStatusIa] = useState<StatusIaResponse | null>(null);
   const [modalConfigIaAberto, setModalConfigIaAberto] = useState(false);
+  const [modalEscolhaIaAberto, setModalEscolhaIaAberto] = useState(false);
+  const [provedorIaSelecionado, setProvedorIaSelecionado] = useState<string>('GEMINI');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -80,6 +82,9 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
     try {
       const res = await apiService.getStatusIa();
       setStatusIa(res);
+      if (res.configuracoes && res.configuracoes.length > 0) {
+        setProvedorIaSelecionado(res.configuracoes[0].provedor);
+      }
     } catch {
       setStatusIa(null);
     }
@@ -90,6 +95,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
   }, [verificarStatusIa]);
 
   const temIaConfigurada = Boolean(
+    statusIa?.hasUserKey ||
     statusIa?.hasEnvKey ||
     (typeof window !== 'undefined' && localStorage.getItem('evolvi_ia_byok_key')?.trim())
   );
@@ -323,20 +329,43 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
   };
 
   // Disparo manual das etapas do pipeline se necessário
-  const handleProcessarEtapaIa = async () => {
-    if (!loteAtivo) return;
+  const executarExtracaoComProvedor = async (loteId: string, provedorEscolhido?: string) => {
     setProcessandoAcao(true);
     setMensagemErro(null);
     try {
-      await apiService.processarLoteIa(loteAtivo.id);
-      await carregarDetalhesLoteAtivo(loteAtivo.id);
+      await apiService.processarLoteIa(loteId, provedorEscolhido ? { provedorIa: provedorEscolhido } : undefined);
+      await carregarDetalhesLoteAtivo(loteId);
       await carregarLotes();
-      setMensagemSucesso('Extração por IA executada com sucesso!');
+      setMensagemSucesso(`Extração executada com sucesso usando ${provedorEscolhido || 'a IA configurada'}!`);
     } catch (err: any) {
       setMensagemErro(err.message || 'Erro ao processar extração por IA.');
     } finally {
       setProcessandoAcao(false);
+      setModalEscolhaIaAberto(false);
     }
+  };
+
+  const handleProcessarEtapaIa = async () => {
+    if (!loteAtivo) return;
+
+    const totalConfiguradas = statusIa?.configuracoes?.length || (statusIa?.hasEnvKey ? 1 : 0);
+
+    // Se não tiver nenhuma configurada, não permite e avisa que precisa configurar
+    if (totalConfiguradas === 0) {
+      setMensagemErro('Nenhuma Inteligência Artificial configurada. Você precisa configurar sua IA antes de processar.');
+      setModalConfigIaAberto(true);
+      return;
+    }
+
+    // Se tiver mais de uma IA configurada, abre modal perguntando qual IA usar
+    if (statusIa?.configuracoes && statusIa.configuracoes.length > 1) {
+      setModalEscolhaIaAberto(true);
+      return;
+    }
+
+    // Se tiver apenas uma IA configurada, escolhe a única e não pergunta
+    const unicoProvedor = statusIa?.configuracoes?.[0]?.provedor || (statusIa?.hasEnvKey ? 'GEMINI' : undefined);
+    await executarExtracaoComProvedor(loteAtivo.id, unicoProvedor);
   };
 
   const handleCarregarStaging = async () => {
@@ -477,7 +506,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       </div>
 
       {/* 2. Banner de Status da IA (Informativo ou de Alerta de Configuração) */}
-      {!temIaConfigurada && (
+      {!temIaConfigurada ? (
         <div
           style={{
             background: 'rgba(234, 179, 8, 0.1)',
@@ -498,7 +527,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                 IA ainda não configurada para leitura de PDFs e imagens
               </strong>
               <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                Para importar faturas não estruturadas com IA, configure sua chave gratuita do Google Gemini, OpenAI ou Claude. Extratos OFX e planilhas CSV continuam funcionando diretamente.
+                Para importar faturas não estruturadas com IA, configure sua chave do Google Gemini, OpenAI ou Claude. Extratos OFX e planilhas CSV continuam funcionando diretamente.
               </div>
             </div>
           </div>
@@ -511,9 +540,45 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
             <Key size={14} /> Configurar IA Agora
           </button>
         </div>
+      ) : (
+        <div
+          style={{
+            background: 'rgba(34, 197, 94, 0.08)',
+            border: '1px solid rgba(34, 197, 94, 0.25)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '10px 16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+            flexWrap: 'wrap',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Sparkles size={18} style={{ color: 'var(--status-green, #22c55e)', flexShrink: 0 }} />
+            <div>
+              <span style={{ fontSize: '0.84rem', color: 'var(--text-primary)', fontWeight: 600 }}>
+                IA configurada:{' '}
+              </span>
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                {statusIa?.configuracoes && statusIa.configuracoes.length > 0
+                  ? statusIa.configuracoes.map(c => `${c.provedor} (${c.modelo})`).join(', ')
+                  : 'Pronta para uso'}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setModalConfigIaAberto(true)}
+            className="btn btn-secondary"
+            style={{ fontSize: '0.76rem', padding: '4px 10px', height: 'auto' }}
+          >
+            Gerenciar IAs
+          </button>
+        </div>
       )}
 
-      {/* Modal de Configuração de IA com Ajuda Passo a Passo */}
+      {/* Modal de Configuração de Chaves de IA */}
       {modalConfigIaAberto && (
         <div
           style={{
@@ -526,23 +591,120 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
             alignItems: 'center',
             justifyContent: 'center',
             padding: '16px',
-            overflowY: 'auto',
           }}
           onClick={(e) => {
             if (e.target === e.currentTarget) setModalConfigIaAberto(false);
           }}
         >
-          <div style={{ width: '100%', maxWidth: '640px', maxHeight: '90vh', overflowY: 'auto' }}>
+          <div style={{ width: '100%', maxWidth: '720px', maxHeight: '90vh', overflowY: 'auto' }}>
             <ConfiguracaoIaCard
-              modoModal
-              onFecharModal={() => {
-                setModalConfigIaAberto(false);
-                verificarStatusIa();
-              }}
+              modoModal={true}
               onChaveAtualizada={() => {
                 verificarStatusIa();
               }}
+              onFecharModal={() => setModalConfigIaAberto(false)}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Escolha de IA quando há mais de uma configurada */}
+      {modalEscolhaIaAberto && statusIa?.configuracoes && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setModalEscolhaIaAberto(false);
+          }}
+        >
+          <div
+            className="login-card"
+            style={{ width: '100%', maxWidth: '480px', margin: 0, display: 'flex', flexDirection: 'column', gap: '16px' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <Sparkles size={24} style={{ color: 'var(--brand-primary, #38bdf8)' }} />
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700 }}>
+                  Qual IA você deseja usar neste lote?
+                </h3>
+                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  Você possui mais de uma Inteligência Artificial configurada. Selecione a desejada:
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {statusIa.configuracoes.map((cfg) => {
+                const isSelected = provedorIaSelecionado === cfg.provedor;
+                const nomeAmigavel =
+                  cfg.provedor === 'GEMINI'
+                    ? 'Google Gemini'
+                    : cfg.provedor === 'OPENAI'
+                    ? 'OpenAI (ChatGPT)'
+                    : 'Anthropic (Claude)';
+
+                return (
+                  <button
+                    key={cfg.provedor}
+                    type="button"
+                    onClick={() => setProvedorIaSelecionado(cfg.provedor)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '12px 14px',
+                      borderRadius: 'var(--radius-sm)',
+                      border: isSelected ? '2px solid var(--brand-primary)' : '1px solid var(--border-color)',
+                      background: isSelected ? 'rgba(56, 189, 248, 0.12)' : 'var(--bg-secondary)',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+                        {nomeAmigavel}
+                      </div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        Modelo: <code>{cfg.modelo}</code> • Chave: <code>{cfg.chaveMascarada}</code>
+                      </div>
+                    </div>
+                    {isSelected && <CheckCircle2 size={18} style={{ color: 'var(--brand-primary)' }} />}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setModalEscolhaIaAberto(false)}
+                disabled={processandoAcao}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={processandoAcao || !loteAtivo}
+                onClick={() => {
+                  if (loteAtivo) {
+                    executarExtracaoComProvedor(loteAtivo.id, provedorIaSelecionado);
+                  }
+                }}
+              >
+                {processandoAcao ? 'Processando...' : `Iniciar Extração com ${provedorIaSelecionado}`}
+              </button>
+            </div>
           </div>
         </div>
       )}

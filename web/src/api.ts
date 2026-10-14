@@ -1526,12 +1526,12 @@ export const apiService = {
         configurada: false,
         hasEnvKey: false,
         provedorAtivo: null,
-        modeloPadrao: 'gemini-2.5-flash',
+        modeloPadrao: 'gemini-3.8-flash',
         provedoresSuportados: [
           {
             id: 'GEMINI',
             nome: 'Google Gemini',
-            modelos: ['gemini-2.5-flash', 'gemini-2.0-flash'],
+            modelos: ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'],
             ajudaUrl: 'https://aistudio.google.com/app/apikey',
             temChaveServidor: false,
           },
@@ -1555,11 +1555,31 @@ export const apiService = {
       return {
         configurada: false,
         hasEnvKey: false,
+        hasUserKey: false,
+        chaveMascarada: null,
         provedorAtivo: null,
-        modeloPadrao: 'gemini-2.5-flash',
+        modeloPadrao: 'gemini-3.8-flash',
         provedoresSuportados: [],
       };
     }
+  },
+
+  async salvarConfiguracaoIa(payload: {
+    provedor: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'OPENROUTER';
+    apiKey: string;
+    modelo?: string;
+  }): Promise<{ sucesso: boolean; message: string; chaveMascarada?: string }> {
+    return apiFetch('/api/ia/configuracao', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async removerConfiguracaoIa(provedor?: string): Promise<{ sucesso: boolean; message: string }> {
+    const qs = provedor ? `?provedor=${encodeURIComponent(provedor)}` : '';
+    return apiFetch(`/api/ia/configuracao${qs}`, {
+      method: 'DELETE',
+    });
   },
 
   async testarApiKeyIa(payload: {
@@ -1769,7 +1789,10 @@ export const apiService = {
     return apiFetch(`/api/importacao/lotes/${loteId}`);
   },
 
-  async processarLoteIa(loteId: string): Promise<{
+  async processarLoteIa(
+    loteId: string,
+    opcoes?: { provedorIa?: string; modeloIa?: string }
+  ): Promise<{
     statusCode: number;
     message: string;
     resultado: {
@@ -1781,6 +1804,7 @@ export const apiService = {
   }> {
     return apiFetch(`/api/importacao/lotes/${loteId}/processar-ia`, {
       method: 'POST',
+      body: opcoes ? JSON.stringify(opcoes) : undefined,
     });
   },
 
@@ -1945,11 +1969,23 @@ export interface ProvedorIaInfo {
   modelos: string[];
   ajudaUrl: string;
   temChaveServidor?: boolean;
+  configurado?: boolean;
+}
+
+export interface ConfiguracaoIaItem {
+  provedor: string;
+  modelo: string;
+  chaveMascarada: string;
+  criadoEm: string;
 }
 
 export interface StatusIaResponse {
   configurada: boolean;
   hasEnvKey: boolean;
+  hasUserKey?: boolean;
+  totalConfiguradas?: number;
+  configuracoes?: ConfiguracaoIaItem[];
+  chaveMascarada?: string | null;
   provedorAtivo: string | null;
   modeloPadrao: string;
   provedoresSuportados: ProvedorIaInfo[];

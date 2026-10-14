@@ -56,7 +56,7 @@ export const ModalRegistroIa: React.FC<ModalRegistroIaProps> = ({
 
   // Configurações de API Própria (BYOK) salvas em localStorage
   const [provedor, setProvedor] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC'>('GEMINI');
-  const [modelo, setModelo] = useState('gemini-2.5-flash');
+  const [modelo, setModelo] = useState('gemini-3.8-flash');
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('evolvi_ia_byok_key') || '');
   const [testandoChave, setTestandoChave] = useState(false);
   const [msgChave, setMsgChave] = useState<{ sucesso: boolean; texto: string } | null>(null);
@@ -353,7 +353,7 @@ export const ModalRegistroIa: React.FC<ModalRegistroIaProps> = ({
                 className="form-input"
                 value={modelo}
                 onChange={(e) => setModelo(e.target.value)}
-                placeholder="Ex: gemini-2.5-flash"
+                placeholder="Ex: gemini-3.8-flash"
               />
             </div>
           </div>

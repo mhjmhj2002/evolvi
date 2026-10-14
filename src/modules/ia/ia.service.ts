@@ -227,7 +227,7 @@ export function parseLocalDeterministic(texto: string, contexto: ContextoUsuario
  */
 export async function callGeminiApi(
   apiKey: string,
-  model: string = 'gemini-2.5-flash',
+  model: string = 'gemini-3.8-flash',
   promptSistema: string,
   textoUsuario: string
 ): Promise<IaLancamentoParsed> {

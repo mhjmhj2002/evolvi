@@ -2,9 +2,11 @@ import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { prisma } from '../../infrastructure/database/prisma.js';
 import { ensureAuthenticated } from '../../middlewares/auth.middleware.js';
 import { env } from '../../config/env.js';
+import { CryptoService } from '../../infrastructure/security/crypto.service.js';
 import {
   iaParseRequestSchema,
   testarApiKeySchema,
+  salvarConfiguracaoIaSchema,
 } from './ia.schema.js';
 import {
   buildIaSystemPrompt,
@@ -16,22 +18,69 @@ import {
 export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   app.addHook('preHandler', ensureAuthenticated);
 
-  // 1. GET /api/ia/status (retorna se há chave de IA configurada no servidor e provedores suportados)
-  app.get('/status', async (_request, reply) => {
+  // 1. GET /api/ia/status (retorna status da IA configurada no banco atrelada ao usuário)
+  app.get('/status', async (request, reply) => {
+    const usuarioId = request.user.sub;
+
+    // Busca todas as configurações de IA persistidas e criptografadas do usuário no PostgreSQL
+    const configsUsuario = await prisma.configuracaoIaUsuario.findMany({
+      where: { usuarioId },
+      orderBy: { criadoEm: 'asc' },
+    });
+
+    const configuracoes: Array<{
+      provedor: string;
+      modelo: string;
+      chaveMascarada: string;
+      criadoEm: string;
+    }> = [];
+
+    for (const cfg of configsUsuario) {
+      try {
+        const chaveDecifrada = CryptoService.decrypt({
+          ciphertext: cfg.apiKeyCifrada,
+          iv: cfg.ivHex,
+          tag: cfg.tagHex,
+        });
+        if (chaveDecifrada && chaveDecifrada.trim().length > 0) {
+          configuracoes.push({
+            provedor: cfg.provedor,
+            modelo: cfg.modelo,
+            chaveMascarada: CryptoService.mascararApiKey(chaveDecifrada),
+            criadoEm: cfg.criadoEm.toISOString(),
+          });
+        }
+      } catch (err) {
+        console.error(`[IA Status] Erro ao decifrar chave do provedor ${cfg.provedor}:`, err);
+      }
+    }
+
     const hasEnvGemini = Boolean(env.GEMINI_API_KEY && env.GEMINI_API_KEY.trim().length > 0);
+    const hasUserKey = configuracoes.length > 0;
+    const chaveConfigurada = hasUserKey || hasEnvGemini;
+
+    // Provedor ativo preferencial (primeiro configurado ou Gemini do env)
+    const provedorAtivo = hasUserKey ? configuracoes[0].provedor : (hasEnvGemini ? 'GEMINI' : null);
+    const modeloAtivo = hasUserKey ? configuracoes[0].modelo : 'gemini-3.8-flash';
+    const chaveMascarada = hasUserKey ? configuracoes[0].chaveMascarada : null;
 
     return reply.status(200).send({
-      configurada: hasEnvGemini,
+      configurada: chaveConfigurada,
       hasEnvKey: hasEnvGemini,
-      provedorAtivo: hasEnvGemini ? 'GEMINI' : null,
-      modeloPadrao: 'gemini-2.5-flash',
+      hasUserKey,
+      totalConfiguradas: configuracoes.length,
+      configuracoes,
+      chaveMascarada,
+      provedorAtivo,
+      modeloPadrao: modeloAtivo,
       provedoresSuportados: [
         {
           id: 'GEMINI',
           nome: 'Google Gemini',
-          modelos: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
+          modelos: ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
           ajudaUrl: 'https://aistudio.google.com/app/apikey',
           temChaveServidor: hasEnvGemini,
+          configurado: configuracoes.some((c) => c.provedor === 'GEMINI'),
         },
         {
           id: 'OPENAI',
@@ -39,6 +88,7 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
           modelos: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
           ajudaUrl: 'https://platform.openai.com/api-keys',
           temChaveServidor: false,
+          configurado: configuracoes.some((c) => c.provedor === 'OPENAI'),
         },
         {
           id: 'ANTHROPIC',
@@ -46,8 +96,86 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
           modelos: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
           ajudaUrl: 'https://console.anthropic.com/settings/keys',
           temChaveServidor: false,
+          configurado: configuracoes.some((c) => c.provedor === 'ANTHROPIC'),
         },
       ],
+    });
+  });
+
+  // 2. PUT /api/ia/configuracao (salva ou atualiza a chave de IA para um provedor específico no PostgreSQL)
+  app.put('/configuracao', async (request, reply) => {
+    const usuarioId = request.user.sub;
+
+    const parseResult = salvarConfiguracaoIaSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Dados inválidos para salvar configuração de IA.',
+        issues: parseResult.error.issues,
+      });
+    }
+
+    const { provedor, apiKey, modelo } = parseResult.data;
+
+    // Criptografia de grau bancário/militar AES-256-GCM
+    const enc = CryptoService.encrypt(apiKey.trim());
+
+    await prisma.configuracaoIaUsuario.upsert({
+      where: {
+        usuarioId_provedor: {
+          usuarioId,
+          provedor,
+        },
+      },
+      create: {
+        usuarioId,
+        provedor,
+        modelo: modelo || (provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-3.8-flash'),
+        apiKeyCifrada: enc.ciphertext,
+        ivHex: enc.iv,
+        tagHex: enc.tag,
+      },
+      update: {
+        modelo: modelo || (provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-3.8-flash'),
+        apiKeyCifrada: enc.ciphertext,
+        ivHex: enc.iv,
+        tagHex: enc.tag,
+      },
+    });
+
+    return reply.status(200).send({
+      sucesso: true,
+      hasUserKey: true,
+      message: `Configuração de IA (${provedor}) salva e criptografada com sucesso com AES-256-GCM!`,
+      chaveMascarada: CryptoService.mascararApiKey(apiKey),
+      provedor,
+      modelo: modelo || 'gemini-3.8-flash',
+    });
+  });
+
+  // 3. DELETE /api/ia/configuracao (remove chave de um provedor específico ou de todos)
+  app.delete('/configuracao', async (request, reply) => {
+    const usuarioId = request.user.sub;
+    const query = request.query as { provedor?: string };
+    const body = request.body as { provedor?: string } | undefined;
+    const provedorAlvo = query.provedor || body?.provedor;
+
+    if (provedorAlvo) {
+      await prisma.configuracaoIaUsuario.deleteMany({
+        where: { usuarioId, provedor: provedorAlvo },
+      });
+    } else {
+      await prisma.configuracaoIaUsuario.deleteMany({
+        where: { usuarioId },
+      });
+    }
+
+    return reply.status(200).send({
+      sucesso: true,
+      message: provedorAlvo
+        ? `Configuração de IA (${provedorAlvo}) do usuário removida com sucesso.`
+        : 'Todas as configurações de IA do usuário foram removidas com sucesso.',
     });
   });
 
@@ -141,19 +269,53 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       }
     }
 
-    // Cenário B: Modo API Própria (BYOK)
-    if (modo === 'API_PROPRIA' && apiKey) {
+    // Cenário B: Modo API Própria (BYOK ou Banco Criptografado)
+    let efetivaApiKey = apiKey;
+    let efetivoProvedor = provedor;
+    let efetivoModelo = modelo;
+
+    if (!efetivaApiKey) {
+      const configUsuario = provedor
+        ? await prisma.configuracaoIaUsuario.findUnique({
+            where: {
+              usuarioId_provedor: {
+                usuarioId,
+                provedor,
+              },
+            },
+          })
+        : await prisma.configuracaoIaUsuario.findFirst({
+            where: { usuarioId },
+            orderBy: { criadoEm: 'asc' },
+          });
+
+      if (configUsuario) {
+        try {
+          efetivaApiKey = CryptoService.decrypt({
+            ciphertext: configUsuario.apiKeyCifrada,
+            iv: configUsuario.ivHex,
+            tag: configUsuario.tagHex,
+          });
+          efetivoProvedor = (configUsuario.provedor as any) || efetivoProvedor;
+          efetivoModelo = configUsuario.modelo || efetivoModelo;
+        } catch (err) {
+          console.error('[IA Parse] Falha ao decifrar chave do usuário:', err);
+        }
+      }
+    }
+
+    if (modo === 'API_PROPRIA' && efetivaApiKey) {
       try {
         const prompt = buildIaSystemPrompt(contexto);
         const parsed = await callGeminiApi(
-          apiKey,
-          modelo || 'gemini-2.5-flash',
+          efetivaApiKey,
+          efetivoModelo || 'gemini-3.8-flash',
           prompt,
           texto
         );
         return reply.status(200).send({
           modo,
-          provedor: provedor || 'GEMINI',
+          provedor: efetivoProvedor || 'GEMINI',
           lancamento: parsed,
         });
       } catch (err: any) {
@@ -195,7 +357,7 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
 
     if (provedor === 'GEMINI') {
       try {
-        const mod = modelo || 'gemini-2.5-flash';
+        const mod = modelo || 'gemini-3.8-flash';
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${mod}:generateContent?key=${apiKey}`;
         const res = await fetch(url, {
           method: 'POST',

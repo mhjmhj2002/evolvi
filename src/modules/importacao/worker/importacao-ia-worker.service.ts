@@ -78,7 +78,10 @@ export class ImportacaoIaWorkerService {
   /**
    * Processa todos os arquivos de um lote sequencialmente (1 arquivo por vez).
    */
-  public async processarLote(loteId: string): Promise<ProcessamentoLoteIaResultado> {
+  public async processarLote(
+    loteId: string,
+    opcoes?: { provedorIa?: string; modeloIa?: string }
+  ): Promise<ProcessamentoLoteIaResultado> {
     const lote = await prisma.loteImportacao.findUnique({
       where: { id: loteId },
       include: {
@@ -137,6 +140,8 @@ export class ImportacaoIaWorkerService {
         lote,
         arquivo,
         contexto,
+        provedorIa: opcoes?.provedorIa,
+        modeloIa: opcoes?.modeloIa,
       });
       resultados.push(resultadoArquivo);
 
@@ -195,8 +200,10 @@ export class ImportacaoIaWorkerService {
       categorias: { id: string; nome: string }[];
       dataReferencia: string;
     };
+    provedorIa?: string;
+    modeloIa?: string;
   }): Promise<ProcessamentoArquivoResultado> {
-    const { lote, arquivo, contexto } = params;
+    const { lote, arquivo, contexto, provedorIa, modeloIa } = params;
 
     try {
       // 1. Atualiza status para ENVIADO_IA
@@ -221,11 +228,14 @@ export class ImportacaoIaWorkerService {
       );
       const buffer = await fs.readFile(caminhoFisicoArquivo);
 
-      // 3. Chamada de extração de IA (Gemini ou motor local resiliente)
+      // 3. Chamada de extração de IA (com provedor e chave segura do usuário no banco)
       const transacoesExtraidas = await this.extratorClient.extrairTransacoes({
         nomeArquivo: arquivo.nomeArquivo,
         mimeType: arquivo.mimeType,
         conteudoBuffer: buffer,
+        usuarioId: lote.usuarioId,
+        provedorIa,
+        modeloIa,
         contexto,
       });
 
@@ -244,8 +254,8 @@ export class ImportacaoIaWorkerService {
         totalTransacoes: transacoesExtraidas.length,
         geradoEm: new Date().toISOString(),
         metadados: {
-          provedor: 'GEMINI',
-          modelo: 'gemini-2.5-flash',
+          provedor: provedorIa || 'GEMINI',
+          modelo: modeloIa || 'gemini-3.8-flash',
           tentativas: 1,
         },
         transacoes: transacoesExtraidas,

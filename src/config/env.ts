@@ -14,6 +14,7 @@ const envSchema = z.object({
   OPEN_FINANCE_CLIENT_SECRET: z.string().optional(),
   OPEN_FINANCE_API_URL: z.string().url().optional().or(z.literal('')),
   GEMINI_API_KEY: z.string().optional(),
+  ENCRYPTION_KEY: z.string().min(16).optional(),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

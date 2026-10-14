@@ -85,10 +85,29 @@ model Usuario {
   metasZeroAZero   MetaZeroAZero[]
   conexoesBancarias ConexaoBancaria[]
   configuracao     ConfiguracaoUsuario?
+  configuracoesIa  ConfiguracaoIaUsuario[]
   dadosBrutosOpenFinance DadoBrutoOpenFinance[]
   lotesImportacao  LoteImportacao[]
 
   @@map("usuarios")
+}
+
+model ConfiguracaoIaUsuario {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId            String   @map("usuario_id") @db.Uuid
+  provedor             String   @default("GEMINI") @db.VarChar(30)
+  modelo               String   @default("gemini-3.8-flash") @db.VarChar(60)
+  apiKeyCifrada        String   @map("api_key_cifrada") @db.Text
+  ivHex                String   @map("iv_hex") @db.VarChar(32)
+  tagHex               String   @map("tag_hex") @db.VarChar(40)
+  criadoEm             DateTime @default(now()) @map("criado_em") @db.Timestamptz(6)
+  atualizadoEm         DateTime @default(now()) @updatedAt @map("atualizado_em") @db.Timestamptz(6)
+
+  usuario              Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@unique([usuarioId, provedor], map: "uq_configuracao_ia_usuario_provedor")
+  @@index([usuarioId], map: "idx_configuracao_ia_usuario")
+  @@map("configuracoes_ia_usuario")
 }
 
 model ConfiguracaoUsuario {

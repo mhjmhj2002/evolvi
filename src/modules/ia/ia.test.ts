@@ -153,6 +153,7 @@ describe('Módulo de IA para Registro de Lançamentos (TASK-12)', () => {
       const body = JSON.parse(res.body);
       expect(body).toHaveProperty('configurada');
       expect(body).toHaveProperty('hasEnvKey');
+      expect(body).toHaveProperty('hasUserKey');
       expect(Array.isArray(body.provedoresSuportados)).toBe(true);
       expect(body.provedoresSuportados.map((p: any) => p.id)).toContain('GEMINI');
       expect(body.provedoresSuportados.map((p: any) => p.id)).toContain('OPENAI');
@@ -175,6 +176,147 @@ describe('Módulo de IA para Registro de Lançamentos (TASK-12)', () => {
       const body = JSON.parse(res.body);
       expect(body.sucesso).toBe(false);
     }, 15000);
+  });
+
+  describe('Segurança Máxima: Criptografia AES-256-GCM e Chave no Banco de Dados', () => {
+    it('CryptoService: deve criptografar e decifrar mantendo integridade com AES-256-GCM', async () => {
+      const { CryptoService } = await import('../../infrastructure/security/crypto.service.js');
+      const chaveOriginal = 'AIzaSyTestApiKeyUltraSecret1234567890';
+
+      const cifrado = CryptoService.encrypt(chaveOriginal);
+      expect(cifrado).toHaveProperty('ciphertext');
+      expect(cifrado).toHaveProperty('iv');
+      expect(cifrado).toHaveProperty('tag');
+      expect(cifrado.ciphertext).not.toBe(chaveOriginal);
+
+      // Decifrar
+      const decifrado = CryptoService.decrypt(cifrado);
+      expect(decifrado).toBe(chaveOriginal);
+
+      // Mascarar
+      const mascarada = CryptoService.mascararApiKey(chaveOriginal);
+      expect(mascarada).toContain('...');
+      expect(mascarada.startsWith('AIza')).toBe(true);
+      expect(mascarada.endsWith('7890')).toBe(true);
+    });
+
+    it('CryptoService: deve falhar decifragem se auth tag for adulterada', async () => {
+      const { CryptoService } = await import('../../infrastructure/security/crypto.service.js');
+      const cifrado = CryptoService.encrypt('chave-secreta');
+
+      // Modifica auth tag para simular adulteração maliciosa
+      const tagAdulterada = '00' + cifrado.tag.substring(2);
+
+      expect(() => {
+        CryptoService.decrypt({
+          ciphertext: cifrado.ciphertext,
+          iv: cifrado.iv,
+          tag: tagAdulterada,
+        });
+      }).toThrow();
+    });
+
+    it('PUT /api/ia/configuracao deve salvar a chave com criptografia AES-256-GCM atrelada ao usuario', async () => {
+      const resPut = await app.inject({
+        method: 'PUT',
+        url: '/api/ia/configuracao',
+        cookies: { token: tokenAuth },
+        payload: {
+          provedor: 'GEMINI',
+          apiKey: 'AIzaSyChaveUltraSecretaDoUsuarioBanco12345',
+          modelo: 'gemini-2.5-flash',
+        },
+      });
+
+      expect(resPut.statusCode).toBe(200);
+      const bodyPut = JSON.parse(resPut.body);
+      expect(bodyPut.sucesso).toBe(true);
+      expect(bodyPut.hasUserKey).toBe(true);
+      expect(bodyPut.chaveMascarada).toBeDefined();
+      expect(bodyPut.chaveMascarada).not.toContain('ChaveUltraSecretaDoUsuarioBanco');
+
+      // GET /api/ia/status deve refletir que há chave do usuário
+      const resStatus = await app.inject({
+        method: 'GET',
+        url: '/api/ia/status',
+        cookies: { token: tokenAuth },
+      });
+      expect(resStatus.statusCode).toBe(200);
+      const bodyStatus = JSON.parse(resStatus.body);
+      expect(bodyStatus.hasUserKey).toBe(true);
+      expect(bodyStatus.configurada).toBe(true);
+      expect(bodyStatus.chaveMascarada).toBe(bodyPut.chaveMascarada);
+    });
+
+    it('deve permitir configurar múltiplos provedores para o mesmo usuário e refletir no status', async () => {
+      // 1. Configura Gemini
+      const resGemini = await app.inject({
+        method: 'PUT',
+        url: '/api/ia/configuracao',
+        cookies: { token: tokenAuth },
+        payload: {
+          provedor: 'GEMINI',
+          apiKey: 'AIzaSyChaveGeminiDoUsuario12345',
+          modelo: 'gemini-2.5-flash',
+        },
+      });
+      expect(resGemini.statusCode).toBe(200);
+
+      // 2. Configura OpenAI para o mesmo usuário
+      const resOpenAI = await app.inject({
+        method: 'PUT',
+        url: '/api/ia/configuracao',
+        cookies: { token: tokenAuth },
+        payload: {
+          provedor: 'OPENAI',
+          apiKey: 'sk-proj-ChaveOpenAiDoUsuario67890',
+          modelo: 'gpt-4o-mini',
+        },
+      });
+      expect(resOpenAI.statusCode).toBe(200);
+
+      // 3. Status deve retornar 2 IAs ativas
+      const resStatus = await app.inject({
+        method: 'GET',
+        url: '/api/ia/status',
+        cookies: { token: tokenAuth },
+      });
+      expect(resStatus.statusCode).toBe(200);
+      const bodyStatus = JSON.parse(resStatus.body);
+      expect(bodyStatus.configurada).toBe(true);
+      expect(bodyStatus.totalConfiguradas).toBe(2);
+      expect(bodyStatus.configuracoes).toHaveLength(2);
+
+      const provsConfigurados = bodyStatus.configuracoes.map((c: any) => c.provedor);
+      expect(provsConfigurados).toContain('GEMINI');
+      expect(provsConfigurados).toContain('OPENAI');
+
+      // 4. Excluir especificamente a OpenAI via query param ?provedor=OPENAI
+      const resDelOpenAi = await app.inject({
+        method: 'DELETE',
+        url: '/api/ia/configuracao?provedor=OPENAI',
+        cookies: { token: tokenAuth },
+      });
+      expect(resDelOpenAi.statusCode).toBe(200);
+
+      // 5. Status deve manter apenas Gemini
+      const resStatusAposRemover = await app.inject({
+        method: 'GET',
+        url: '/api/ia/status',
+        cookies: { token: tokenAuth },
+      });
+      const bodyApos = JSON.parse(resStatusAposRemover.body);
+      expect(bodyApos.totalConfiguradas).toBe(1);
+      expect(bodyApos.configuracoes).toHaveLength(1);
+      expect(bodyApos.configuracoes[0].provedor).toBe('GEMINI');
+
+      // 6. Limpar tudo
+      await app.inject({
+        method: 'DELETE',
+        url: '/api/ia/configuracao',
+        cookies: { token: tokenAuth },
+      });
+    });
   });
 });
 

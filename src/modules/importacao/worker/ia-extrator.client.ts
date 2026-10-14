@@ -15,6 +15,7 @@ import {
 
 import { PdfTextExtractor } from '../../conector/parsers/pdf-text-extractor.js';
 import { C6InvoicePdfParser } from '../../conector/parsers/c6-invoice-pdf.parser.js';
+import { CryptoService } from '../../../infrastructure/security/crypto.service.js';
 
 export interface IIaExtratorClient {
   extrairTransacoes(params: {
@@ -22,6 +23,9 @@ export interface IIaExtratorClient {
     mimeType?: string | null;
     conteudoBuffer: Buffer;
     conteudoTexto?: string;
+    usuarioId?: string;
+    provedorIa?: string;
+    modeloIa?: string;
     contexto: {
       contas: { id: string; nome: string; tipo: string }[];
       categorias: { id: string; nome: string }[];
@@ -35,7 +39,7 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
   private model: string;
   private universalParser: UniversalStatementParser;
 
-  constructor(apiKey?: string, model: string = 'gemini-2.5-flash') {
+  constructor(apiKey?: string, model: string = 'gemini-3.8-flash') {
     this.apiKey = apiKey || env.GEMINI_API_KEY;
     this.model = model;
     this.universalParser = new UniversalStatementParser();
@@ -97,21 +101,57 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     }
 
     // 3. Rigor Exclusivo da IA para documentos complexos / não-estruturados (PDFs, imagens, textos livres):
-    // Se não houver chave de IA configurada, NÃO tentar adivinhar transações via código.
-    if (!this.apiKey) {
+    // Se não houver chave prévia injetada, buscar a chave configurada e criptografada do usuário no banco
+    let apiKeyEfetiva = this.apiKey;
+    let modeloEfetivo = params.modeloIa || this.model;
+    let provedorEfetivo = params.provedorIa || 'GEMINI';
+
+    if (!apiKeyEfetiva && params.usuarioId) {
+      const configUsuario = params.provedorIa
+        ? await prisma.configuracaoIaUsuario.findUnique({
+            where: {
+              usuarioId_provedor: {
+                usuarioId: params.usuarioId,
+                provedor: params.provedorIa,
+              },
+            },
+          })
+        : await prisma.configuracaoIaUsuario.findFirst({
+            where: { usuarioId: params.usuarioId },
+            orderBy: { criadoEm: 'asc' },
+          });
+
+      if (configUsuario) {
+        try {
+          apiKeyEfetiva = CryptoService.decrypt({
+            ciphertext: configUsuario.apiKeyCifrada,
+            iv: configUsuario.ivHex,
+            tag: configUsuario.tagHex,
+          });
+          modeloEfetivo = configUsuario.modelo || modeloEfetivo;
+          provedorEfetivo = configUsuario.provedor;
+        } catch (err) {
+          console.error('[GeminiIaExtratorClient] Erro ao decifrar chave do usuário:', err);
+        }
+      }
+    }
+
+    if (!apiKeyEfetiva) {
       throw new Error(
-        'A IA não conseguiu processar este documento. Verifique se a chave de IA está configurada ou se o documento é legível.'
+        'A IA não conseguiu processar este documento. Verifique se a chave de IA está configurada no seu perfil ou se o documento é legível.'
       );
     }
 
-    // Se temos apiKey do Gemini, tentamos chamada multimodal ou text
+    // Se temos apiKey, tentamos chamada multimodal ou text
     try {
       return await this.chamarGeminiApi(
         nomeArquivo,
         mimeType,
         conteudoBuffer,
         contexto,
-        textoProcessado
+        textoProcessado,
+        apiKeyEfetiva,
+        modeloEfetivo
       );
     } catch (err: unknown) {
       const detalhe = err instanceof Error ? err.message : String(err);
@@ -132,9 +172,13 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
       categorias: { id: string; nome: string }[];
       dataReferencia: string;
     },
-    textoProcessado?: string
+    textoProcessado?: string,
+    apiKeyOverride?: string,
+    modelOverride?: string
   ): Promise<LancamentoConsolidadoIa[]> {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
+    const key = apiKeyOverride || this.apiKey;
+    const mod = modelOverride || this.model;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${mod}:generateContent?key=${key}`;
 
     const promptSistema = `Você é o extrator inteligente e especialista financeiro do sistema Evolvi.
 Sua missão é extrair rigorosamente TODAS as transações financeiras (despesas, receitas, faturas, pagamentos, transferências) contidas no documento ou extrato anexo.

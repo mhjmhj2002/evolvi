@@ -36,3 +36,18 @@ export const testarApiKeySchema = z.object({
 });
 
 export type TestarApiKeyInput = z.infer<typeof testarApiKeySchema>;
+
+export const salvarConfiguracaoIaSchema = z.object({
+  provedor: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'OPENROUTER']),
+  apiKey: z.string().min(8, 'API Key muito curta'),
+  modelo: z.string().optional(),
+});
+
+export type SalvarConfiguracaoIaInput = z.infer<typeof salvarConfiguracaoIaSchema>;
+
+export const removerConfiguracaoIaSchema = z.object({
+  provedor: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'OPENROUTER']).optional(),
+});
+
+export type RemoverConfiguracaoIaInput = z.infer<typeof removerConfiguracaoIaSchema>;
+

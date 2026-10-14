@@ -28,7 +28,7 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
 
   // Provedor selecionado
   const [provedor, setProvedor] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC'>('GEMINI');
-  const [modelo, setModelo] = useState('gemini-2.5-flash');
+  const [modelo, setModelo] = useState('gemini-3.8-flash');
   const [apiKey, setApiKey] = useState('');
   const [mostrarChave, setMostrarChave] = useState(false);
 
@@ -42,12 +42,9 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
       const res = await apiService.getStatusIa();
       setStatusIa(res);
 
-      // Carregar do localStorage se existir
-      const savedKey = localStorage.getItem('evolvi_ia_byok_key') || '';
-      const savedProvedor = (localStorage.getItem('evolvi_ia_byok_provedor') as any) || (res.provedorAtivo || 'GEMINI');
-      const savedModelo = localStorage.getItem('evolvi_ia_byok_modelo') || res.modeloPadrao || 'gemini-2.5-flash';
+      const savedProvedor = (res.provedorAtivo as any) || (localStorage.getItem('evolvi_ia_byok_provedor') as any) || 'GEMINI';
+      const savedModelo = res.modeloPadrao || localStorage.getItem('evolvi_ia_byok_modelo') || 'gemini-3.8-flash';
 
-      setApiKey(savedKey);
       setProvedor(savedProvedor);
       setModelo(savedModelo);
       setGuiaAberto(savedProvedor);
@@ -60,26 +57,35 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
     carregarStatus();
   }, []);
 
-  const handleSalvarChave = () => {
+  const handleSalvarChave = async () => {
     const keyTrimmed = apiKey.trim();
-    if (keyTrimmed) {
-      localStorage.setItem('evolvi_ia_byok_key', keyTrimmed);
-      localStorage.setItem('evolvi_ia_byok_provedor', provedor);
-      localStorage.setItem('evolvi_ia_byok_modelo', modelo);
-      setFeedback({ tipo: 'sucesso', texto: 'Chave e configurações salvas no navegador com sucesso!' });
-      onChaveAtualizada?.(true);
-    } else {
-      localStorage.removeItem('evolvi_ia_byok_key');
-      localStorage.removeItem('evolvi_ia_byok_provedor');
-      localStorage.removeItem('evolvi_ia_byok_modelo');
-      setFeedback({ tipo: 'sucesso', texto: 'Chave pessoal removida.' });
-      onChaveAtualizada?.(Boolean(statusIa?.hasEnvKey));
+    if (!keyTrimmed && !statusIa?.hasUserKey) {
+      setFeedback({ tipo: 'erro', texto: 'Informe uma chave de API para salvar.' });
+      return;
+    }
+
+    try {
+      if (keyTrimmed) {
+        await apiService.salvarConfiguracaoIa({
+          provedor,
+          apiKey: keyTrimmed,
+          modelo,
+        });
+        // Remove do localStorage antigo se existir por segurança
+        localStorage.removeItem('evolvi_ia_byok_key');
+        setApiKey('');
+        setFeedback({ tipo: 'sucesso', texto: 'Chave criptografada com AES-256-GCM e salva com sucesso no banco!' });
+        await carregarStatus();
+        onChaveAtualizada?.(true);
+      }
+    } catch (err: any) {
+      setFeedback({ tipo: 'erro', texto: err.message || 'Erro ao persistir configuração no servidor.' });
     }
   };
 
   const handleTestarConexao = async () => {
     const keyTrimmed = apiKey.trim();
-    if (!keyTrimmed && !statusIa?.hasEnvKey) {
+    if (!keyTrimmed && !statusIa?.hasUserKey && !statusIa?.hasEnvKey) {
       setFeedback({ tipo: 'erro', texto: 'Informe uma chave de API para testar.' });
       return;
     }
@@ -95,7 +101,9 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
 
       if (res.sucesso) {
         setFeedback({ tipo: 'sucesso', texto: res.message || 'Conexão validada com sucesso!' });
-        handleSalvarChave();
+        if (keyTrimmed) {
+          await handleSalvarChave();
+        }
       } else {
         setFeedback({ tipo: 'erro', texto: res.message || 'Falha na validação da chave.' });
       }
@@ -106,14 +114,23 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
     }
   };
 
-  const handleLimparChave = () => {
-    setApiKey('');
-    localStorage.removeItem('evolvi_ia_byok_key');
-    setFeedback({ tipo: 'sucesso', texto: 'Chave desvinculada.' });
-    onChaveAtualizada?.(Boolean(statusIa?.hasEnvKey));
+  const handleLimparChave = async (provedorRemover?: string) => {
+    const alvo = provedorRemover || provedor;
+    try {
+      await apiService.removerConfiguracaoIa(alvo);
+      if (alvo === provedor) {
+        setApiKey('');
+      }
+      localStorage.removeItem('evolvi_ia_byok_key');
+      setFeedback({ tipo: 'sucesso', texto: `Chave de IA (${alvo}) removida do banco com segurança.` });
+      await carregarStatus();
+      onChaveAtualizada?.(Boolean(statusIa?.hasEnvKey || (statusIa?.configuracoes && statusIa.configuracoes.length > 1)));
+    } catch (err: any) {
+      setFeedback({ tipo: 'erro', texto: err.message || 'Erro ao remover chave do banco.' });
+    }
   };
 
-  const isConfigurada = Boolean(statusIa?.hasEnvKey || apiKey.trim().length > 0);
+  const isConfigurada = Boolean(statusIa?.hasUserKey || statusIa?.hasEnvKey || apiKey.trim().length > 0);
 
   return (
     <div className="login-card" style={{ maxWidth: '100%', margin: 0 }}>
@@ -154,12 +171,77 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
         )}
       </div>
 
-      {/* 2. Banner Informativo sobre Origem da Chave */}
-      {statusIa?.hasEnvKey ? (
+      {/* 2. Banner Informativo sobre Origem das Chaves */}
+      {statusIa?.configuracoes && statusIa.configuracoes.length > 0 ? (
         <div
           style={{
             background: 'rgba(34, 197, 94, 0.08)',
             border: '1px solid rgba(34, 197, 94, 0.25)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '12px 14px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            fontSize: '0.84rem',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Server size={18} style={{ color: 'var(--status-green, #22c55e)', flexShrink: 0 }} />
+            <strong style={{ color: 'var(--text-primary)' }}>
+              {statusIa.configuracoes.length === 1
+                ? '1 Inteligência Artificial configurada no banco (AES-256-GCM):'
+                : `${statusIa.configuracoes.length} Inteligências Artificiais configuradas no banco (AES-256-GCM):`}
+            </strong>
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '2px' }}>
+            {statusIa.configuracoes.map((cfg) => (
+              <div
+                key={cfg.provedor}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  background: 'rgba(0,0,0,0.25)',
+                  padding: '4px 10px',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: '0.78rem',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                }}
+              >
+                <CheckCircle2 size={13} style={{ color: 'var(--status-green, #22c55e)' }} />
+                <strong style={{ color: 'var(--text-primary)' }}>
+                  {cfg.provedor === 'GEMINI' ? 'Google Gemini' : cfg.provedor === 'OPENAI' ? 'OpenAI (ChatGPT)' : 'Anthropic (Claude)'}:
+                </strong>
+                <code>{cfg.chaveMascarada}</code>
+                <button
+                  type="button"
+                  onClick={() => handleLimparChave(cfg.provedor)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--status-red, #ef4444)',
+                    cursor: 'pointer',
+                    fontSize: '0.7rem',
+                    marginLeft: '4px',
+                    padding: '2px 4px',
+                  }}
+                  title={`Remover chave ${cfg.provedor}`}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+          <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+            Você pode configurar mais de um provedor abaixo. Na hora de importar, você escolherá qual IA deseja usar!
+          </div>
+        </div>
+      ) : statusIa?.hasEnvKey ? (
+        <div
+          style={{
+            background: 'rgba(56, 189, 248, 0.08)',
+            border: '1px solid rgba(56, 189, 248, 0.25)',
             borderRadius: 'var(--radius-sm)',
             padding: '12px 14px',
             display: 'flex',
@@ -169,11 +251,11 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
             color: 'var(--text-secondary)',
           }}
         >
-          <Server size={18} style={{ color: 'var(--status-green, #22c55e)', flexShrink: 0, marginTop: '2px' }} />
+          <Server size={18} style={{ color: 'var(--brand-primary, #38bdf8)', flexShrink: 0, marginTop: '2px' }} />
           <div>
-            <strong style={{ color: 'var(--text-primary)' }}>Chave do Servidor Ativa: </strong>
-            O servidor já possui uma chave do Google Gemini configurada globalmente via variáveis de ambiente.
-            Você pode utilizar a IA imediatamente sem precisar de chave pessoal, ou configurar sua própria chave abaixo (BYOK) para controle individual de cotas.
+            <strong style={{ color: 'var(--text-primary)' }}>Chave do Servidor Disponível: </strong>
+            O servidor possui uma chave fallback de IA configurada.
+            Para ter controle individual das suas cotas ou usar outro provedor (Claude, OpenAI), configure suas chaves pessoais (BYOK) abaixo.
           </div>
         </div>
       ) : (
@@ -192,9 +274,9 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
         >
           <Key size={18} style={{ color: 'var(--status-yellow, #eab308)', flexShrink: 0, marginTop: '2px' }} />
           <div>
-            <strong style={{ color: 'var(--text-primary)' }}>Nenhuma chave global detectada: </strong>
-            Para processar faturas em PDF e documentos não estruturados, configure sua chave de API pessoal (BYOK)
-            gratuita do Google Gemini ou de outro provedor suportado. A chave é salva com segurança apenas no seu navegador.
+            <strong style={{ color: 'var(--text-primary)' }}>Nenhuma chave configurada: </strong>
+            Para processar faturas em PDF e documentos não estruturados, configure sua chave de API pessoal (BYOK).
+            Sua chave será protegida e criptografada no banco de dados com algoritmo <strong>AES-256-GCM</strong> exclusivo por usuário.
           </div>
         </div>
       )}
@@ -202,12 +284,13 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
       {/* 3. Seleção de Provedor e Formulário */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '4px' }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px' }}>
+          {/* Gemini */}
           <button
             type="button"
             className={`auth-tab-btn ${provedor === 'GEMINI' ? 'active' : ''}`}
             onClick={() => {
               setProvedor('GEMINI');
-              setModelo('gemini-2.5-flash');
+              setModelo('gemini-3.8-flash');
               setGuiaAberto('GEMINI');
             }}
             style={{
@@ -224,11 +307,16 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
               <span style={{ fontWeight: 700, fontSize: '0.88rem' }}>Google Gemini</span>
-              <span className="badge badge-verde" style={{ fontSize: '0.65rem' }}>Recomendado</span>
+              {statusIa?.configuracoes?.some((c) => c.provedor === 'GEMINI') ? (
+                <span className="badge badge-verde" style={{ fontSize: '0.65rem' }}>✓ Configurada</span>
+              ) : (
+                <span className="badge badge-verde" style={{ fontSize: '0.65rem' }}>Recomendado</span>
+              )}
             </div>
             <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Gratuito • Rápido • Multimodal</span>
           </button>
 
+          {/* OpenAI */}
           <button
             type="button"
             className={`auth-tab-btn ${provedor === 'OPENAI' ? 'active' : ''}`}
@@ -251,10 +339,14 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
               <span style={{ fontWeight: 700, fontSize: '0.88rem' }}>OpenAI (ChatGPT)</span>
+              {statusIa?.configuracoes?.some((c) => c.provedor === 'OPENAI') && (
+                <span className="badge badge-verde" style={{ fontSize: '0.65rem' }}>✓ Configurada</span>
+              )}
             </div>
             <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>GPT-4o • GPT-4o-mini</span>
           </button>
 
+          {/* Anthropic */}
           <button
             type="button"
             className={`auth-tab-btn ${provedor === 'ANTHROPIC' ? 'active' : ''}`}
@@ -277,6 +369,9 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
               <span style={{ fontWeight: 700, fontSize: '0.88rem' }}>Anthropic (Claude)</span>
+              {statusIa?.configuracoes?.some((c) => c.provedor === 'ANTHROPIC') && (
+                <span className="badge badge-verde" style={{ fontSize: '0.65rem' }}>✓ Configurada</span>
+              )}
             </div>
             <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Claude 3.5 Sonnet / Haiku</span>
           </button>
@@ -329,7 +424,7 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
               type="button"
               className="btn btn-secondary"
               onClick={handleTestarConexao}
-              disabled={testando || (!apiKey && !statusIa?.hasEnvKey)}
+              disabled={testando || (!apiKey && !statusIa?.hasEnvKey && !statusIa?.configuracoes?.some(c => c.provedor === provedor))}
               style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
             >
               <RefreshCw size={14} className={testando ? 'animate-spin' : ''} />
@@ -344,15 +439,15 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
               <CheckCircle2 size={14} />
               Salvar
             </button>
-            {apiKey && (
+            {statusIa?.configuracoes?.some((c) => c.provedor === provedor) && (
               <button
                 type="button"
                 className="btn btn-secondary"
-                onClick={handleLimparChave}
+                onClick={() => handleLimparChave(provedor)}
                 style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', whiteSpace: 'nowrap', color: 'var(--status-red, #ef4444)' }}
-                title="Remover chave salva localmente"
+                title={`Remover chave ${provedor} do banco`}
               >
-                Limpar
+                Remover {provedor}
               </button>
             )}
           </div>
