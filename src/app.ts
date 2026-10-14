@@ -60,6 +60,7 @@ export async function buildApp() {
   const { fase1Routes } = await import('./modules/fase1/fase1.routes.js');
   const { iaRoutes } = await import('./modules/ia/ia.routes.js');
   const { conectorRoutes } = await import('./modules/conector/conector.routes.js');
+  const { importacaoRoutes } = await import('./modules/importacao/importacao.routes.js');
 
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(usuarioRoutes, { prefix: '/api/usuario' });
@@ -72,6 +73,7 @@ export async function buildApp() {
   await app.register(fase1Routes, { prefix: '/api/fase1' });
   await app.register(iaRoutes, { prefix: '/api/ia' });
   await app.register(conectorRoutes, { prefix: '/api/conectores' });
+  await app.register(importacaoRoutes, { prefix: '/api/importacao' });
 
   return app;
 }

@@ -16,6 +16,7 @@ import {
   TelaCompromissos,
   TelaCadastros,
   TelaFasesEducativas,
+  TelaImportacaoIa,
 } from './screens/index.ts';
 import {
   apiService,
@@ -252,6 +253,27 @@ export const App: React.FC = () => {
                 }
               } catch (e) {
                 console.warn('Erro ao atualizar resumo pós-modificação:', e);
+              }
+            }}
+          />
+        )}
+
+        {activeTab === 'importacao' && (
+          <TelaImportacaoIa
+            usuarioId={authUser?.id}
+            onNavigateTab={(tab) => setActiveTab(tab)}
+            onNovasContasOuMovimentos={async () => {
+              try {
+                const [resMovimentos, resContas] = await Promise.all([
+                  apiService.getMovimentos('2026-10'),
+                  apiService.getContas(),
+                ]);
+                if (resContas) setContas(resContas);
+                if (resMovimentos?.resumo) {
+                  setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
+                }
+              } catch (e) {
+                console.warn('Erro ao atualizar dados pós-importação:', e);
               }
             }}
           />

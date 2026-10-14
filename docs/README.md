@@ -12,6 +12,9 @@ Bem-vindo à pasta de documentação técnica do **Evolvi**. Aqui você encontra
 2. [**Deploy em Ambiente de Desenvolvimento (`DEPLOY_DEV.md`)**](DEPLOY_DEV.md)  
    Estratégias de deploy para servidores de homologação/dev utilizando Docker Compose ou PM2, scripts de automação, testes de fumaça (smoke tests) e procedimentos de rollback.
 
+3. [**Fluxo de Importação Inteligente por IA (`FLUXO_IMPORTACAO_IA.md`)**](FLUXO_IMPORTACAO_IA.md)  
+   Arquitetura detalhada do fluxo completo de importação de extratos e faturas em lote com IA, desde o upload (arquivos/pastas) até a consolidação dos lançamentos e auto-cadastro de contas.
+
 ---
 
 ## 🏛️ Arquitetura e Especificações de Negócio

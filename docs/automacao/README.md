@@ -26,17 +26,22 @@ Este diretório contém os scripts de automação para subir todo o ecossistema 
    - Valida variáveis obrigatórias (`DATABASE_URL`, `JWT_SECRET`).
    - Valida se `JWT_SECRET` possui ao menos 16 caracteres (regra de segurança do Zod).
 
-4. **Verificação de Serviços Já em Execução (Rebuild & Restart):**
+4. **Verificação de Serviços Já em Execução (Rebuild & Restart Automático):**
    - Testa se as portas do backend (`PORT` ou padrão `3333`) e do frontend (`5173`) já estão ativas.
-   - Caso estejam em execução, encerra os processos em andamento, executa o rebuild das aplicações (`prisma:generate`, `build` e `build:web`) e sobe novamente os serviços atualizados.
+   - Caso estejam em execução, encerra os processos em andamento com segurança (garantindo parada graciosa dos workers), executa o rebuild das aplicações (`prisma:generate`, `build` e `build:web`) e sobe novamente os serviços atualizados.
 
 5. **Subida do Banco PostgreSQL:**
    - Verifica se o container `evolvi_postgres` está ativo via Docker Compose.
    - Caso não esteja, executa `docker compose up -d postgres` e aguarda o `pg_isready`.
 
-6. **Inicialização dos Servidores:**
-   - Inicia o backend (`npm run dev`) e o frontend (`npm run dev:web`).
-   - Gerencia sinais de encerramento (`SIGINT` / `Ctrl+C`), matando os processos filhos de forma limpa.
+6. **Inicialização dos Servidores e Workers em Background:**
+   - Inicia o backend (`npm run dev`) que acopla automaticamente:
+     - ⚡ **Worker Open Finance** (`openFinanceWorkerService`): busca periódica e processamento de contas/cartões.
+     - 🤖 **Worker IA de Importação** (`importacaoIaWorkerService`): extração estruturada de arquivos via Gemini API ou motor heurístico universal.
+     - 📦 **Worker Staging de Importação** (`importacaoStagingWorkerService`): validação de esquema e carga intermediária.
+     - 🔄 **Worker Consolidação de Importação** (`importacaoConsolidacaoWorkerService`): deduplicação inteligente e criação das transações oficiais.
+   - Inicia o frontend (`npm run dev:web`) com suporte às telas mobile-first, incluindo a tela de **Importação Inteligente com IA** (`/importacao-ia`).
+   - Gerencia sinais de encerramento (`SIGINT` / `Ctrl+C`), matando os processos e desligando os workers de forma limpa.
 
 7. **Terminal Persistente (Não fecha sozinho):**
    - Independentemente de terminar com sucesso ou erro, o terminal solicita `Pressione qualquer tecla ou ENTER para fechar este terminal...`, garantindo que o usuário leia os logs e mensagens de erro.

@@ -148,6 +148,11 @@ BACKEND_PORT="${PORT:-3333}"
 FRONTEND_PORT="5173"
 
 echo -e "  ✔ Variáveis de ambiente validadas com sucesso."
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+  echo -e "  ✔ GEMINI_API_KEY configurada para Extração Multimodal/IA."
+else
+  echo -e "  ℹ GEMINI_API_KEY não configurada (Processamento de IA operará em modo Heurístico Universal local)."
+fi
 echo -e "  ✔ Porta configurada Backend : ${BACKEND_PORT}"
 echo -e "  ✔ Porta configurada Frontend: ${FRONTEND_PORT}"
 
@@ -339,6 +344,8 @@ echo -e "${GREEN}${BOLD}========================================================
 echo -e "• Frontend Web (Mobile-First) : ${CYAN}${BOLD}http://localhost:${FRONTEND_PORT}${NC}"
 echo -e "• Backend API (Fastify)       : ${CYAN}${BOLD}http://localhost:${BACKEND_PORT}${NC}"
 echo -e "• Healthcheck                 : ${CYAN}${BOLD}http://localhost:${BACKEND_PORT}/health${NC}"
+echo -e "• Workers em Background       : ${GREEN}Ativos (Open Finance, Worker IA, Worker Staging, Worker Consolidação)${NC}"
+echo -e "• Importação Inteligente (IA) : ${CYAN}${BOLD}http://localhost:${FRONTEND_PORT}/importacao-ia${NC}"
 echo -e "• Arquivo de Log desta Sessão : ${CYAN}${LOG_FILE}${NC}"
 echo ""
 echo -e "${YELLOW}Para encerrar o ambiente, pressione Ctrl+C neste terminal.${NC}"

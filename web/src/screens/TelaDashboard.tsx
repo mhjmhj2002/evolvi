@@ -26,7 +26,7 @@ interface TelaDashboardProps {
   semaforo: SemaforoResponse;
   cronograma: CronogramaVencimentosResponse;
   totalGastoMes: number;
-  onNavigateTab: (tab: 'dashboard' | 'lancamentos' | 'semaforo' | 'compromissos' | 'cadastros' | 'fases') => void;
+  onNavigateTab: (tab: 'dashboard' | 'lancamentos' | 'importacao' | 'semaforo' | 'compromissos' | 'cadastros' | 'fases') => void;
   onOpenNovaTransacao: () => void;
 }
 
@@ -267,6 +267,29 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
           style={{ width: '100%' }}
         >
           <Sparkles size={18} /> Registrar Despesa / Pagamento
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onNavigateTab('importacao')}
+          style={{
+            width: '100%',
+            background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.2) 0%, rgba(56, 189, 248, 0.15) 100%)',
+            border: '1px solid rgba(129, 140, 248, 0.4)',
+            color: '#c7d2fe',
+            borderRadius: 'var(--radius-sm)',
+            minHeight: '44px',
+            fontSize: '0.9rem',
+            fontWeight: 700,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          <Sparkles size={18} color="var(--brand-primary)" /> Importar Faturas e Pastas com IA
         </button>
 
         <button

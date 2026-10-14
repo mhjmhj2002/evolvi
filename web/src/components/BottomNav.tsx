@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, ReceiptText, Activity, CalendarClock, Compass, Plus, UserCog } from 'lucide-react';
+import { LayoutDashboard, ReceiptText, Activity, CalendarClock, Compass, Plus, UserCog, Sparkles } from 'lucide-react';
 import { BottomNavProps } from './types.ts';
 
 export const BottomNav: React.FC<BottomNavProps> = ({
@@ -41,6 +41,18 @@ export const BottomNav: React.FC<BottomNavProps> = ({
           <Activity size={20} />
         </div>
         <span>Semáforo</span>
+      </button>
+
+      <button
+        type="button"
+        className={`bottom-nav-item ${activeTab === 'importacao' ? 'active' : ''}`}
+        onClick={() => onSelectTab('importacao')}
+        title="Importação Inteligente com IA"
+      >
+        <div className="nav-icon-wrapper" style={activeTab === 'importacao' ? { background: 'rgba(99, 102, 241, 0.2)' } : {}}>
+          <Sparkles size={20} color={activeTab === 'importacao' ? 'var(--brand-primary)' : 'currentColor'} />
+        </div>
+        <span>Importar</span>
       </button>
 
       {/* Floating Center Action Button - ergonomia celular */}

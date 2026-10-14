@@ -19,8 +19,10 @@ import {
   RefreshCw,
   Calendar,
   Settings2,
+  Sparkles,
 } from 'lucide-react';
 import { GerenciadorConectoresBancarios } from '../components/GerenciadorConectoresBancarios.tsx';
+import { ConfiguracaoIaCard } from '../components/ConfiguracaoIaCard.tsx';
 
 interface TelaCadastrosProps {
   perfil: UsuarioPerfil;
@@ -28,6 +30,7 @@ interface TelaCadastrosProps {
   categorias: CategoriaTreeItem[];
   onRendaAtualizada?: (novaRenda: number) => void;
   onExtratoImportado?: () => void;
+  subAbaInicial?: 'renda' | 'contas' | 'categorias' | 'bancos' | 'ia' | 'configuracoes';
 }
 
 export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
@@ -36,11 +39,12 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
   categorias,
   onRendaAtualizada,
   onExtratoImportado,
+  subAbaInicial = 'renda',
 }) => {
   const { atualizarRendaBase } = useAuth();
 
   // Sub-abas do menu de cadastros
-  const [subAba, setSubAba] = useState<'renda' | 'contas' | 'categorias' | 'bancos' | 'configuracoes'>('renda');
+  const [subAba, setSubAba] = useState<'renda' | 'contas' | 'categorias' | 'bancos' | 'ia' | 'configuracoes'>(subAbaInicial);
 
   // Estado do formulário de renda base com Média N-Meses e Complemento Editável (TASK-26 e TASK-27)
   const [loadingMedia, setLoadingMedia] = useState(false);
@@ -195,9 +199,47 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
           type="button"
           className={`auth-tab-btn ${subAba === 'bancos' ? 'active' : ''}`}
           onClick={() => setSubAba('bancos')}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
         >
           <Landmark size={16} />
           <span>Open Finance & Bancos</span>
+          <span
+            style={{
+              fontSize: '0.66rem',
+              fontWeight: 700,
+              padding: '1px 6px',
+              borderRadius: '999px',
+              background: 'rgba(234, 179, 8, 0.18)',
+              color: 'var(--status-yellow, #eab308)',
+              border: '1px solid rgba(234, 179, 8, 0.35)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+            }}
+          >
+            Em breve
+          </span>
+        </button>
+        <button
+          type="button"
+          className={`auth-tab-btn ${subAba === 'ia' ? 'active' : ''}`}
+          onClick={() => setSubAba('ia')}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+        >
+          <Sparkles size={16} />
+          <span>Configurar IA</span>
+          <span
+            style={{
+              fontSize: '0.66rem',
+              fontWeight: 700,
+              padding: '1px 6px',
+              borderRadius: '999px',
+              background: 'rgba(56, 189, 248, 0.18)',
+              color: 'var(--brand-primary, #38bdf8)',
+              border: '1px solid rgba(56, 189, 248, 0.35)',
+            }}
+          >
+            LLM
+          </span>
         </button>
         <button
           type="button"
@@ -208,6 +250,11 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
           <span>Parâmetros ({mesesConfigurados}M / {intervaloSyncConfigurado}h)</span>
         </button>
       </div>
+
+      {/* Sub-aba: Configuração de IA & Modelos */}
+      {subAba === 'ia' && (
+        <ConfiguracaoIaCard />
+      )}
 
       {/* 3. Conteúdo da Sub-aba: Renda Base */}
       {subAba === 'renda' && (
@@ -775,7 +822,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
                 ))}
               </div>
               <span className="role-helper-text" style={{ marginTop: '8px' }}>
-                O agendador verificará suas conexões bancárias ativas e coletará extratos e faturas brutos com tolerância a falhas e idempotência.
+                Configuração de frequência para quando as integrações bancárias automáticas forem liberadas. (Módulo automático atualmente pausado em espera da fase de monetização).
               </span>
             </div>
 

@@ -143,22 +143,48 @@ export class UniversalStatementParser {
 
       // Detecção de delimitador com base no cabeçalho
       const primeiroLinha = linhas[0];
-      const delimitador = (primeiroLinha.match(/;/g) || []).length >= (primeiroLinha.match(/,/g) || []).length ? ';' : ',';
+      const countPontoEVirgula = (primeiroLinha.match(/;/g) || []).length;
+      const countVirgula = (primeiroLinha.match(/,/g) || []).length;
+      const countTab = (primeiroLinha.match(/\t/g) || []).length;
+
+      // Um CSV estruturado bancário DEVE conter colunas separadas por delimitador
+      if (countPontoEVirgula === 0 && countVirgula === 0 && countTab === 0) {
+        return {
+          formato: 'CSV',
+          transacoes: [],
+          erros: ['Arquivo CSV não possui delimitador tabular reconhecível (; ou ,).'],
+        };
+      }
+
+      let delimitador = ';';
+      if (countTab > countPontoEVirgula && countTab > countVirgula) {
+        delimitador = '\t';
+      } else if (countVirgula > countPontoEVirgula) {
+        delimitador = ',';
+      }
 
       // Identificar colunas do cabeçalho
       const cabecalho = primeiroLinha
         .split(delimitador)
         .map((col) => col.replace(/["']/g, '').trim().toLowerCase());
 
-      const idxData = cabecalho.findIndex((c) => /data|date|dt/i.test(c));
-      const idxDesc = cabecalho.findIndex((c) => /descri[cç][aã]o|historico|hist[oó]rico|memo|memo|detalhe/i.test(c));
-      const idxValor = cabecalho.findIndex((c) => /valor|value|amount|quantia/i.test(c));
+      const idxData = cabecalho.findIndex((c) => /^(data|date|dt|data\s+movimento|data\s+lan[cç]amento)$/i.test(c) || /\b(data|date|dt)\b/i.test(c));
+      const idxDesc = cabecalho.findIndex((c) => /^(descri[cç][aã]o|historico|hist[oó]rico|memo|detalhe|lan[cç]amento)$/i.test(c) || /\b(descri[cç][aã]o|historico|hist[oó]rico|memo)\b/i.test(c));
+      const idxValor = cabecalho.findIndex((c) => /^(valor|value|amount|quantia|valor\s+r\$)$/i.test(c) || /\b(valor|value|amount|quantia)\b/i.test(c));
 
-      // Se não encontrou cabeçalho explícito, tenta layout padrão 0=data, 1=descrição, 2=valor
-      const startIdx = idxData >= 0 && idxValor >= 0 ? 1 : 0;
-      const colData = idxData >= 0 ? idxData : 0;
-      const colDesc = idxDesc >= 0 ? idxDesc : 1;
-      const colValor = idxValor >= 0 ? idxValor : 2;
+      // Rigor estrito: CSV bancário DEVE possuir cabeçalho reconhecível com data e valor em colunas distintas
+      if (idxData < 0 || idxValor < 0 || idxData === idxValor || cabecalho.length < 2) {
+        return {
+          formato: 'CSV',
+          transacoes: [],
+          erros: ['Arquivo CSV não possui cabeçalho padrão reconhecível com colunas de data e valor.'],
+        };
+      }
+
+      const startIdx = 1;
+      const colData = idxData;
+      const colDesc = idxDesc >= 0 ? idxDesc : (idxData === 0 ? 1 : 0);
+      const colValor = idxValor;
 
       for (let i = startIdx; i < linhas.length; i++) {
         const linha = linhas[i];

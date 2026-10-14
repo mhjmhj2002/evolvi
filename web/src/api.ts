@@ -1520,6 +1520,48 @@ export const apiService = {
     });
   },
 
+  async getStatusIa(): Promise<StatusIaResponse> {
+    try {
+      return await apiFetch<StatusIaResponse>('/api/ia/status', undefined, {
+        configurada: false,
+        hasEnvKey: false,
+        provedorAtivo: null,
+        modeloPadrao: 'gemini-2.5-flash',
+        provedoresSuportados: [
+          {
+            id: 'GEMINI',
+            nome: 'Google Gemini',
+            modelos: ['gemini-2.5-flash', 'gemini-2.0-flash'],
+            ajudaUrl: 'https://aistudio.google.com/app/apikey',
+            temChaveServidor: false,
+          },
+          {
+            id: 'OPENAI',
+            nome: 'OpenAI (ChatGPT)',
+            modelos: ['gpt-4o', 'gpt-4o-mini'],
+            ajudaUrl: 'https://platform.openai.com/api-keys',
+            temChaveServidor: false,
+          },
+          {
+            id: 'ANTHROPIC',
+            nome: 'Anthropic (Claude)',
+            modelos: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
+            ajudaUrl: 'https://console.anthropic.com/settings/keys',
+            temChaveServidor: false,
+          },
+        ],
+      });
+    } catch {
+      return {
+        configurada: false,
+        hasEnvKey: false,
+        provedorAtivo: null,
+        modeloPadrao: 'gemini-2.5-flash',
+        provedoresSuportados: [],
+      };
+    }
+  },
+
   async testarApiKeyIa(payload: {
     provedor: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'OPENROUTER';
     apiKey: string;
@@ -1668,7 +1710,184 @@ export const apiService = {
       body: JSON.stringify({ dadoBrutoId }),
     });
   },
+
+  // Módulo de Importação Inteligente por IA (TASK-32 a TASK-35)
+  async uploadLoteImportacao(files: File[]): Promise<{
+    statusCode: number;
+    message: string;
+    loteId: string;
+    status: StatusLoteImportacao;
+    totalArquivos: number;
+    caminhoDiretorio: string;
+    arquivos: ArquivoImportacaoItem[];
+  }> {
+    const formData = new FormData();
+    for (const file of files) {
+      // webkitRelativePath preserva a estrutura de pastas se selecionada via pasta
+      const filename = (file as any).webkitRelativePath || file.name;
+      formData.append('arquivos', file, filename);
+    }
+
+    const token = typeof window !== 'undefined' ? localStorage.getItem('evolvi_auth_token') : null;
+    const authHeaders: Record<string, string> = {};
+    if (token && !token.startsWith('mock-token-')) {
+      authHeaders['Authorization'] = `Bearer ${token}`;
+    }
+
+    const res = await fetch('/api/importacao/upload', {
+      method: 'POST',
+      headers: authHeaders,
+      body: formData,
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      let msg = `Erro no upload [${res.status}]: ${res.statusText}`;
+      try {
+        const errJson = await res.json();
+        if (errJson?.message) msg = errJson.message;
+      } catch {
+        // fallback
+      }
+      throw new Error(msg);
+    }
+
+    return await res.json();
+  },
+
+  async getLotesImportacao(params?: { status?: StatusLoteImportacao; limite?: number }): Promise<{
+    lotes: LoteImportacaoItem[];
+  }> {
+    const qs = new URLSearchParams();
+    if (params?.status) qs.append('status', params.status);
+    if (params?.limite) qs.append('limite', String(params.limite));
+    const query = qs.toString() ? `?${qs.toString()}` : '';
+    return apiFetch(`/api/importacao/lotes${query}`, undefined, { lotes: [] });
+  },
+
+  async getLoteImportacao(loteId: string): Promise<{ lote: LoteImportacaoItem }> {
+    return apiFetch(`/api/importacao/lotes/${loteId}`);
+  },
+
+  async processarLoteIa(loteId: string): Promise<{
+    statusCode: number;
+    message: string;
+    resultado: {
+      loteId: string;
+      totalArquivos: number;
+      arquivosProcessadosComSucesso: number;
+      arquivosComErro: number;
+    };
+  }> {
+    return apiFetch(`/api/importacao/lotes/${loteId}/processar-ia`, {
+      method: 'POST',
+    });
+  },
+
+  async carregarLoteStaging(loteId: string): Promise<{
+    statusCode: number;
+    message: string;
+    resultado: any;
+  }> {
+    return apiFetch(`/api/importacao/lotes/${loteId}/carregar-staging`, {
+      method: 'POST',
+    });
+  },
+
+  async consolidarLote(loteId: string): Promise<{
+    statusCode: number;
+    message: string;
+    resultado: {
+      loteId: string;
+      sucesso: boolean;
+      totalProcessados: number;
+      novosMovimentosInseridos: number;
+      duplicadasIgnoradas: number;
+      pagamentosFaturaConvertidos: number;
+      contasCriadas: number;
+      parcelamentosCriados: number;
+      erros: Array<{ stagingId: string; motivo: string }>;
+    };
+  }> {
+    return apiFetch(`/api/importacao/lotes/${loteId}/consolidar`, {
+      method: 'POST',
+    });
+  },
+
+  async getStagingLote(loteId: string): Promise<{
+    loteId: string;
+    totalItens: number;
+    itens: StagingLancamentoItem[];
+  }> {
+    return apiFetch(`/api/importacao/lotes/${loteId}/staging`, undefined, {
+      loteId,
+      totalItens: 0,
+      itens: [],
+    });
+  },
 };
+
+export type StatusLoteImportacao =
+  | 'RECEPCIONADO'
+  | 'PROCESSANDO_IA'
+  | 'CARGA_STAGING'
+  | 'CONSOLIDANDO'
+  | 'CONCLUIDO'
+  | 'ERRO_PARCIAL'
+  | 'ERRO_TOTAL';
+
+export type StatusArquivoImportacao =
+  | 'RECEPCIONADO'
+  | 'ENVIADO_IA'
+  | 'IA_CONCLUIDO'
+  | 'STAGING_CARREGADO'
+  | 'PROCESSADO_FINAL'
+  | 'ERRO';
+
+export interface ArquivoImportacaoItem {
+  id: string;
+  loteId: string;
+  nomeArquivo: string;
+  caminhoRelativo: string;
+  tamanhoBytes: number;
+  mimeType?: string | null;
+  status: StatusArquivoImportacao;
+  mensagemErro?: string | null;
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
+export interface LoteImportacaoItem {
+  id: string;
+  usuarioId: string;
+  caminhoDiretorio: string;
+  totalArquivos: number;
+  arquivosProcessados: number;
+  status: StatusLoteImportacao;
+  criadoEm: string;
+  atualizadoEm: string;
+  arquivos?: ArquivoImportacaoItem[];
+}
+
+export interface StagingLancamentoItem {
+  id: string;
+  loteId: string;
+  arquivoId: string;
+  arquivoOrigem: string;
+  dataMovimento: string;
+  descricao: string;
+  valor: number;
+  natureza: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
+  contaSugerida?: string | null;
+  tipoConta?: string | null;
+  categoriaSugerida?: string | null;
+  parcelaAtual?: number | null;
+  totalParcelas?: number | null;
+  isPagamentoFatura?: boolean;
+  statusProcessamento: 'PENDENTE' | 'PROCESSADO' | 'IGNORADO' | 'ERRO';
+  observacao?: string | null;
+  criadoEm: string;
+}
 
 export interface DadoBrutoOpenFinanceItem {
   id: string;
@@ -1718,5 +1937,21 @@ export interface ConexaoBancariaItem {
   parametrosExtras?: string | null;
   criadoEm: string;
   atualizadoEm: string;
+}
+
+export interface ProvedorIaInfo {
+  id: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'OPENROUTER';
+  nome: string;
+  modelos: string[];
+  ajudaUrl: string;
+  temChaveServidor?: boolean;
+}
+
+export interface StatusIaResponse {
+  configurada: boolean;
+  hasEnvKey: boolean;
+  provedorAtivo: string | null;
+  modeloPadrao: string;
+  provedoresSuportados: ProvedorIaInfo[];
 }
 

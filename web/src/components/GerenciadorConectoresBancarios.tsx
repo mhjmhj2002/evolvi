@@ -20,6 +20,8 @@ import {
   Layers,
   Lock,
   Sparkles,
+  Clock,
+  Info,
 } from 'lucide-react';
 
 interface GerenciadorConectoresBancariosProps {
@@ -359,20 +361,73 @@ export const GerenciadorConectoresBancarios: React.FC<GerenciadorConectoresBanca
                 border: `1px solid ${modoOpenFinance === 'real' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(234, 179, 8, 0.3)'}`,
               }}
             >
-              <span
-                style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: '50%',
-                  background: modoOpenFinance === 'real' ? '#10b981' : '#eab308',
-                }}
-              />
-              <span>MODO: {modoOpenFinance === 'real' ? 'API REAL (LIVE)' : 'SIMULAÇÃO (MOCK)'}</span>
+              <Clock size={12} />
+              <span>STATUS: RECURSO EM ESPERA (FUTURAMENTE - {modoOpenFinance.toUpperCase()})</span>
             </div>
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
               <ShieldCheck size={16} color="var(--brand-primary)" />
               <span>Anti-dupla contagem em faturas & deduplicação ativadas</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Banner Informativo: Recurso Futuro (Adiado para Fase Pós-Arrecadação) */}
+        <div
+          style={{
+            background: 'linear-gradient(135deg, rgba(234, 179, 8, 0.08) 0%, rgba(245, 158, 11, 0.04) 100%)',
+            border: '1px solid rgba(234, 179, 8, 0.3)',
+            borderRadius: 'var(--radius-md)',
+            padding: '16px 20px',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '14px',
+          }}
+        >
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: '8px',
+              background: 'rgba(234, 179, 8, 0.15)',
+              color: '#eab308',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              marginTop: '2px',
+            }}
+          >
+            <Clock size={20} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <h4 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                Integrações Diretas & Open Finance (Disponível Futuramente)
+              </h4>
+              <span
+                style={{
+                  fontSize: '0.68rem',
+                  fontWeight: 700,
+                  padding: '2px 8px',
+                  borderRadius: '999px',
+                  background: 'rgba(234, 179, 8, 0.2)',
+                  color: '#eab308',
+                  border: '1px solid rgba(234, 179, 8, 0.4)',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Pausado Temporariamente
+              </span>
+            </div>
+            <p style={{ margin: '6px 0 0', fontSize: '0.84rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              A conexão contínua direta com instituições financeiras e diretório Open Finance envolve taxas e custos regulatórios de parceiros de infraestrutura. Por este motivo, este módulo ficará desabilitado por enquanto e será disponibilizado futuramente após a fase inicial de monetização do aplicativo.
+            </p>
+            <div style={{ marginTop: '10px', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.80rem', color: 'var(--brand-primary)' }}>
+              <Info size={14} />
+              <span>
+                Para incluir movimentações agora, você pode utilizar o <strong>Importador de Extratos (OFX / CSV)</strong> ou lançar manualmente na tela de Lançamentos.
+              </span>
             </div>
           </div>
         </div>
@@ -409,10 +464,23 @@ export const GerenciadorConectoresBancarios: React.FC<GerenciadorConectoresBanca
               setMensagemErro(null);
               setFluxoAtivo('conectar');
             }}
-            style={{ minHeight: '38px', whiteSpace: 'nowrap' }}
+            style={{ minHeight: '38px', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
           >
             <PlusCircle size={15} />
             <span>Nova Conexão Open Finance</span>
+            <span
+              style={{
+                fontSize: '0.64rem',
+                fontWeight: 700,
+                padding: '1px 5px',
+                borderRadius: '999px',
+                background: 'rgba(234, 179, 8, 0.18)',
+                color: '#eab308',
+                border: '1px solid rgba(234, 179, 8, 0.35)',
+              }}
+            >
+              Em breve
+            </span>
           </button>
 
           <button
@@ -473,17 +541,26 @@ export const GerenciadorConectoresBancarios: React.FC<GerenciadorConectoresBanca
               <button
                 type="button"
                 className="btn-primary"
-                style={{ padding: '8px 16px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
-                onClick={() => setFluxoAtivo('conectar')}
+                style={{
+                  padding: '8px 16px',
+                  fontSize: '0.82rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  opacity: 0.65,
+                  cursor: 'not-allowed',
+                }}
+                disabled
+                title="Integração direta com bancos desabilitada temporariamente. Disponível futuramente."
               >
-                <PlusCircle size={15} /> Conectar Nova Instituição
+                <PlusCircle size={15} /> Conectar Banco (Em Breve)
               </button>
               <button
                 type="button"
                 style={{
-                  background: 'var(--bg-surface)',
-                  border: '1px solid var(--border-subtle)',
-                  color: 'var(--text-primary)',
+                  background: 'var(--brand-primary)',
+                  border: '1px solid var(--brand-primary)',
+                  color: '#fff',
                   padding: '8px 14px',
                   fontSize: '0.82rem',
                   borderRadius: 'var(--radius-sm)',
@@ -491,10 +568,11 @@ export const GerenciadorConectoresBancarios: React.FC<GerenciadorConectoresBanca
                   display: 'flex',
                   alignItems: 'center',
                   gap: '6px',
+                  fontWeight: 600,
                 }}
                 onClick={() => setFluxoAtivo('importar')}
               >
-                <FileUp size={15} /> Importar Arquivo
+                <FileUp size={15} /> Importar Arquivo (Recomendado)
               </button>
             </div>
           </div>
@@ -524,29 +602,47 @@ export const GerenciadorConectoresBancarios: React.FC<GerenciadorConectoresBanca
                   width: 52,
                   height: 52,
                   borderRadius: '50%',
-                  background: 'rgba(56, 189, 248, 0.1)',
+                  background: 'rgba(234, 179, 8, 0.1)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: 'var(--brand-primary)',
+                  color: '#eab308',
                 }}
               >
-                <Landmark size={24} />
+                <Clock size={24} />
               </div>
               <div>
-                <h4 style={{ margin: 0, fontSize: '1rem', color: 'var(--text-primary)' }}>Nenhum banco conectado</h4>
-                <p style={{ margin: '4px 0 0', fontSize: '0.84rem', color: 'var(--text-muted)', maxWidth: '420px' }}>
-                  Conecte seu banco com consentimento regulado do Banco Central ou faça upload direto de extratos OFX/CSV.
+                <h4 style={{ margin: 0, fontSize: '1rem', color: 'var(--text-primary)' }}>Integrações Automáticas em Espera</h4>
+                <p style={{ margin: '6px 0 0', fontSize: '0.84rem', color: 'var(--text-muted)', maxWidth: '460px', lineHeight: 1.45 }}>
+                  A conexão direta com APIs bancárias requer infraestrutura paga e será disponibilizada futuramente. Enquanto isso, importe seus extratos livremente via arquivo OFX/CSV.
                 </p>
               </div>
-              <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+              <div style={{ display: 'flex', gap: '10px', marginTop: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
                 <button
                   type="button"
                   className="btn-primary"
-                  onClick={() => setFluxoAtivo('conectar')}
-                  style={{ padding: '8px 18px', fontSize: '0.82rem' }}
+                  onClick={() => setFluxoAtivo('importar')}
+                  style={{ padding: '8px 18px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px' }}
                 >
-                  Conectar Banco Agora
+                  <FileUp size={15} />
+                  <span>Usar Importador OFX / CSV</span>
+                </button>
+                <button
+                  type="button"
+                  disabled
+                  title="Conexão direta desabilitada temporariamente"
+                  style={{
+                    background: 'var(--bg-primary)',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-muted)',
+                    padding: '8px 16px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '0.82rem',
+                    cursor: 'not-allowed',
+                    opacity: 0.6,
+                  }}
+                >
+                  Conexão Automática (Em Breve)
                 </button>
                 <button
                   type="button"
@@ -985,26 +1081,48 @@ export const GerenciadorConectoresBancarios: React.FC<GerenciadorConectoresBanca
                 </label>
               </div>
 
+              {/* Aviso de Recurso Futuro no Formulário */}
+              <div
+                style={{
+                  background: 'rgba(234, 179, 8, 0.1)',
+                  border: '1px solid rgba(234, 179, 8, 0.3)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '12px 14px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  fontSize: '0.82rem',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                <Clock size={18} color="#eab308" style={{ flexShrink: 0 }} />
+                <span>
+                  <strong>Disponível futuramente:</strong> As chamadas diretas às APIs de parceiros bancários estão desativadas nesta versão inicial. O botão de autorização permanecerá bloqueado.
+                </span>
+              </div>
+
               {/* Ações Finais de Conexão */}
               <div style={{ display: 'flex', gap: '12px', marginTop: 'auto', paddingTop: '10px' }}>
                 <button
                   type="button"
                   className="btn-primary"
-                  style={{ flex: 1, padding: '12px 20px', fontSize: '0.92rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
                   onClick={handleConectarInstituicao}
-                  disabled={carregando}
+                  style={{
+                    flex: 1,
+                    padding: '12px 20px',
+                    fontSize: '0.92rem',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    opacity: 0.65,
+                    cursor: 'not-allowed',
+                  }}
+                  disabled
+                  title="Conexão direta desabilitada temporariamente. Disponível futuramente."
                 >
-                  {carregando ? (
-                    <>
-                      <Loader2 size={18} className="spinner" />
-                      <span>Autorizando e Conectando...</span>
-                    </>
-                  ) : (
-                    <>
-                      <ShieldCheck size={18} />
-                      <span>Autorizar Conexão Bancária</span>
-                    </>
-                  )}
+                  <Lock size={18} />
+                  <span>Conexão Indisponível no Momento (Em Breve)</span>
                 </button>
                 <button
                   type="button"

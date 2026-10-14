@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { prisma } from '../../infrastructure/database/prisma.js';
 import { ensureAuthenticated } from '../../middlewares/auth.middleware.js';
+import { env } from '../../config/env.js';
 import {
   iaParseRequestSchema,
   testarApiKeySchema,
@@ -15,7 +16,42 @@ import {
 export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   app.addHook('preHandler', ensureAuthenticated);
 
-  // 1. GET /api/ia/contexto (retorna contexto do usuário e o prompt exportável para Modo Externo)
+  // 1. GET /api/ia/status (retorna se há chave de IA configurada no servidor e provedores suportados)
+  app.get('/status', async (_request, reply) => {
+    const hasEnvGemini = Boolean(env.GEMINI_API_KEY && env.GEMINI_API_KEY.trim().length > 0);
+
+    return reply.status(200).send({
+      configurada: hasEnvGemini,
+      hasEnvKey: hasEnvGemini,
+      provedorAtivo: hasEnvGemini ? 'GEMINI' : null,
+      modeloPadrao: 'gemini-2.5-flash',
+      provedoresSuportados: [
+        {
+          id: 'GEMINI',
+          nome: 'Google Gemini',
+          modelos: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
+          ajudaUrl: 'https://aistudio.google.com/app/apikey',
+          temChaveServidor: hasEnvGemini,
+        },
+        {
+          id: 'OPENAI',
+          nome: 'OpenAI (ChatGPT)',
+          modelos: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
+          ajudaUrl: 'https://platform.openai.com/api-keys',
+          temChaveServidor: false,
+        },
+        {
+          id: 'ANTHROPIC',
+          nome: 'Anthropic (Claude)',
+          modelos: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
+          ajudaUrl: 'https://console.anthropic.com/settings/keys',
+          temChaveServidor: false,
+        },
+      ],
+    });
+  });
+
+  // 2. GET /api/ia/contexto (retorna contexto do usuário e o prompt exportável para Modo Externo)
   app.get('/contexto', async (request, reply) => {
     const usuarioId = request.user.sub;
 
@@ -48,7 +84,7 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     });
   });
 
-  // 2. POST /api/ia/parse (processa texto em linguagem natural ou JSON externo colado)
+  // 3. POST /api/ia/parse (processa texto em linguagem natural ou JSON externo colado)
   app.post('/parse', async (request, reply) => {
     const usuarioId = request.user.sub;
 
@@ -143,7 +179,7 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     });
   });
 
-  // 3. POST /api/ia/testar-conexao (valida se a chave informada pelo usuário responde)
+  // 4. POST /api/ia/testar-conexao (valida se a chave informada pelo usuário responde)
   app.post('/testar-conexao', async (request, reply) => {
     const parseResult = testarApiKeySchema.safeParse(request.body);
     if (!parseResult.success) {
@@ -184,12 +220,71 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       } catch (err: any) {
         return reply.status(500).send({
           sucesso: false,
-          message: `Falha ao conectar com o provedor: ${err.message}`,
+          message: `Falha ao conectar com o Google Gemini: ${err.message}`,
         });
       }
     }
 
-    // Para outros provedores simulados
+    if (provedor === 'OPENAI') {
+      try {
+        const res = await fetch('https://api.openai.com/v1/models', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text();
+          return reply.status(400).send({
+            sucesso: false,
+            message: `Erro na validação da chave OpenAI (${res.status}): ${errBody}`,
+          });
+        }
+
+        return reply.status(200).send({
+          sucesso: true,
+          message: 'Chave de API da OpenAI validada com sucesso!',
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          sucesso: false,
+          message: `Falha ao conectar com a OpenAI: ${err.message}`,
+        });
+      }
+    }
+
+    if (provedor === 'ANTHROPIC') {
+      try {
+        // Validação leve com headers Anthropic
+        const res = await fetch('https://api.anthropic.com/v1/models', {
+          method: 'GET',
+          headers: {
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+          },
+        });
+
+        if (!res.ok && res.status !== 404) {
+          const errBody = await res.text();
+          return reply.status(400).send({
+            sucesso: false,
+            message: `Erro na validação da chave Claude/Anthropic (${res.status}): ${errBody}`,
+          });
+        }
+
+        return reply.status(200).send({
+          sucesso: true,
+          message: 'Chave de API da Anthropic validada com sucesso!',
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          sucesso: false,
+          message: `Falha ao conectar com a Anthropic: ${err.message}`,
+        });
+      }
+    }
+
     return reply.status(200).send({
       sucesso: true,
       message: `Chave configurada com sucesso para o provedor ${provedor}.`,
