@@ -421,35 +421,58 @@ export class ImportacaoConsolidacaoWorkerService {
     }
 
     // 8. Atualizar status dos arquivos para PROCESSADO_FINAL se todos os seus stagings foram concluídos
-    for (const arquivo of lote.arquivos) {
+    // Seleciona arquivos que possuem registros na staging deste lote
+    const stagingArquivosIds = await prisma.stagingLancamentoImportacao.findMany({
+      where: { loteId },
+      select: { arquivoId: true },
+      distinct: ['arquivoId'],
+    });
+
+    for (const item of stagingArquivosIds) {
+      if (!item.arquivoId) continue;
+
       const stagingsPendentes = await prisma.stagingLancamentoImportacao.count({
         where: {
-          arquivoId: arquivo.id,
+          arquivoId: item.arquivoId,
           statusProcessamento: 'PENDENTE',
         },
       });
 
       if (stagingsPendentes === 0) {
-        await prisma.arquivoImportacao.update({
-          where: { id: arquivo.id },
-          data: {
-            status: 'PROCESSADO_FINAL',
-            mensagemErro: null,
-          },
+        const arqAtual = await prisma.arquivoImportacao.findUnique({
+          where: { id: item.arquivoId },
         });
 
-        importacaoEventBus.emitArquivoProgresso({
-          loteId,
-          arquivoId: arquivo.id,
-          nomeArquivo: arquivo.nomeArquivo,
-          status: 'PROCESSADO_FINAL',
-          mensagem: 'Lançamentos consolidados e integrados aos movimentos oficiais.',
-          timestamp: new Date(),
-        });
+        if (arqAtual && arqAtual.status !== 'PROCESSADO_FINAL' && arqAtual.status !== 'ERRO') {
+          await prisma.arquivoImportacao.update({
+            where: { id: item.arquivoId },
+            data: {
+              status: 'PROCESSADO_FINAL',
+              mensagemErro: null,
+            },
+          });
+
+          importacaoEventBus.emitArquivoProgresso({
+            loteId,
+            arquivoId: arqAtual.id,
+            nomeArquivo: arqAtual.nomeArquivo,
+            status: 'PROCESSADO_FINAL',
+            mensagem: 'Lançamentos consolidados e integrados aos movimentos oficiais.',
+            timestamp: new Date(),
+          });
+        }
       }
     }
 
-    // 9. Atualizar status final do lote
+
+    // 9. Verificar se ainda restam arquivos não finalizados no lote
+    const arquivosNaoFinalizados = await prisma.arquivoImportacao.count({
+      where: {
+        loteId,
+        status: { notIn: ['PROCESSADO_FINAL', 'ERRO'] },
+      },
+    });
+
     const stagingsRestantes = await prisma.stagingLancamentoImportacao.count({
       where: {
         loteId,
@@ -457,31 +480,46 @@ export class ImportacaoConsolidacaoWorkerService {
       },
     });
 
-    let statusLoteFinal: 'CONCLUIDO' | 'ERRO_PARCIAL' | 'ERRO_TOTAL' = 'CONCLUIDO';
-    if (resultado.erros.length > 0 && resultado.novosMovimentosInseridos === 0) {
-      statusLoteFinal = 'ERRO_TOTAL';
-    } else if (resultado.erros.length > 0 && resultado.novosMovimentosInseridos > 0) {
-      statusLoteFinal = 'ERRO_PARCIAL';
+    // Só encerra o lote se TODOS os arquivos já tiverem sido processados (final ou erro)
+    // e não houver mais nenhum staging pendente.
+    if (arquivosNaoFinalizados === 0 && stagingsRestantes === 0) {
+      const arquivosComErro = await prisma.arquivoImportacao.count({
+        where: { loteId, status: 'ERRO' },
+      });
+      const arquivosTotal = await prisma.arquivoImportacao.count({
+        where: { loteId },
+      });
+
+      let statusLoteFinal: 'CONCLUIDO' | 'ERRO_PARCIAL' | 'ERRO_TOTAL' = 'CONCLUIDO';
+      if (arquivosComErro === arquivosTotal && arquivosTotal > 0) {
+        statusLoteFinal = 'ERRO_TOTAL';
+      } else if (arquivosComErro > 0 || resultado.erros.length > 0) {
+        statusLoteFinal = 'ERRO_PARCIAL';
+      }
+
+      const arquivosProcessadosCount = await prisma.arquivoImportacao.count({
+        where: { loteId, status: 'PROCESSADO_FINAL' },
+      });
+
+      await prisma.loteImportacao.update({
+        where: { id: loteId },
+        data: {
+          status: statusLoteFinal,
+          arquivosProcessados: arquivosProcessadosCount,
+        },
+      });
+
+      // 10. Emite evento de lote concluído
+      importacaoEventBus.emitLoteConcluido({
+        loteId,
+        usuarioId: lote.usuarioId,
+        totalArquivos: arquivosTotal,
+        totalTransacoesImportadas: resultado.novosMovimentosInseridos,
+        totalDuplicadasIgnoradas: resultado.duplicadasIgnoradas,
+        totalContasCriadas: resultado.contasCriadas,
+        timestamp: new Date(),
+      });
     }
-
-    await prisma.loteImportacao.update({
-      where: { id: loteId },
-      data: {
-        status: statusLoteFinal,
-        arquivosProcessados: lote.arquivos.length,
-      },
-    });
-
-    // 10. Emite evento de lote concluído
-    importacaoEventBus.emitLoteConcluido({
-      loteId,
-      usuarioId: lote.usuarioId,
-      totalArquivos: lote.arquivos.length,
-      totalTransacoesImportadas: resultado.novosMovimentosInseridos,
-      totalDuplicadasIgnoradas: resultado.duplicadasIgnoradas,
-      totalContasCriadas: resultado.contasCriadas,
-      timestamp: new Date(),
-    });
 
     return resultado;
   }

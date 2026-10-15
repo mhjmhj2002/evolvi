@@ -1565,7 +1565,7 @@ export const apiService = {
   },
 
   async salvarConfiguracaoIa(payload: {
-    provedor: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'OPENROUTER';
+    provedor: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | 'OPENROUTER';
     apiKey: string;
     modelo?: string;
   }): Promise<{ sucesso: boolean; message: string; chaveMascarada?: string }> {
@@ -1583,7 +1583,7 @@ export const apiService = {
   },
 
   async testarApiKeyIa(payload: {
-    provedor: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'OPENROUTER';
+    provedor: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | 'OPENROUTER';
     apiKey: string;
     modelo?: string;
   }): Promise<{ sucesso: boolean; message: string }> {
@@ -1879,6 +1879,39 @@ export interface ArquivoImportacaoItem {
   mensagemErro?: string | null;
   criadoEm: string;
   atualizadoEm: string;
+  stagingStats?: {
+    totalLinhas: number;
+    pendente: number;
+    processado: number;
+    ignorado: number;
+    erro: number;
+  };
+}
+
+export interface MetricasProgressoLote {
+  upload: {
+    concluido: number;
+    total: number;
+    porcentagem: number;
+  };
+  ia: {
+    concluido: number;
+    total: number;
+    porcentagem: number;
+  };
+  staging: {
+    concluido: number;
+    total: number;
+    porcentagem: number;
+    totalLinhas: number;
+  };
+  consolidacao: {
+    concluido: number;
+    total: number;
+    porcentagem: number;
+    linhasConsolidadas: number;
+    totalLinhas: number;
+  };
 }
 
 export interface LoteImportacaoItem {
@@ -1891,6 +1924,7 @@ export interface LoteImportacaoItem {
   criadoEm: string;
   atualizadoEm: string;
   arquivos?: ArquivoImportacaoItem[];
+  metricasProgresso?: MetricasProgressoLote;
 }
 
 export interface StagingLancamentoItem {
@@ -1964,7 +1998,7 @@ export interface ConexaoBancariaItem {
 }
 
 export interface ProvedorIaInfo {
-  id: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'OPENROUTER';
+  id: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | 'OPENROUTER';
   nome: string;
   modelos: string[];
   ajudaUrl: string;

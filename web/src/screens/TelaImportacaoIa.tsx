@@ -67,6 +67,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
   // Estados de controle e polling
   const [processandoAcao, setProcessandoAcao] = useState(false);
   const [visualizacaoAba, setVisualizacaoAba] = useState<'pipeline' | 'feed' | 'historico'>('pipeline');
+  const [workerDetalheAba, setWorkerDetalheAba] = useState<'resumo' | 'ia' | 'staging' | 'consolidacao'>('resumo');
 
   // Validação prévia de configuração da IA
   const [statusIa, setStatusIa] = useState<StatusIaResponse | null>(null);
@@ -160,7 +161,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       intervalId = setInterval(() => {
         carregarDetalhesLoteAtivo(loteAtivo.id);
         carregarLotes();
-      }, 3500);
+      }, 1500);
     }
 
     return () => {
@@ -423,24 +424,6 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
     }
   };
 
-  const getEtapaProgressoNumero = (status: StatusLoteImportacao): number => {
-    switch (status) {
-      case 'RECEPCIONADO':
-        return 1;
-      case 'PROCESSANDO_IA':
-        return 2;
-      case 'CARGA_STAGING':
-        return 3;
-      case 'CONSOLIDANDO':
-      case 'CONCLUIDO':
-        return 4;
-      default:
-        return 1;
-    }
-  };
-
-  const etapaAtual = loteAtivo ? getEtapaProgressoNumero(loteAtivo.status) : 1;
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       {/* 1. Header da Tela Dedicada */}
@@ -648,6 +631,8 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                 const nomeAmigavel =
                   cfg.provedor === 'GEMINI'
                     ? 'Google Gemini'
+                    : cfg.provedor === 'DEEPSEEK'
+                    ? 'DeepSeek'
                     : cfg.provedor === 'OPENAI'
                     ? 'OpenAI (ChatGPT)'
                     : 'Anthropic (Claude)';
@@ -972,178 +957,440 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
           ) : (
             <>
               {/* Card Resumo do Lote */}
-              <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                  <div>
-                    <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                      Código do Lote:
-                    </span>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.9rem', fontWeight: 700 }}>
-                      {loteAtivo.id}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Status:</span>
-                    <span className="badge badge-blue">{loteAtivo.status}</span>
-                  </div>
-                </div>
+              {/* Card Consolidado: Progresso Multi-Worker com 4 Barras de Status Reais do Banco de Dados */}
+              {(() => {
+                const totalArqs = loteAtivo.totalArquivos || loteAtivo.arquivos?.length || 0;
+                const m = loteAtivo.metricasProgresso;
 
-                {/* Esteira Visual das 4 Etapas do Pipeline */}
-                <div style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(4, 1fr)',
-                  gap: '8px',
-                  backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                  padding: '12px 10px',
-                  borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--border-subtle)',
-                }}>
-                  {[
-                    { passo: 1, titulo: '1. Recepcionado', desc: 'Storage no servidor' },
-                    { passo: 2, titulo: '2. Extração IA', desc: 'Arquivo a arquivo' },
-                    { passo: 3, titulo: '3. Carga Staging', desc: 'Preparo dos dados' },
-                    { passo: 4, titulo: '4. Consolidação', desc: 'Anti-dupla contagem' },
-                  ].map((step) => {
-                    const isConcluido = etapaAtual > step.passo || loteAtivo.status === 'CONCLUIDO';
-                    const isAtivo = etapaAtual === step.passo && loteAtivo.status !== 'CONCLUIDO';
-                    return (
-                      <div
-                        key={step.passo}
-                        style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '3px',
-                          borderLeft: `3px solid ${
-                            isConcluido
-                              ? 'var(--status-green)'
-                              : isAtivo
-                              ? 'var(--brand-primary)'
-                              : 'var(--border-subtle)'
-                          }`,
-                          paddingLeft: '8px',
-                        }}
-                      >
-                        <span style={{
-                          fontSize: '0.75rem',
-                          fontWeight: 700,
-                          color: isConcluido ? 'var(--status-green)' : isAtivo ? 'var(--brand-primary)' : 'var(--text-muted)',
-                        }}>
-                          {step.titulo}
+                const progUpload = {
+                  concluido: m?.upload?.concluido ?? totalArqs,
+                  total: m?.upload?.total ?? totalArqs,
+                  porcentagem: 100,
+                };
+
+                const arqsIa = loteAtivo.arquivos?.filter((a) =>
+                  ['IA_CONCLUIDO', 'STAGING_CARREGADO', 'PROCESSADO_FINAL'].includes(a.status)
+                ).length ?? 0;
+                const progIa = {
+                  concluido: m?.ia?.concluido ?? arqsIa,
+                  total: m?.ia?.total ?? totalArqs,
+                  porcentagem: m?.ia?.porcentagem ?? (totalArqs > 0 ? Math.round((arqsIa / totalArqs) * 100) : 0),
+                };
+
+                const arqsStaging = loteAtivo.arquivos?.filter((a) =>
+                  ['STAGING_CARREGADO', 'PROCESSADO_FINAL'].includes(a.status)
+                ).length ?? 0;
+                const progStaging = {
+                  concluido: m?.staging?.concluido ?? arqsStaging,
+                  total: m?.staging?.total ?? totalArqs,
+                  porcentagem: m?.staging?.porcentagem ?? (totalArqs > 0 ? Math.round((arqsStaging / totalArqs) * 100) : 0),
+                  totalLinhas: m?.staging?.totalLinhas ?? itensStaging.length,
+                };
+
+                const arqsConsolidados = loteAtivo.arquivos?.filter(
+                  (a) => a.status === 'PROCESSADO_FINAL'
+                ).length ?? 0;
+                const progConsolidacao = {
+                  concluido: m?.consolidacao?.concluido ?? arqsConsolidados,
+                  total: m?.consolidacao?.total ?? totalArqs,
+                  porcentagem: m?.consolidacao?.porcentagem ?? (totalArqs > 0 ? Math.round((arqsConsolidados / totalArqs) * 100) : 0),
+                  linhasConsolidadas: m?.consolidacao?.linhasConsolidadas ?? itensStaging.filter((i) => i.statusProcessamento === 'PROCESSADO' || i.statusProcessamento === 'IGNORADO').length,
+                  totalLinhas: m?.consolidacao?.totalLinhas ?? itensStaging.length,
+                };
+
+                return (
+                  <div className="card" style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                      <div>
+                        <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                          Lote Ativo em Execução Contínua:
                         </span>
-                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-                          {step.desc}
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.92rem', fontWeight: 800, color: 'var(--brand-primary)' }}>
+                          {loteAtivo.id}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Status Geral:</span>
+                        <span className={`badge ${loteAtivo.status === 'CONCLUIDO' ? 'badge-verde' : loteAtivo.status === 'ERRO_TOTAL' ? 'badge-vermelho' : 'badge-blue'}`}>
+                          {loteAtivo.status}
                         </span>
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
 
-                {/* Controles de Disparo dos Workers (Para aceleração/auditoria) */}
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Ações do Pipeline:</span>
-                  <button
-                    type="button"
-                    disabled={processandoAcao}
-                    onClick={handleProcessarEtapaIa}
-                    style={{
-                      background: 'var(--bg-surface)',
-                      border: '1px solid var(--border-subtle)',
-                      color: 'var(--brand-primary)',
-                      padding: '5px 10px',
+                    {/* 4 Barras de Progresso Independentes dos Workers */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                      {/* 1. Upload */}
+                      <div style={{
+                        background: 'rgba(15, 23, 42, 0.65)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--status-green)' }}>
+                            1. Upload & Storage
+                          </span>
+                          <span style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--text-primary)' }}>
+                            {progUpload.concluido} de {progUpload.total} ({progUpload.porcentagem}%)
+                          </span>
+                        </div>
+                        <div style={{ width: '100%', height: '7px', background: 'rgba(255, 255, 255, 0.08)', borderRadius: '4px', overflow: 'hidden' }}>
+                          <div style={{ width: `${progUpload.porcentagem}%`, height: '100%', background: 'var(--status-green)', transition: 'width 0.3s ease' }} />
+                        </div>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          Recepcionado no servidor
+                        </span>
+                      </div>
+
+                      {/* 2. Extração IA */}
+                      <div style={{
+                        background: 'rgba(15, 23, 42, 0.65)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--brand-primary)' }}>
+                            2. Extração IA
+                          </span>
+                          <span style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--text-primary)' }}>
+                            {progIa.concluido} de {progIa.total} ({progIa.porcentagem}%)
+                          </span>
+                        </div>
+                        <div style={{ width: '100%', height: '7px', background: 'rgba(255, 255, 255, 0.08)', borderRadius: '4px', overflow: 'hidden' }}>
+                          <div style={{ width: `${progIa.porcentagem}%`, height: '100%', background: 'var(--brand-primary)', transition: 'width 0.3s ease' }} />
+                        </div>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {progIa.concluido === progIa.total && progIa.total > 0 ? 'Todos os arquivos extraídos' : 'Processamento sequencial por arquivo'}
+                        </span>
+                      </div>
+
+                      {/* 3. Carga Staging */}
+                      <div style={{
+                        background: 'rgba(15, 23, 42, 0.65)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--brand-secondary)' }}>
+                            3. Carga Staging
+                          </span>
+                          <span style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--text-primary)' }}>
+                            {progStaging.concluido} de {progStaging.total} ({progStaging.porcentagem}%)
+                          </span>
+                        </div>
+                        <div style={{ width: '100%', height: '7px', background: 'rgba(255, 255, 255, 0.08)', borderRadius: '4px', overflow: 'hidden' }}>
+                          <div style={{ width: `${progStaging.porcentagem}%`, height: '100%', background: 'var(--brand-secondary)', transition: 'width 0.3s ease' }} />
+                        </div>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {progStaging.totalLinhas} linhas em staging
+                        </span>
+                      </div>
+
+                      {/* 4. Consolidação */}
+                      <div style={{
+                        background: 'rgba(15, 23, 42, 0.65)',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--status-green)' }}>
+                            4. Consolidação
+                          </span>
+                          <span style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', fontWeight: 800, color: 'var(--text-primary)' }}>
+                            {progConsolidacao.concluido} de {progConsolidacao.total} ({progConsolidacao.porcentagem}%)
+                          </span>
+                        </div>
+                        <div style={{ width: '100%', height: '7px', background: 'rgba(255, 255, 255, 0.08)', borderRadius: '4px', overflow: 'hidden' }}>
+                          <div style={{ width: `${progConsolidacao.porcentagem}%`, height: '100%', background: 'var(--status-green)', transition: 'width 0.3s ease' }} />
+                        </div>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                          {progConsolidacao.linhasConsolidadas} lançamentos no extrato
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Botões de Ação de Contingência (Retentativa Manual) */}
+                    <div style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '8px',
+                      alignItems: 'center',
+                      background: 'rgba(255, 255, 255, 0.02)',
+                      padding: '8px 12px',
                       borderRadius: 'var(--radius-sm)',
-                      fontSize: '0.75rem',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    1. Re-executar IA
-                  </button>
-                  <button
-                    type="button"
-                    disabled={processandoAcao}
-                    onClick={handleCarregarStaging}
-                    style={{
-                      background: 'var(--bg-surface)',
-                      border: '1px solid var(--border-subtle)',
-                      color: 'var(--brand-secondary)',
-                      padding: '5px 10px',
-                      borderRadius: 'var(--radius-sm)',
-                      fontSize: '0.75rem',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    2. Carregar Staging
-                  </button>
-                  <button
-                    type="button"
-                    disabled={processandoAcao}
-                    onClick={handleConsolidarNegocio}
-                    style={{
-                      background: 'var(--status-green-bg)',
-                      border: '1px solid var(--status-green-border)',
-                      color: 'var(--status-green)',
-                      padding: '5px 10px',
-                      borderRadius: 'var(--radius-sm)',
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                    }}
-                  >
-                    3. Consolidar no Extrato
-                  </button>
-                </div>
+                      border: '1px dashed var(--border-subtle)',
+                    }}>
+                      <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <AlertTriangle size={13} /> Contingência / Disparo Manual (se necessário):
+                      </span>
+                      <button
+                        type="button"
+                        disabled={processandoAcao}
+                        onClick={handleProcessarEtapaIa}
+                        style={{
+                          background: 'var(--bg-surface)',
+                          border: '1px solid var(--border-subtle)',
+                          color: 'var(--brand-primary)',
+                          padding: '4px 8px',
+                          borderRadius: 'var(--radius-sm)',
+                          fontSize: '0.72rem',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Re-executar IA
+                      </button>
+                      <button
+                        type="button"
+                        disabled={processandoAcao}
+                        onClick={handleCarregarStaging}
+                        style={{
+                          background: 'var(--bg-surface)',
+                          border: '1px solid var(--border-subtle)',
+                          color: 'var(--brand-secondary)',
+                          padding: '4px 8px',
+                          borderRadius: 'var(--radius-sm)',
+                          fontSize: '0.72rem',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Re-executar Staging
+                      </button>
+                      <button
+                        type="button"
+                        disabled={processandoAcao}
+                        onClick={handleConsolidarNegocio}
+                        style={{
+                          background: 'rgba(34, 197, 94, 0.1)',
+                          border: '1px solid rgba(34, 197, 94, 0.3)',
+                          color: 'var(--status-green)',
+                          padding: '4px 8px',
+                          borderRadius: 'var(--radius-sm)',
+                          fontSize: '0.72rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Re-executar Consolidação
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Seletor de Telas de Detalhes dos Workers */}
+              <div style={{ display: 'flex', gap: '6px', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => setWorkerDetalheAba('resumo')}
+                  style={{
+                    background: workerDetalheAba === 'resumo' ? 'var(--bg-surface)' : 'transparent',
+                    border: workerDetalheAba === 'resumo' ? '1px solid var(--border-card)' : 'none',
+                    color: workerDetalheAba === 'resumo' ? 'var(--text-primary)' : 'var(--text-muted)',
+                    fontWeight: 700,
+                    fontSize: '0.8rem',
+                    padding: '6px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Visão Consolidada ({loteAtivo.arquivos?.length || 0} arquivos)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWorkerDetalheAba('ia')}
+                  style={{
+                    background: workerDetalheAba === 'ia' ? 'var(--bg-surface)' : 'transparent',
+                    border: workerDetalheAba === 'ia' ? '1px solid var(--border-card)' : 'none',
+                    color: workerDetalheAba === 'ia' ? 'var(--brand-primary)' : 'var(--text-muted)',
+                    fontWeight: 700,
+                    fontSize: '0.8rem',
+                    padding: '6px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Worker 1: Extração IA
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWorkerDetalheAba('staging')}
+                  style={{
+                    background: workerDetalheAba === 'staging' ? 'var(--bg-surface)' : 'transparent',
+                    border: workerDetalheAba === 'staging' ? '1px solid var(--border-card)' : 'none',
+                    color: workerDetalheAba === 'staging' ? 'var(--brand-secondary)' : 'var(--text-muted)',
+                    fontWeight: 700,
+                    fontSize: '0.8rem',
+                    padding: '6px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Worker 2: Tabela Staging ({itensStaging.length} linhas)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWorkerDetalheAba('consolidacao')}
+                  style={{
+                    background: workerDetalheAba === 'consolidacao' ? 'var(--bg-surface)' : 'transparent',
+                    border: workerDetalheAba === 'consolidacao' ? '1px solid var(--border-card)' : 'none',
+                    color: workerDetalheAba === 'consolidacao' ? 'var(--status-green)' : 'var(--text-muted)',
+                    fontWeight: 700,
+                    fontSize: '0.8rem',
+                    padding: '6px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Worker 3: Consolidação
+                </button>
               </div>
 
-              {/* Lista Individual dos Arquivos do Lote */}
-              <div className="card" style={{ padding: '16px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <h3 style={{ fontSize: '0.95rem', fontWeight: 700 }}>
-                    Arquivos do Lote ({loteAtivo.arquivos?.length || 0})
-                  </h3>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                    Processados: {loteAtivo.arquivosProcessados} / {loteAtivo.totalArquivos}
-                  </span>
-                </div>
-
-                {!loteAtivo.arquivos || loteAtivo.arquivos.length === 0 ? (
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', padding: '10px 0' }}>
-                    Nenhum arquivo cadastrado neste lote.
+              {/* Sub-Aba 1: Visão Consolidada de Todos os Arquivos com progresso granular */}
+              {workerDetalheAba === 'resumo' && (
+                <div className="card" style={{ padding: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <h3 style={{ fontSize: '0.95rem', fontWeight: 700 }}>
+                      Arquivos do Lote ({loteAtivo.arquivos?.length || 0})
+                    </h3>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                      Total Finalizados: {loteAtivo.arquivosProcessados} / {loteAtivo.totalArquivos}
+                    </span>
                   </div>
-                ) : (
+
+                  {!loteAtivo.arquivos || loteAtivo.arquivos.length === 0 ? (
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', padding: '10px 0' }}>
+                      Nenhum arquivo cadastrado neste lote.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {loteAtivo.arquivos.map((arq) => {
+                        const stats = arq.stagingStats;
+                        return (
+                          <div
+                            key={arq.id}
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              padding: '10px 14px',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'rgba(30, 41, 59, 0.45)',
+                              border: '1px solid var(--border-subtle)',
+                              gap: '12px',
+                              flexWrap: 'wrap',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                              <FileText size={18} color="var(--brand-primary)" />
+                              <div>
+                                <div style={{ fontSize: '0.85rem', fontWeight: 600 }}>{arq.nomeArquivo}</div>
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                  {(arq.tamanhoBytes / 1024).toFixed(1)} KB • {arq.caminhoRelativo}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                              {stats && stats.totalLinhas > 0 && (
+                                <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', textAlign: 'right' }}>
+                                  <span>{stats.totalLinhas} linhas</span>
+                                  {stats.processado > 0 && (
+                                    <span style={{ color: 'var(--status-green)', marginLeft: '6px' }}>
+                                      • {stats.processado} consolidadas
+                                    </span>
+                                  )}
+                                  {stats.ignorado > 0 && (
+                                    <span style={{ color: 'var(--status-yellow)', marginLeft: '6px' }}>
+                                      • {stats.ignorado} dup
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              <div>{getBadgeStatusArquivo(arq.status)}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Sub-Aba 2: Detalhes do Worker 1 (Extração IA) */}
+              {workerDetalheAba === 'ia' && (
+                <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 style={{ fontSize: '0.95rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Sparkles size={16} color="var(--brand-primary)" /> Detalhes da Extração por IA (Worker 1)
+                    </h3>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                      Processa 1 arquivo por vez de forma sequencial
+                    </span>
+                  </div>
+
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {loteAtivo.arquivos.map((arq) => (
+                    {loteAtivo.arquivos?.map((arq, idx) => (
                       <div
                         key={arq.id}
                         style={{
+                          padding: '10px 12px',
+                          borderRadius: 'var(--radius-sm)',
+                          border: '1px solid var(--border-subtle)',
+                          background: 'rgba(15, 23, 42, 0.4)',
                           display: 'flex',
                           justifyContent: 'space-between',
                           alignItems: 'center',
-                          padding: '10px 12px',
-                          borderRadius: 'var(--radius-sm)',
-                          backgroundColor: 'rgba(30, 41, 59, 0.45)',
-                          border: '1px solid var(--border-subtle)',
                         }}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                          <FileText size={18} color="var(--brand-primary)" />
-                          <div>
-                            <div style={{ fontSize: '0.85rem', fontWeight: 600 }}>{arq.nomeArquivo}</div>
-                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                              {(arq.tamanhoBytes / 1024).toFixed(1)} KB • {arq.caminhoRelativo}
-                            </div>
+                        <div>
+                          <div style={{ fontSize: '0.84rem', fontWeight: 600 }}>
+                            #{idx + 1} - {arq.nomeArquivo}
                           </div>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                            {arq.mimeType || 'Documento'} • Status da IA: {arq.status}
+                          </div>
+                          {arq.mensagemErro && (
+                            <div style={{ fontSize: '0.74rem', color: 'var(--status-red)', marginTop: '2px' }}>
+                              Erro: {arq.mensagemErro}
+                            </div>
+                          )}
                         </div>
-
-                        <div>{getBadgeStatusArquivo(arq.status)}</div>
+                        <div>
+                          {['IA_CONCLUIDO', 'STAGING_CARREGADO', 'PROCESSADO_FINAL'].includes(arq.status) ? (
+                            <span className="badge badge-verde">Extraído com Sucesso</span>
+                          ) : arq.status === 'ENVIADO_IA' ? (
+                            <span className="badge badge-blue">Processando Agora...</span>
+                          ) : arq.status === 'ERRO' ? (
+                            <span className="badge badge-vermelho">Falha</span>
+                          ) : (
+                            <span className="badge badge-amarelo">Aguardando Fila</span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
 
-              {/* Tabela de Dados em Staging Preparados */}
-              {itensStaging.length > 0 && (
+              {/* Sub-Aba 3: Detalhes do Worker 2 (Tabela Staging) */}
+              {workerDetalheAba === 'staging' && (
                 <div className="card" style={{ padding: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                     <h3 style={{ fontSize: '0.95rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1152,44 +1399,87 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                     </h3>
                   </div>
 
-                  <div style={{ overflowX: 'auto' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
-                      <thead>
-                        <tr style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-muted)', textAlign: 'left' }}>
-                          <th style={{ padding: '8px 6px' }}>Arquivo</th>
-                          <th style={{ padding: '8px 6px' }}>Data</th>
-                          <th style={{ padding: '8px 6px' }}>Descrição</th>
-                          <th style={{ padding: '8px 6px' }}>Valor</th>
-                          <th style={{ padding: '8px 6px' }}>Conta</th>
-                          <th style={{ padding: '8px 6px' }}>Categoria</th>
-                          <th style={{ padding: '8px 6px' }}>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {itensStaging.map((item) => (
-                          <tr key={item.id} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)' }}>
-                            <td style={{ padding: '8px 6px', color: 'var(--brand-primary)' }}>{item.arquivoOrigem}</td>
-                            <td style={{ padding: '8px 6px' }}>{item.dataMovimento.substring(0, 10)}</td>
-                            <td style={{ padding: '8px 6px', fontWeight: 600 }}>{item.descricao}</td>
-                            <td style={{
-                              padding: '8px 6px',
-                              fontFamily: 'var(--font-mono)',
-                              fontWeight: 700,
-                              color: item.natureza === 'RECEITA' ? 'var(--status-green)' : 'var(--status-red)',
-                            }}>
-                              {item.natureza === 'RECEITA' ? '+' : '-'} {Number(item.valor).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
-                            </td>
-                            <td style={{ padding: '8px 6px' }}>{item.contaSugerida || 'Padrão'}</td>
-                            <td style={{ padding: '8px 6px', color: 'var(--text-secondary)' }}>{item.categoriaSugerida || '-'}</td>
-                            <td style={{ padding: '8px 6px' }}>
-                              <span className={`badge ${item.statusProcessamento === 'PROCESSADO' ? 'badge-verde' : item.statusProcessamento === 'IGNORADO' ? 'badge-amarelo' : 'badge-blue'}`}>
-                                {item.statusProcessamento}
-                              </span>
-                            </td>
+                  {itensStaging.length === 0 ? (
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', padding: '20px 0' }}>
+                      Nenhum registro carregado na tabela de staging ainda. O Worker 2 carrega cada arquivo automaticamente assim que a IA conclui a leitura.
+                    </div>
+                  ) : (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-muted)', textAlign: 'left' }}>
+                            <th style={{ padding: '8px 6px' }}>Arquivo</th>
+                            <th style={{ padding: '8px 6px' }}>Data</th>
+                            <th style={{ padding: '8px 6px' }}>Descrição</th>
+                            <th style={{ padding: '8px 6px' }}>Valor</th>
+                            <th style={{ padding: '8px 6px' }}>Conta Sugerida</th>
+                            <th style={{ padding: '8px 6px' }}>Categoria</th>
+                            <th style={{ padding: '8px 6px' }}>Status</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {itensStaging.map((item) => (
+                            <tr key={item.id} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                              <td style={{ padding: '8px 6px', color: 'var(--brand-primary)' }}>{item.arquivoOrigem}</td>
+                              <td style={{ padding: '8px 6px' }}>{item.dataMovimento.substring(0, 10)}</td>
+                              <td style={{ padding: '8px 6px', fontWeight: 600 }}>{item.descricao}</td>
+                              <td style={{
+                                padding: '8px 6px',
+                                fontFamily: 'var(--font-mono)',
+                                fontWeight: 700,
+                                color: item.natureza === 'RECEITA' ? 'var(--status-green)' : 'var(--status-red)',
+                              }}>
+                                {item.natureza === 'RECEITA' ? '+' : '-'} {Number(item.valor).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                              </td>
+                              <td style={{ padding: '8px 6px' }}>{item.contaSugerida || 'Auto-Cadastrar'}</td>
+                              <td style={{ padding: '8px 6px', color: 'var(--text-secondary)' }}>{item.categoriaSugerida || '-'}</td>
+                              <td style={{ padding: '8px 6px' }}>
+                                <span className={`badge ${item.statusProcessamento === 'PROCESSADO' ? 'badge-verde' : item.statusProcessamento === 'IGNORADO' ? 'badge-amarelo' : 'badge-blue'}`}>
+                                  {item.statusProcessamento}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Sub-Aba 4: Detalhes do Worker 3 (Consolidação) */}
+              {workerDetalheAba === 'consolidacao' && (
+                <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 style={{ fontSize: '0.95rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <ShieldCheck size={16} color="var(--status-green)" />
+                      Worker 3: Consolidação e Regras de Negócio
+                    </h3>
+                  </div>
+
+                  <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    O Worker 3 consolida cada arquivo à medida que entra na tabela de Staging, executando deduplicação por hash determinística (Dedupe), auto-cadastro de contas bancárias/cartões sem interrupção e conversão de pagamentos de fatura em transferências internas.
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', marginTop: '6px' }}>
+                    <div style={{ background: 'rgba(15, 23, 42, 0.5)', padding: '12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Linhas Processadas</div>
+                      <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--status-green)' }}>
+                        {itensStaging.filter((i) => i.statusProcessamento === 'PROCESSADO').length}
+                      </div>
+                    </div>
+                    <div style={{ background: 'rgba(15, 23, 42, 0.5)', padding: '12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Duplicatas Ignoradas</div>
+                      <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--status-yellow)' }}>
+                        {itensStaging.filter((i) => i.statusProcessamento === 'IGNORADO').length}
+                      </div>
+                    </div>
+                    <div style={{ background: 'rgba(15, 23, 42, 0.5)', padding: '12px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Pendentes de Consolidação</div>
+                      <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--brand-primary)' }}>
+                        {itensStaging.filter((i) => i.statusProcessamento === 'PENDENTE').length}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}

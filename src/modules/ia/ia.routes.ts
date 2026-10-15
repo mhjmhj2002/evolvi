@@ -12,6 +12,7 @@ import {
   buildIaSystemPrompt,
   parseLocalDeterministic,
   callGeminiApi,
+  callDeepSeekApi,
   ContextoUsuarioIA,
 } from './ia.service.js';
 
@@ -61,7 +62,7 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
 
     // Provedor ativo preferencial (primeiro configurado ou Gemini do env)
     const provedorAtivo = hasUserKey ? configuracoes[0].provedor : (hasEnvGemini ? 'GEMINI' : null);
-    const modeloAtivo = hasUserKey ? configuracoes[0].modelo : 'gemini-3.8-flash';
+    const modeloAtivo = hasUserKey ? configuracoes[0].modelo : 'gemini-2.5-flash';
     const chaveMascarada = hasUserKey ? configuracoes[0].chaveMascarada : null;
 
     return reply.status(200).send({
@@ -77,10 +78,18 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
         {
           id: 'GEMINI',
           nome: 'Google Gemini',
-          modelos: ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
+          modelos: ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.8-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
           ajudaUrl: 'https://aistudio.google.com/app/apikey',
           temChaveServidor: hasEnvGemini,
           configurado: configuracoes.some((c) => c.provedor === 'GEMINI'),
+        },
+        {
+          id: 'DEEPSEEK',
+          nome: 'DeepSeek',
+          modelos: ['deepseek-chat', 'deepseek-reasoner'],
+          ajudaUrl: 'https://platform.deepseek.com/api_keys',
+          temChaveServidor: false,
+          configurado: configuracoes.some((c) => c.provedor === 'DEEPSEEK'),
         },
         {
           id: 'OPENAI',
@@ -131,13 +140,13 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       create: {
         usuarioId,
         provedor,
-        modelo: modelo || (provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-3.8-flash'),
+        modelo: modelo || (provedor === 'DEEPSEEK' ? 'deepseek-chat' : provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-2.5-flash'),
         apiKeyCifrada: enc.ciphertext,
         ivHex: enc.iv,
         tagHex: enc.tag,
       },
       update: {
-        modelo: modelo || (provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-3.8-flash'),
+        modelo: modelo || (provedor === 'DEEPSEEK' ? 'deepseek-chat' : provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-2.5-flash'),
         apiKeyCifrada: enc.ciphertext,
         ivHex: enc.iv,
         tagHex: enc.tag,
@@ -150,7 +159,7 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       message: `Configuração de IA (${provedor}) salva e criptografada com sucesso com AES-256-GCM!`,
       chaveMascarada: CryptoService.mascararApiKey(apiKey),
       provedor,
-      modelo: modelo || 'gemini-3.8-flash',
+      modelo: modelo || 'gemini-2.5-flash',
     });
   });
 
@@ -307,12 +316,22 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     if (modo === 'API_PROPRIA' && efetivaApiKey) {
       try {
         const prompt = buildIaSystemPrompt(contexto);
-        const parsed = await callGeminiApi(
-          efetivaApiKey,
-          efetivoModelo || 'gemini-3.8-flash',
-          prompt,
-          texto
-        );
+        let parsed: any;
+        if (efetivoProvedor === 'DEEPSEEK') {
+          parsed = await callDeepSeekApi(
+            efetivaApiKey,
+            efetivoModelo || 'deepseek-chat',
+            prompt,
+            texto
+          );
+        } else {
+          parsed = await callGeminiApi(
+            efetivaApiKey,
+            efetivoModelo || 'gemini-2.5-flash',
+            prompt,
+            texto
+          );
+        }
         return reply.status(200).send({
           modo,
           provedor: efetivoProvedor || 'GEMINI',
@@ -359,13 +378,26 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       try {
         const mod = modelo || 'gemini-3.8-flash';
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${mod}:generateContent?key=${apiKey}`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: 'Responda OK' }] }]
-          }),
-        });
+        let res!: Response;
+        for (let tentativa = 0; tentativa < 3; tentativa++) {
+          res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: 'Responda OK' }] }]
+            }),
+          });
+          if (res.status !== 503 && res.status !== 429) break;
+          await new Promise((r) => setTimeout(r, 1000 * (tentativa + 1)));
+        }
+
+        // 503/429: a chave foi aceita, apenas o modelo está sobrecarregado/limitado.
+        if (res.status === 503 || res.status === 429) {
+          return reply.status(200).send({
+            sucesso: true,
+            message: `Chave aceita pelo Google, mas o modelo "${mod}" está sobrecarregado no momento (${res.status}). Tente novamente em instantes ou escolha outro modelo.`,
+          });
+        }
 
         if (!res.ok) {
           const errBody = await res.text();
@@ -412,6 +444,35 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
         return reply.status(500).send({
           sucesso: false,
           message: `Falha ao conectar com a OpenAI: ${err.message}`,
+        });
+      }
+    }
+
+    if (provedor === 'DEEPSEEK') {
+      try {
+        const res = await fetch('https://api.deepseek.com/models', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text();
+          return reply.status(400).send({
+            sucesso: false,
+            message: `Erro na validação da chave DeepSeek (${res.status}): ${errBody}`,
+          });
+        }
+
+        return reply.status(200).send({
+          sucesso: true,
+          message: 'Chave de API do DeepSeek validada com sucesso!',
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          sucesso: false,
+          message: `Falha ao conectar com o DeepSeek: ${err.message}`,
         });
       }
     }

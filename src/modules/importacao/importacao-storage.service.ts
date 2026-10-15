@@ -192,16 +192,49 @@ export class ImportacaoStorageService {
       return null;
     }
 
-    return {
-      id: lote.id,
-      usuarioId: lote.usuarioId,
-      caminhoDiretorio: lote.caminhoDiretorio,
-      totalArquivos: lote.totalArquivos,
-      arquivosProcessados: lote.arquivosProcessados,
-      status: lote.status,
-      criadoEm: lote.criadoEm,
-      atualizadoEm: lote.atualizadoEm,
-      arquivos: lote.arquivos.map((a) => ({
+    // Buscar contadores de staging agrupados por arquivo
+    const stagingStats = await prisma.stagingLancamentoImportacao.groupBy({
+      by: ['arquivoId', 'statusProcessamento'],
+      where: {
+        loteId,
+      },
+      _count: {
+        _all: true,
+      },
+    });
+
+    const statsMap = new Map<
+      string,
+      { totalLinhas: number; pendente: number; processado: number; ignorado: number; erro: number }
+    >();
+
+    for (const stat of stagingStats) {
+      if (!stat.arquivoId) continue;
+      const current = statsMap.get(stat.arquivoId) || {
+        totalLinhas: 0,
+        pendente: 0,
+        processado: 0,
+        ignorado: 0,
+        erro: 0,
+      };
+      const count = stat._count._all;
+      current.totalLinhas += count;
+      if (stat.statusProcessamento === 'PENDENTE') current.pendente += count;
+      else if (stat.statusProcessamento === 'PROCESSADO') current.processado += count;
+      else if (stat.statusProcessamento === 'IGNORADO') current.ignorado += count;
+      else if (stat.statusProcessamento === 'ERRO') current.erro += count;
+      statsMap.set(stat.arquivoId, current);
+    }
+
+    const arquivosFormatados = lote.arquivos.map((a) => {
+      const stats = statsMap.get(a.id) || {
+        totalLinhas: 0,
+        pendente: 0,
+        processado: 0,
+        ignorado: 0,
+        erro: 0,
+      };
+      return {
         id: a.id,
         loteId: a.loteId,
         nomeArquivo: a.nomeArquivo,
@@ -212,7 +245,66 @@ export class ImportacaoStorageService {
         mensagemErro: a.mensagemErro,
         criadoEm: a.criadoEm,
         atualizadoEm: a.atualizadoEm,
-      })),
+        stagingStats: stats,
+      };
+    });
+
+    // Cálculos consolidados para as 4 etapas
+    const totalArquivos = lote.totalArquivos;
+    const arquivosIaConcluidos = arquivosFormatados.filter((a) =>
+      ['IA_CONCLUIDO', 'STAGING_CARREGADO', 'PROCESSADO_FINAL'].includes(a.status)
+    ).length;
+    const arquivosStagingCarregados = arquivosFormatados.filter((a) =>
+      ['STAGING_CARREGADO', 'PROCESSADO_FINAL'].includes(a.status)
+    ).length;
+    const arquivosConsolidados = arquivosFormatados.filter(
+      (a) => a.status === 'PROCESSADO_FINAL'
+    ).length;
+
+    const totalLinhasStaging = Array.from(statsMap.values()).reduce(
+      (acc, s) => acc + s.totalLinhas,
+      0
+    );
+    const linhasConsolidadas = Array.from(statsMap.values()).reduce(
+      (acc, s) => acc + s.processado + s.ignorado,
+      0
+    );
+
+    return {
+      id: lote.id,
+      usuarioId: lote.usuarioId,
+      caminhoDiretorio: lote.caminhoDiretorio,
+      totalArquivos: lote.totalArquivos,
+      arquivosProcessados: lote.arquivosProcessados,
+      status: lote.status,
+      criadoEm: lote.criadoEm,
+      atualizadoEm: lote.atualizadoEm,
+      metricasProgresso: {
+        upload: {
+          concluido: totalArquivos,
+          total: totalArquivos,
+          porcentagem: 100,
+        },
+        ia: {
+          concluido: arquivosIaConcluidos,
+          total: totalArquivos,
+          porcentagem: totalArquivos > 0 ? Math.round((arquivosIaConcluidos / totalArquivos) * 100) : 0,
+        },
+        staging: {
+          concluido: arquivosStagingCarregados,
+          total: totalArquivos,
+          porcentagem: totalArquivos > 0 ? Math.round((arquivosStagingCarregados / totalArquivos) * 100) : 0,
+          totalLinhas: totalLinhasStaging,
+        },
+        consolidacao: {
+          concluido: arquivosConsolidados,
+          total: totalArquivos,
+          porcentagem: totalArquivos > 0 ? Math.round((arquivosConsolidados / totalArquivos) * 100) : 0,
+          linhasConsolidadas,
+          totalLinhas: totalLinhasStaging,
+        },
+      },
+      arquivos: arquivosFormatados,
     };
   }
 

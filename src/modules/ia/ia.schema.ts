@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const iaParseRequestSchema = z.object({
   texto: z.string().min(1, 'Texto de entrada é obrigatório'),
   modo: z.enum(['CREDITOS', 'API_PROPRIA', 'EXTERNO']).default('CREDITOS'),
-  provedor: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'OPENROUTER']).optional(),
+  provedor: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'DEEPSEEK', 'OPENROUTER']).optional(),
   modelo: z.string().optional(),
   apiKey: z.string().optional(),
   dataReferencia: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato de data inválido (YYYY-MM-DD)').optional(),
@@ -30,7 +30,7 @@ export const iaLancamentoParsedSchema = z.object({
 export type IaLancamentoParsed = z.infer<typeof iaLancamentoParsedSchema>;
 
 export const testarApiKeySchema = z.object({
-  provedor: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'OPENROUTER']),
+  provedor: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'DEEPSEEK', 'OPENROUTER']),
   apiKey: z.string().min(8, 'API Key muito curta'),
   modelo: z.string().optional(),
 });
@@ -38,7 +38,7 @@ export const testarApiKeySchema = z.object({
 export type TestarApiKeyInput = z.infer<typeof testarApiKeySchema>;
 
 export const salvarConfiguracaoIaSchema = z.object({
-  provedor: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'OPENROUTER']),
+  provedor: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'DEEPSEEK', 'OPENROUTER']),
   apiKey: z.string().min(8, 'API Key muito curta'),
   modelo: z.string().optional(),
 });
@@ -46,7 +46,7 @@ export const salvarConfiguracaoIaSchema = z.object({
 export type SalvarConfiguracaoIaInput = z.infer<typeof salvarConfiguracaoIaSchema>;
 
 export const removerConfiguracaoIaSchema = z.object({
-  provedor: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'OPENROUTER']).optional(),
+  provedor: z.enum(['GEMINI', 'OPENAI', 'ANTHROPIC', 'DEEPSEEK', 'OPENROUTER']).optional(),
 });
 
 export type RemoverConfiguracaoIaInput = z.infer<typeof removerConfiguracaoIaSchema>;

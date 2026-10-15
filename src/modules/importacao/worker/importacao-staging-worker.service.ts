@@ -127,11 +127,10 @@ export class ImportacaoStagingWorkerService {
           where: { arquivoId: arquivo.id },
         });
 
-        // Cria os registros linha a linha na tabela staging_lancamentos_importacao
-        for (const txItem of transacoes) {
+        // Prepara dados e executa bulk insert atômico via createMany
+        const registrosParaInserir = transacoes.map((txItem) => {
           const dataMovimentoDate = new Date(`${txItem.dataMovimento}T00:00:00.000Z`);
 
-          // Mapeia TipoConta
           let tipoContaFinal: 'CONTA_CORRENTE' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | null = null;
           if (txItem.tipoConta === 'CARTAO_CREDITO') {
             tipoContaFinal = 'CARTAO_CREDITO';
@@ -141,23 +140,27 @@ export class ImportacaoStagingWorkerService {
             tipoContaFinal = 'INVESTIMENTO';
           }
 
-          await tx.stagingLancamentoImportacao.create({
-            data: {
-              loteId: arquivo.loteId,
-              arquivoId: arquivo.id,
-              arquivoOrigem: arquivo.nomeArquivo,
-              dataMovimento: dataMovimentoDate,
-              descricao: txItem.descricao,
-              valor: txItem.valor,
-              natureza: txItem.natureza,
-              contaSugerida: txItem.contaSugerida || null,
-              tipoConta: tipoContaFinal,
-              categoriaSugerida: txItem.categoriaSugerida || null,
-              parcelaAtual: txItem.parcelaAtual || null,
-              totalParcelas: txItem.totalParcelas || null,
-              observacao: txItem.observacao || null,
-              statusProcessamento: 'PENDENTE',
-            },
+          return {
+            loteId: arquivo.loteId,
+            arquivoId: arquivo.id,
+            arquivoOrigem: arquivo.nomeArquivo,
+            dataMovimento: dataMovimentoDate,
+            descricao: txItem.descricao,
+            valor: txItem.valor,
+            natureza: txItem.natureza,
+            contaSugerida: txItem.contaSugerida || null,
+            tipoConta: tipoContaFinal,
+            categoriaSugerida: txItem.categoriaSugerida || null,
+            parcelaAtual: txItem.parcelaAtual || null,
+            totalParcelas: txItem.totalParcelas || null,
+            observacao: txItem.observacao || null,
+            statusProcessamento: 'PENDENTE' as const,
+          };
+        });
+
+        if (registrosParaInserir.length > 0) {
+          await tx.stagingLancamentoImportacao.createMany({
+            data: registrosParaInserir,
           });
         }
 

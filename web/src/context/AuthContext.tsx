@@ -44,8 +44,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setUsuario(perfilServidor);
           localStorage.setItem(LOCAL_STORAGE_USER_KEY, JSON.stringify(perfilServidor));
         }
-      } catch {
-        // Modo offline / sem sessão ativa
+      } catch (err: any) {
+        // Se a sessão expirou ou o token JWT no localStorage é inválido, limpa o token expirado
+        if (err?.message?.includes('Token de autenticação') || err?.message?.includes('401')) {
+          localStorage.removeItem(LOCAL_STORAGE_TOKEN_KEY);
+          localStorage.removeItem(LOCAL_STORAGE_USER_KEY);
+          setUsuario(null);
+        }
       } finally {
         setIsLoading(false);
       }

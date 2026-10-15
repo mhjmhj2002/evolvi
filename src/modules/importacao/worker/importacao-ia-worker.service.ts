@@ -155,23 +155,18 @@ export class ImportacaoIaWorkerService {
       });
     }
 
-    // Avalia fechamento do lote
+    // Avalia fechamento do lote em caso de falha catastrófica de todos os arquivos
     const erros = resultados.filter((r) => !r.sucesso).length;
     const sucessos = resultados.filter((r) => r.sucesso).length;
 
-    let statusFinalLote: 'PROCESSANDO_IA' | 'ERRO_TOTAL' | 'ERRO_PARCIAL' = 'PROCESSANDO_IA';
     if (erros > 0 && sucessos === 0) {
-      statusFinalLote = 'ERRO_TOTAL';
-    } else if (erros > 0 && sucessos > 0) {
-      statusFinalLote = 'ERRO_PARCIAL';
+      await prisma.loteImportacao.updateMany({
+        where: { id: loteId },
+        data: {
+          status: 'ERRO_TOTAL',
+        },
+      });
     }
-
-    await prisma.loteImportacao.updateMany({
-      where: { id: loteId },
-      data: {
-        status: statusFinalLote,
-      },
-    });
 
     return {
       loteId,
@@ -255,7 +250,7 @@ export class ImportacaoIaWorkerService {
         geradoEm: new Date().toISOString(),
         metadados: {
           provedor: provedorIa || 'GEMINI',
-          modelo: modeloIa || 'gemini-3.8-flash',
+          modelo: modeloIa || 'gemini-2.5-flash',
           tentativas: 1,
         },
         transacoes: transacoesExtraidas,

@@ -27,15 +27,15 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
   const [statusIa, setStatusIa] = useState<StatusIaResponse | null>(null);
 
   // Provedor selecionado
-  const [provedor, setProvedor] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC'>('GEMINI');
-  const [modelo, setModelo] = useState('gemini-3.8-flash');
+  const [provedor, setProvedor] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK'>('GEMINI');
+  const [modelo, setModelo] = useState('gemini-2.5-flash');
   const [apiKey, setApiKey] = useState('');
   const [mostrarChave, setMostrarChave] = useState(false);
 
   // Ações de teste e salvamento
   const [testando, setTestando] = useState(false);
   const [feedback, setFeedback] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(null);
-  const [guiaAberto, setGuiaAberto] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC' | null>('GEMINI');
+  const [guiaAberto, setGuiaAberto] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | null>('GEMINI');
 
   const carregarStatus = async () => {
     try {
@@ -43,7 +43,7 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
       setStatusIa(res);
 
       const savedProvedor = (res.provedorAtivo as any) || (localStorage.getItem('evolvi_ia_byok_provedor') as any) || 'GEMINI';
-      const savedModelo = res.modeloPadrao || localStorage.getItem('evolvi_ia_byok_modelo') || 'gemini-3.8-flash';
+      const savedModelo = res.modeloPadrao || localStorage.getItem('evolvi_ia_byok_modelo') || 'gemini-2.5-flash';
 
       setProvedor(savedProvedor);
       setModelo(savedModelo);
@@ -211,7 +211,13 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
               >
                 <CheckCircle2 size={13} style={{ color: 'var(--status-green, #22c55e)' }} />
                 <strong style={{ color: 'var(--text-primary)' }}>
-                  {cfg.provedor === 'GEMINI' ? 'Google Gemini' : cfg.provedor === 'OPENAI' ? 'OpenAI (ChatGPT)' : 'Anthropic (Claude)'}:
+                  {cfg.provedor === 'GEMINI'
+                    ? 'Google Gemini'
+                    : cfg.provedor === 'DEEPSEEK'
+                    ? 'DeepSeek'
+                    : cfg.provedor === 'OPENAI'
+                    ? 'OpenAI (ChatGPT)'
+                    : 'Anthropic (Claude)'}:
                 </strong>
                 <code>{cfg.chaveMascarada}</code>
                 <button
@@ -316,6 +322,36 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
             <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Gratuito • Rápido • Multimodal</span>
           </button>
 
+          {/* DeepSeek */}
+          <button
+            type="button"
+            className={`auth-tab-btn ${provedor === 'DEEPSEEK' ? 'active' : ''}`}
+            onClick={() => {
+              setProvedor('DEEPSEEK');
+              setModelo('deepseek-chat');
+              setGuiaAberto('DEEPSEEK');
+            }}
+            style={{
+              padding: '10px 14px',
+              borderRadius: 'var(--radius-sm)',
+              border: provedor === 'DEEPSEEK' ? '1px solid var(--brand-primary)' : '1px solid var(--border-color)',
+              background: provedor === 'DEEPSEEK' ? 'rgba(56, 189, 248, 0.12)' : 'var(--bg-card)',
+              cursor: 'pointer',
+              textAlign: 'left',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+              <span style={{ fontWeight: 700, fontSize: '0.88rem' }}>DeepSeek</span>
+              {statusIa?.configuracoes?.some((c) => c.provedor === 'DEEPSEEK') && (
+                <span className="badge badge-verde" style={{ fontSize: '0.65rem' }}>✓ Configurada</span>
+              )}
+            </div>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>deepseek-chat • Econômico</span>
+          </button>
+
           {/* OpenAI */}
           <button
             type="button"
@@ -390,6 +426,8 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
                 placeholder={
                   provedor === 'GEMINI'
                     ? 'Ex: AIzaSy...'
+                    : provedor === 'DEEPSEEK'
+                    ? 'Ex: sk-...'
                     : provedor === 'OPENAI'
                     ? 'Ex: sk-proj-...'
                     : 'Ex: sk-ant-...'
@@ -536,6 +574,60 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
                 <li>Selecione qualquer projeto Google Cloud existente ou escolha <em>"Create API key in new project"</em>.</li>
                 <li>Copie a chave gerada (inicia com <code>AIzaSy...</code>) e cole no campo acima.</li>
                 <li>Clique em <strong>Testar Conexão</strong> e depois em <strong>Salvar</strong>. Pronto! O plano gratuito permite até 15 requisições por minuto sem custo.</li>
+              </ol>
+            </div>
+          )}
+        </div>
+
+        {/* Guia DeepSeek */}
+        <div
+          style={{
+            border: '1px solid var(--border-color)',
+            borderRadius: 'var(--radius-sm)',
+            overflow: 'hidden',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setGuiaAberto(guiaAberto === 'DEEPSEEK' ? null : 'DEEPSEEK')}
+            style={{
+              width: '100%',
+              padding: '10px 14px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: 'var(--bg-secondary)',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--text-primary)',
+              fontWeight: 600,
+              fontSize: '0.84rem',
+            }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span>2. DeepSeek (platform.deepseek.com)</span>
+              <span className="badge badge-verde" style={{ fontSize: '0.65rem' }}>Econômico & Pago</span>
+            </span>
+            {guiaAberto === 'DEEPSEEK' ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
+          {guiaAberto === 'DEEPSEEK' && (
+            <div style={{ padding: '14px', fontSize: '0.82rem', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+              <ol style={{ paddingLeft: '20px', margin: 0, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <li>
+                  Acesse a plataforma oficial de API do DeepSeek:{' '}
+                  <a
+                    href="https://platform.deepseek.com/api_keys"
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: 'var(--brand-primary)', textDecoration: 'underline', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    platform.deepseek.com/api_keys <ExternalLink size={12} />
+                  </a>
+                </li>
+                <li>Faça login na sua conta DeepSeek com créditos/dólares ativos.</li>
+                <li>Clique em <strong>"Create API key"</strong> no menu API Keys.</li>
+                <li>Copie a chave gerada (inicia com <code>sk-...</code>) e cole no campo acima.</li>
+                <li>Clique em <strong>Testar Conexão</strong> e depois em <strong>Salvar</strong>. Pronto! Suas importações e workers usarão seus créditos DeepSeek com total estabilidade.</li>
               </ol>
             </div>
           )}

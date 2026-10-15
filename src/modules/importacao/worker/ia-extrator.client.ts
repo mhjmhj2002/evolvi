@@ -39,7 +39,7 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
   private model: string;
   private universalParser: UniversalStatementParser;
 
-  constructor(apiKey?: string, model: string = 'gemini-3.8-flash') {
+  constructor(apiKey?: string, model: string = 'gemini-2.5-flash') {
     this.apiKey = apiKey || env.GEMINI_API_KEY;
     this.model = model;
     this.universalParser = new UniversalStatementParser();
@@ -50,6 +50,9 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     mimeType?: string | null;
     conteudoBuffer: Buffer;
     conteudoTexto?: string;
+    usuarioId?: string;
+    provedorIa?: string;
+    modeloIa?: string;
     contexto: {
       contas: { id: string; nome: string; tipo: string }[];
       categorias: { id: string; nome: string }[];
@@ -142,8 +145,19 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
       );
     }
 
-    // Se temos apiKey, tentamos chamada multimodal ou text
+    // Se temos apiKey, tentamos chamada de IA para o provedor selecionado
     try {
+      if (provedorEfetivo === 'DEEPSEEK') {
+        return await this.chamarDeepSeekApi(
+          nomeArquivo,
+          conteudoBuffer,
+          contexto,
+          textoProcessado,
+          apiKeyEfetiva,
+          modeloEfetivo
+        );
+      }
+
       return await this.chamarGeminiApi(
         nomeArquivo,
         mimeType,
@@ -156,11 +170,123 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     } catch (err: unknown) {
       const detalhe = err instanceof Error ? err.message : String(err);
       console.error(
-        `[GeminiIaExtratorClient] Falha na extração por IA para "${nomeArquivo}": ${detalhe}`
+        `[GeminiIaExtratorClient] Falha na extração por IA (${provedorEfetivo}) para "${nomeArquivo}": ${detalhe}`
       );
       // NUNCA fazer fallback heurístico cego para documentos complexos/não estruturados.
-      throw new Error(`A IA não conseguiu processar este documento. Motivo: ${detalhe}`);
+      throw new Error(`A IA (${provedorEfetivo}) não conseguiu processar este documento. Motivo: ${detalhe}`);
     }
+  }
+
+  private async chamarDeepSeekApi(
+    nomeArquivo: string,
+    conteudoBuffer: Buffer,
+    contexto: {
+      contas: { id: string; nome: string; tipo: string }[];
+      categorias: { id: string; nome: string }[];
+      dataReferencia: string;
+    },
+    textoProcessado?: string,
+    apiKeyOverride?: string,
+    modelOverride?: string
+  ): Promise<LancamentoConsolidadoIa[]> {
+    const key = apiKeyOverride || this.apiKey;
+    const mod = modelOverride || 'deepseek-chat';
+    const url = 'https://api.deepseek.com/chat/completions';
+
+    const texto = textoProcessado || conteudoBuffer.toString('utf-8');
+    if (!texto || texto.trim().length === 0) {
+      throw new Error('Não foi possível extrair texto legível deste documento para enviar ao DeepSeek.');
+    }
+
+    const promptSistema = `Você é o extrator inteligente e especialista financeiro do sistema Evolvi.
+Sua missão é extrair rigorosamente TODAS as transações financeiras (despesas, receitas, faturas, pagamentos, transferências) contidas no documento ou extrato anexo.
+
+DIRETRIZES FUNDAMENTAIS:
+1. Extração Exaustiva: Não omita nenhuma linha ou lançamento. Cada compra, débito, crédito ou movimentação deve gerar um item no array "transacoes".
+2. Anti-dupla contagem:
+   - Se for pagamento de fatura de cartão de crédito (ex: "PAGTO FATURA", "PGTO CARTAO", "PAGAMENTO DE FATURA"), defina "natureza" = "TRANSFERENCIA_PROPRIA" e "isPagamentoFatura" = true.
+   - Para compras ou despesas normais: "natureza" = "DESPESA".
+   - Para salários, rendimentos, pix recebido ou entradas: "natureza" = "RECEITA".
+3. Formato da Data: "YYYY-MM-DD". Se o documento trouxer apenas DD/MM ou DD/MM/AAAA, converta para YYYY-MM-DD usando o ano de referência ("${contexto.dataReferencia.substring(0, 4)}").
+4. Formato de Valor: número decimal positivo (ponto como separador, ex: 125.50).
+5. Parcelamento: Se houver indicação de parcela (ex: "01/03", "3/10", "parcela 2 de 5"), preencha "parcelaAtual" e "totalParcelas".
+6. Contas disponíveis do usuário:
+${contexto.contas.map((c) => `- "${c.nome}" (Tipo: ${c.tipo})`).join('\n') || '(Nenhuma cadastrada)'}
+Se o documento for de uma instituição específica (ex: Nubank, Itaú, Inter), sugira a conta em "contaSugerida" e o tipo ("CARTAO_CREDITO" ou "CONTA_CORRENTE") em "tipoConta".
+7. Categorias disponíveis (POF):
+${contexto.categorias.map((c) => `- "${c.nome}"`).join('\n') || '(Nenhuma cadastrada)'}
+Preencha "categoriaSugerida" com a categoria mais aderente.
+
+FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
+{
+  "transacoes": [
+    {
+      "dataMovimento": "YYYY-MM-DD",
+      "descricao": "string concisa",
+      "valor": 99.90,
+      "natureza": "DESPESA" | "RECEITA" | "TRANSFERENCIA_PROPRIA" | "APORTE_PATRIMONIAL",
+      "contaSugerida": "string ou null",
+      "tipoConta": "CONTA_CORRENTE" | "CARTAO_CREDITO" | null,
+      "categoriaSugerida": "string ou null",
+      "parcelaAtual": number ou null,
+      "totalParcelas": number ou null,
+      "isPagamentoFatura": boolean,
+      "observacao": "string ou null",
+      "confianca": number
+    }
+  ]
+}`;
+
+    const body = {
+      model: mod,
+      messages: [
+        { role: 'system', content: promptSistema },
+        {
+          role: 'user',
+          content: `Documento a analisar ("${nomeArquivo}"):\n"""\n${texto}\n"""`,
+        },
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.1,
+    };
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Erro na API DeepSeek (${res.status}): ${errText}`);
+    }
+
+    const data = (await res.json()) as any;
+    const rawText = data.choices?.[0]?.message?.content;
+    if (!rawText) {
+      throw new Error('A resposta do DeepSeek não continha texto de saída.');
+    }
+
+    const parsedJson = JSON.parse(rawText);
+    const lista = Array.isArray(parsedJson) ? parsedJson : parsedJson.transacoes || [];
+
+    return lista.map((t: any) => ({
+      dataMovimento: t.dataMovimento || contexto.dataReferencia,
+      descricao: String(t.descricao || 'Lançamento extraído'),
+      valor: Math.abs(Number(t.valor) || 0),
+      natureza: t.natureza || 'DESPESA',
+      contaSugerida: t.contaSugerida || null,
+      tipoConta: t.tipoConta || null,
+      categoriaSugerida: t.categoriaSugerida || null,
+      parcelaAtual: t.parcelaAtual ? Number(t.parcelaAtual) : null,
+      totalParcelas: t.totalParcelas ? Number(t.totalParcelas) : null,
+      isPagamentoFatura: Boolean(t.isPagamentoFatura),
+      observacao: t.observacao || null,
+      confianca: Number(t.confianca ?? 0.95),
+    }));
   }
 
   private async chamarGeminiApi(
