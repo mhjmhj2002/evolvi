@@ -12,6 +12,8 @@ export interface SalvarArquivoInput {
 export interface RecepcionarLoteInput {
   usuarioId: string;
   arquivos: SalvarArquivoInput[];
+  provedorIa?: string;
+  modeloIa?: string;
 }
 
 export interface LoteCriadoResponse {
@@ -155,6 +157,8 @@ export class ImportacaoStorageService {
       totalArquivos: lote.totalArquivos,
       caminhoDiretorio: lote.caminhoDiretorio,
       recepcionadoEm: lote.criadoEm,
+      provedorIa: input.provedorIa,
+      modeloIa: input.modeloIa,
     });
 
     return {
@@ -351,5 +355,106 @@ export class ImportacaoStorageService {
         tamanhoBytes: Number(a.tamanhoBytes),
       })),
     }));
+  }
+
+  /**
+   * Exclui um arquivo de importação individual (por exemplo, com erro de leitura ou incompatível),
+   * removendo seus dados vinculados em staging e apagando os arquivos físicos (original e consolidado).
+   * Recalcula os contadores e status do lote pai.
+   */
+  public async excluirArquivoImportacao(arquivoId: string, usuarioId: string) {
+    const arquivo = await prisma.arquivoImportacao.findUnique({
+      where: { id: arquivoId },
+      include: {
+        lote: true,
+      },
+    });
+
+    if (!arquivo) {
+      throw new Error(`Arquivo de importação [${arquivoId}] não encontrado.`);
+    }
+
+    if (arquivo.lote.usuarioId !== usuarioId) {
+      throw new Error(`Acesso negado: o arquivo ${arquivoId} não pertence ao usuário.`);
+    }
+
+    // 1. Remover arquivos físicos no disco (arquivo original e consolidado se existir)
+    if (arquivo.lote.caminhoDiretorio) {
+      const pastaLote = path.resolve(process.cwd(), arquivo.lote.caminhoDiretorio);
+      if (arquivo.caminhoRelativo) {
+        const caminhoFisicoOriginal = path.resolve(pastaLote, arquivo.caminhoRelativo);
+        try {
+          await fs.unlink(caminhoFisicoOriginal);
+        } catch {
+          // Arquivo pode já ter sido excluído ou não existir fisicamente
+        }
+      }
+
+      const caminhoConsolidado = path.resolve(pastaLote, `consolidado_${arquivo.id}.json`);
+      try {
+        await fs.unlink(caminhoConsolidado);
+      } catch {
+        // Ignora caso não exista
+      }
+    }
+
+    const loteId = arquivo.loteId;
+
+    // 2. Exclusão no banco de dados e recálculo das métricas do lote
+    await prisma.$transaction(async (tx) => {
+      // 2.1 Remove registros em staging vinculados ao arquivo
+      await tx.stagingLancamentoImportacao.deleteMany({
+        where: { arquivoId },
+      });
+
+      // 2.2 Remove o registro do arquivo de importação
+      await tx.arquivoImportacao.delete({
+        where: { id: arquivoId },
+      });
+
+      // 2.3 Recalcula totais do lote
+      const totalRestante = await tx.arquivoImportacao.count({
+        where: { loteId },
+      });
+
+      const processadosRestantes = await tx.arquivoImportacao.count({
+        where: {
+          loteId,
+          status: { in: ['IA_CONCLUIDO', 'STAGING_CARREGADO', 'PROCESSADO_FINAL'] },
+        },
+      });
+
+      const errosRestantes = await tx.arquivoImportacao.count({
+        where: { loteId, status: 'ERRO' },
+      });
+
+      let novoStatusLote = arquivo.lote.status;
+      if (totalRestante === 0) {
+        novoStatusLote = 'CONCLUIDO';
+      } else if (errosRestantes === 0 && (arquivo.lote.status === 'ERRO_PARCIAL' || arquivo.lote.status === 'ERRO_TOTAL')) {
+        // Se não há mais erros no lote, reavalia
+        if (processadosRestantes === totalRestante) {
+          novoStatusLote = 'CONCLUIDO';
+        } else {
+          novoStatusLote = 'PROCESSANDO_IA';
+        }
+      }
+
+      await tx.loteImportacao.update({
+        where: { id: loteId },
+        data: {
+          totalArquivos: totalRestante,
+          arquivosProcessados: processadosRestantes,
+          status: novoStatusLote,
+        },
+      });
+    });
+
+    return {
+      sucesso: true,
+      arquivoId,
+      loteId,
+      nomeArquivo: arquivo.nomeArquivo,
+    };
   }
 }

@@ -6,8 +6,9 @@ import {
   updateMovimentoSchema,
   queryMovimentosSchema,
   importarMovimentosSchema,
+  splitMovimentoSchema,
 } from './movimento.schema.js';
-import { gerarChaveDedupe } from './movimento.util.js';
+import { gerarChaveDedupe, extrairRaizComerciante } from './movimento.util.js';
 
 export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   app.addHook('preHandler', ensureAuthenticated);
@@ -69,6 +70,18 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
             categoriaPaiId: true,
           },
         },
+        rateios: {
+          include: {
+            categoria: {
+              select: {
+                id: true,
+                nome: true,
+                categoriaPaiId: true,
+              },
+            },
+          },
+          orderBy: { criadoEm: 'asc' },
+        },
       },
       orderBy: [{ dataMovimento: 'desc' }, { criadoEm: 'desc' }],
     });
@@ -107,10 +120,18 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
         natureza: mov.natureza,
         status: mov.status,
         chaveDedupe: mov.chaveDedupe,
+        categoriaFixadaPeloUsuario: mov.categoriaFixadaPeloUsuario,
         transferenciaVinculoId: mov.transferenciaVinculoId,
         observacao: mov.observacao,
         origemDocumento: mov.origemDocumento,
         criadoEm: mov.criadoEm,
+        rateios: mov.rateios?.map((r) => ({
+          id: r.id,
+          categoriaId: r.categoriaId,
+          categoria: r.categoria,
+          valor: Number(r.valor),
+          descricao: r.descricao,
+        })) || [],
       };
     });
 
@@ -185,6 +206,7 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
         dataMovimento: data.dataMovimento,
         valor: data.valor,
         descricao: data.descricao,
+        idOrigem: data.idOrigem,
       });
 
     // Verificação de deduplicação antes da inserção
@@ -310,31 +332,43 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       naturezaFinal = 'TRANSFERENCIA_PROPRIA';
     }
 
-    const novoMovimento = await prisma.movimento.create({
-      data: {
-        usuarioId,
-        contaId: data.contaId,
-        categoriaId: data.categoriaId ?? null,
-        dataMovimento: dataMovimentoDate,
-        competencia: competenciaFinal,
-        descricao: data.descricao,
-        valor: data.valor,
-        natureza: naturezaFinal,
-        status: data.status,
-        chaveDedupe: chaveDedupeCalculada,
-        observacao: data.observacao,
-        origemDocumento: data.origemDocumento,
-      },
-    });
+    try {
+      const novoMovimento = await prisma.movimento.create({
+        data: {
+          usuarioId,
+          contaId: data.contaId,
+          categoriaId: data.categoriaId ?? null,
+          dataMovimento: dataMovimentoDate,
+          competencia: competenciaFinal,
+          descricao: data.descricao,
+          valor: data.valor,
+          natureza: naturezaFinal,
+          status: data.status,
+          chaveDedupe: chaveDedupeCalculada,
+          idOrigem: data.idOrigem,
+          observacao: data.observacao,
+          origemDocumento: data.origemDocumento,
+        },
+      });
 
-    return reply.status(201).send({
-      message: 'Movimento registrado com sucesso.',
-      movimento: {
-        ...novoMovimento,
-        valor: Number(novoMovimento.valor),
-        dataMovimento: data.dataMovimento,
-      },
-    });
+      return reply.status(201).send({
+        message: 'Movimento registrado com sucesso.',
+        movimento: {
+          ...novoMovimento,
+          valor: Number(novoMovimento.valor),
+          dataMovimento: data.dataMovimento,
+        },
+      });
+    } catch (err: any) {
+      if (err?.code === 'P2002') {
+        return reply.status(409).send({
+          statusCode: 409,
+          error: 'Conflict',
+          message: 'Movimento duplicado detectado para a chave informada.',
+        });
+      }
+      throw err;
+    }
   });
 
   // PUT /api/movimentos/:id (atualização de movimento)
@@ -425,11 +459,17 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       }
     }
 
+    const deveFixarCategoria =
+      data.categoriaFixadaPeloUsuario !== undefined
+        ? data.categoriaFixadaPeloUsuario
+        : data.categoriaId !== undefined;
+
     const movimentoAtualizado = await prisma.movimento.update({
       where: { id },
       data: {
         ...(data.contaId && { contaId: data.contaId }),
         ...(data.categoriaId !== undefined && { categoriaId: data.categoriaId }),
+        ...(deveFixarCategoria !== undefined && { categoriaFixadaPeloUsuario: deveFixarCategoria }),
         ...(dataMovimentoDate && { dataMovimento: dataMovimentoDate }),
         ...(competenciaCalculada && { competencia: competenciaCalculada }),
         ...(data.descricao && { descricao: data.descricao }),
@@ -442,13 +482,83 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       },
     });
 
+    let totalPropagados = 0;
+    let termoVendedor: string | null = null;
+
+    // Se o usuário solicitou propagação da categoria para o mesmo vendedor
+    // TASK-43: Propaga apenas para lançamentos onde a categoria NÃO foi fixada manualmente pelo usuário
+    if (data.propagarMesmoVendedor && data.categoriaId !== undefined) {
+      const descricaoReferencia = data.descricao || movimentoExistente.descricao;
+      const raiz = extrairRaizComerciante(descricaoReferencia);
+      if (raiz && raiz.length >= 3) {
+        termoVendedor = raiz;
+        const resUpdateMany = await prisma.movimento.updateMany({
+          where: {
+            usuarioId,
+            id: { not: id },
+            categoriaFixadaPeloUsuario: false,
+            descricao: { contains: raiz, mode: 'insensitive' },
+          },
+          data: {
+            categoriaId: data.categoriaId,
+          },
+        });
+        totalPropagados = resUpdateMany.count;
+      }
+    }
+
     return reply.status(200).send({
-      message: 'Movimento atualizado com sucesso.',
+      message: totalPropagados > 0
+        ? `Movimento atualizado e categoria propagada para mais ${totalPropagados} lançamento(s) de "${termoVendedor}".`
+        : 'Movimento atualizado com sucesso.',
+      totalPropagados,
+      termoVendedor,
       movimento: {
         ...movimentoAtualizado,
         valor: Number(movimentoAtualizado.valor),
         dataMovimento: movimentoAtualizado.dataMovimento.toISOString().split('T')[0],
       },
+    });
+  });
+
+  // GET /api/movimentos/:id/similares-vendedor (retorna quantidade e termo raiz de outros movimentos do mesmo vendedor)
+  app.get('/:id/similares-vendedor', async (request, reply) => {
+    const usuarioId = request.user.sub;
+    const { id } = request.params as { id: string };
+
+    const movimento = await prisma.movimento.findFirst({
+      where: { id, usuarioId },
+      select: { id: true, descricao: true, categoriaId: true },
+    });
+
+    if (!movimento) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Movimento não encontrado.',
+      });
+    }
+
+    const raiz = extrairRaizComerciante(movimento.descricao);
+    if (!raiz || raiz.length < 3) {
+      return reply.status(200).send({
+        termoVendedor: null,
+        totalSimilares: 0,
+      });
+    }
+
+    const totalSimilares = await prisma.movimento.count({
+      where: {
+        usuarioId,
+        id: { not: id },
+        categoriaFixadaPeloUsuario: false,
+        descricao: { contains: raiz, mode: 'insensitive' },
+      },
+    });
+
+    return reply.status(200).send({
+      termoVendedor: raiz,
+      totalSimilares,
     });
   });
 
@@ -500,6 +610,140 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
     });
   });
 
+  // POST /api/movimentos/:id/split (desdobramento analítico de categorias)
+  app.post('/:id/split', async (request, reply) => {
+    const usuarioId = request.user.sub;
+    const { id } = request.params as { id: string };
+
+    const parseResult = splitMovimentoSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Dados de desdobramento inválidos.',
+        issues: parseResult.error.issues,
+      });
+    }
+
+    const { splits } = parseResult.data;
+
+    // Buscar movimento isolado pelo usuarioId
+    const movimento = await prisma.movimento.findFirst({
+      where: { id, usuarioId },
+    });
+
+    if (!movimento) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Movimento não encontrado para desdobramento.',
+      });
+    }
+
+    // Validar rigorosamente se a soma dos splits bate com o valor do movimento
+    const valorOriginal = Number(movimento.valor);
+    const somaSplits = Number(splits.reduce((acc, s) => acc + s.valor, 0).toFixed(2));
+
+    if (Math.abs(somaSplits - valorOriginal) > 0.001) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: `A soma dos valores dos desdobramentos (R$ ${somaSplits.toFixed(2)}) deve ser estritamente igual ao valor do lançamento original (R$ ${valorOriginal.toFixed(2)}).`,
+      });
+    }
+
+    // Validar se todas as categorias existem e pertencem ao usuário ou ao sistema (usuarioId: null)
+    const categoriaIds = splits.map((s) => s.categoriaId);
+    const categoriasValidas = await prisma.categoria.findMany({
+      where: {
+        id: { in: categoriaIds },
+        OR: [{ usuarioId: null }, { usuarioId }],
+      },
+    });
+
+    if (categoriasValidas.length !== new Set(categoriaIds).size) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Uma ou mais categorias informadas são inválidas ou não pertencem ao usuário.',
+      });
+    }
+
+    // Executar substituição atômica dos splits na transação
+    const rateiosSalvos = await prisma.$transaction(async (tx) => {
+      // Remove rateios anteriores se existirem
+      await tx.movimentoRateio.deleteMany({
+        where: { movimentoId: id },
+      });
+
+      // Cria novos rateios
+      const criados = [];
+      for (const s of splits) {
+        const item = await tx.movimentoRateio.create({
+          data: {
+            movimentoId: id,
+            categoriaId: s.categoriaId,
+            valor: s.valor,
+            descricao: s.descricao || null,
+          },
+          include: {
+            categoria: {
+              select: {
+                id: true,
+                nome: true,
+                categoriaPaiId: true,
+              },
+            },
+          },
+        });
+        criados.push(item);
+      }
+
+      return criados;
+    });
+
+    return reply.status(200).send({
+      sucesso: true,
+      message: `Lançamento desdobrado com sucesso em ${rateiosSalvos.length} categorias.`,
+      movimentoId: id,
+      rateios: rateiosSalvos.map((r) => ({
+        id: r.id,
+        categoriaId: r.categoriaId,
+        categoria: r.categoria,
+        valor: Number(r.valor),
+        descricao: r.descricao,
+      })),
+    });
+  });
+
+  // DELETE /api/movimentos/:id/split (reversão do desdobramento)
+  app.delete('/:id/split', async (request, reply) => {
+    const usuarioId = request.user.sub;
+    const { id } = request.params as { id: string };
+
+    const movimento = await prisma.movimento.findFirst({
+      where: { id, usuarioId },
+    });
+
+    if (!movimento) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Movimento não encontrado.',
+      });
+    }
+
+    const { count } = await prisma.movimentoRateio.deleteMany({
+      where: { movimentoId: id },
+    });
+
+    return reply.status(200).send({
+      sucesso: true,
+      message: `Desdobramento revertido com sucesso. ${count} fatia(s) removida(s).`,
+      movimentoId: id,
+    });
+  });
+
   // POST /api/movimentos/importar (importação em lote com deduplicação)
   app.post('/importar', async (request, reply) => {
     const usuarioId = request.user.sub;
@@ -540,6 +784,7 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
           dataMovimento: item.dataMovimento,
           valor: item.valor,
           descricao: item.descricao,
+          idOrigem: item.idOrigem,
         });
 
       // Checagem se já existe
@@ -552,33 +797,49 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
         continue;
       }
 
-      // Regra Anti-Dupla Contagem para pagamento de fatura no lote
+      // Regra Anti-Dupla Contagem e Prevalência de Proventos/Salário/PLR
       let naturezaFinal = item.natureza;
-      if (item.isPagamentoFatura) {
+      const isSalarioOuPlr =
+        /ted\s*conta\s*sal[aá]rio|cred\s*(ted\s*)?sal[aá]rio|folha\s*pag(amento)?|remunera[cç][aã]o|pagamento\s*de\s*sal[aá]rio|(?:\b|^)plr(?:\b|$)|participa[cç][aã]o\s*lucros|b[oô]nus\s*salarial|abono\s*salarial|13[oº]?\s*sal[aá]rio|sal[aá]rio\s*mensal/i.test(
+          item.descricao
+        );
+
+      if (isSalarioOuPlr) {
+        naturezaFinal = 'RECEITA';
+      } else if (item.isPagamentoFatura) {
         naturezaFinal = 'TRANSFERENCIA_PROPRIA';
       }
 
       const competenciaFinal = item.competencia || item.dataMovimento.substring(0, 7);
       const dataMovimentoDate = new Date(`${item.dataMovimento}T00:00:00.000Z`);
 
-      await prisma.movimento.create({
-        data: {
-          usuarioId,
-          contaId: item.contaId,
-          categoriaId: item.categoriaId ?? null,
-          dataMovimento: dataMovimentoDate,
-          competencia: competenciaFinal,
-          descricao: item.descricao,
-          valor: item.valor,
-          natureza: naturezaFinal,
-          status: item.status,
-          chaveDedupe: chave,
-          observacao: item.observacao,
-          origemDocumento: item.origemDocumento || origemDocumento,
-        },
-      });
+      try {
+        await prisma.movimento.create({
+          data: {
+            usuarioId,
+            contaId: item.contaId,
+            categoriaId: item.categoriaId ?? null,
+            dataMovimento: dataMovimentoDate,
+            competencia: competenciaFinal,
+            descricao: item.descricao,
+            valor: item.valor,
+            natureza: naturezaFinal,
+            status: item.status,
+            chaveDedupe: chave,
+            idOrigem: item.idOrigem,
+            observacao: item.observacao,
+            origemDocumento: item.origemDocumento || origemDocumento,
+          },
+        });
 
-      inseridos++;
+        inseridos++;
+      } catch (err: any) {
+        if (err?.code === 'P2002') {
+          ignoradosPorDedupe++;
+          continue;
+        }
+        throw err;
+      }
     }
 
     return reply.status(200).send({

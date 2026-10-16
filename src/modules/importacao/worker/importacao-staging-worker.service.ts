@@ -140,6 +140,21 @@ export class ImportacaoStagingWorkerService {
             tipoContaFinal = 'INVESTIMENTO';
           }
 
+          // BUG-13: Se for linha de pagamento recebido/quitação dentro de fatura de cartão de crédito,
+          // deve ser marcado como IGNORADO para não duplicar com o débito da conta corrente
+          const isQuitaçãoFaturaCartao =
+            tipoContaFinal === 'CARTAO_CREDITO' &&
+            (txItem.isPagamentoFatura ||
+              /pag(amento)?\s*(de)?\s*(fat(ura)?|cart[aã]o)|pagamento\s*recebido|cr[eé]dito\s*pagamento/i.test(
+                txItem.descricao
+              ) ||
+              /informativ[ao]\s*de\s*quita[cç][aã]o/i.test(txItem.observacao || ''));
+
+          const statusProcessamento = isQuitaçãoFaturaCartao ? ('IGNORADO' as const) : ('PENDENTE' as const);
+          const observacaoFinal = isQuitaçãoFaturaCartao
+            ? 'Linha informativa de pagamento em fatura de cartão (ignorado para evitar dupla contagem com débito em conta)'
+            : txItem.observacao || null;
+
           return {
             loteId: arquivo.loteId,
             arquivoId: arquivo.id,
@@ -153,8 +168,9 @@ export class ImportacaoStagingWorkerService {
             categoriaSugerida: txItem.categoriaSugerida || null,
             parcelaAtual: txItem.parcelaAtual || null,
             totalParcelas: txItem.totalParcelas || null,
-            observacao: txItem.observacao || null,
-            statusProcessamento: 'PENDENTE' as const,
+            idOrigem: txItem.idOrigem || null,
+            observacao: observacaoFinal,
+            statusProcessamento,
           };
         });
 

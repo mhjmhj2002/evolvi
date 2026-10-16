@@ -3,6 +3,7 @@ import { prisma } from '../../infrastructure/database/prisma.js';
 import { hashPassword, comparePassword } from './password.service.js';
 import { cadastroSchema, loginSchema } from './auth.schema.js';
 import { env } from '../../config/env.js';
+import { authEventBus } from '../../infrastructure/events/auth-event-bus.js';
 
 export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   // POST /api/auth/cadastro
@@ -124,6 +125,13 @@ export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       secure: env.NODE_ENV === 'production',
       sameSite: 'lax',
       maxAge: 24 * 60 * 60,
+    });
+
+    // Disparo assíncrono para Worker em segundo plano (desacoplado, sem travar o handshake HTTP do login)
+    authEventBus.emitUsuarioAutenticado({
+      usuarioId: usuario.id,
+      email: usuario.email,
+      timestamp: new Date(),
     });
 
     return reply.status(200).send({

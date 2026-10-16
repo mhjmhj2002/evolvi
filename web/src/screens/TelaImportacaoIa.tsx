@@ -15,6 +15,8 @@ import {
   ShieldCheck,
   Zap,
   Key,
+  Trash2,
+  Bell,
 } from 'lucide-react';
 import {
   apiService,
@@ -22,6 +24,8 @@ import {
   StagingLancamentoItem,
   StatusLoteImportacao,
   StatusIaResponse,
+  AlertaConciliacaoItem,
+  HistoricoImportacaoArquivoItem,
 } from '../api.ts';
 import { ConfiguracaoIaCard } from '../components/ConfiguracaoIaCard.tsx';
 
@@ -66,14 +70,52 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
 
   // Estados de controle e polling
   const [processandoAcao, setProcessandoAcao] = useState(false);
-  const [visualizacaoAba, setVisualizacaoAba] = useState<'pipeline' | 'feed' | 'historico'>('pipeline');
+  const [visualizacaoAba, setVisualizacaoAba] = useState<'pipeline' | 'feed' | 'historico' | 'arquivos'>('pipeline');
   const [workerDetalheAba, setWorkerDetalheAba] = useState<'resumo' | 'ia' | 'staging' | 'consolidacao'>('resumo');
 
-  // Validação prévia de configuração da IA
+  // TASK-41: Estados de Alertas de Conciliação e Histórico Estruturado
+  const [alertasConciliacao, setAlertasConciliacao] = useState<AlertaConciliacaoItem[]>([]);
+  const [historicoArquivos, setHistoricoArquivos] = useState<HistoricoImportacaoArquivoItem[]>([]);
+  const [alertaParaDispensar, setAlertaParaDispensar] = useState<AlertaConciliacaoItem | null>(null);
+  const [motivoDispensaSelecionado, setMotivoDispensaSelecionado] = useState<string>('SEM_GASTOS');
+
+  // Validação prévia de configuração da IA e seleção no lote / reprocessamento
   const [statusIa, setStatusIa] = useState<StatusIaResponse | null>(null);
   const [modalConfigIaAberto, setModalConfigIaAberto] = useState(false);
   const [modalEscolhaIaAberto, setModalEscolhaIaAberto] = useState(false);
-  const [provedorIaSelecionado, setProvedorIaSelecionado] = useState<string>('GEMINI');
+  const [provedorIaSelecionado, setProvedorIaSelecionado] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const salvo = localStorage.getItem('evolvi_provedor_ia_ativo');
+      if (salvo) return salvo;
+    }
+    return 'DEEPSEEK';
+  });
+  const [modeloIaSelecionado, setModeloIaSelecionado] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const salvo = localStorage.getItem('evolvi_modelo_ia_ativo');
+      if (salvo) return salvo;
+    }
+    return 'deepseek-chat';
+  });
+
+  const salvarPreferenciaIa = (provedor: string, modelo?: string) => {
+    const mod = modelo || (provedor === 'DEEPSEEK' ? 'deepseek-chat' : 'gemini-3.8-flash');
+    setProvedorIaSelecionado(provedor);
+    setModeloIaSelecionado(mod);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('evolvi_provedor_ia_ativo', provedor);
+      localStorage.setItem('evolvi_modelo_ia_ativo', mod);
+    }
+  };
+
+  // Reprocessamento granular por arquivo com falha
+  const [arquivoParaReprocessar, setArquivoParaReprocessar] = useState<{
+    id: string;
+    nomeArquivo: string;
+    mensagemErro?: string | null;
+  } | null>(null);
+  const [reprocessandoArquivoId, setReprocessandoArquivoId] = useState<string | null>(null);
+  const [excluindoArquivoId, setExcluindoArquivoId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -84,7 +126,18 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       const res = await apiService.getStatusIa();
       setStatusIa(res);
       if (res.configuracoes && res.configuracoes.length > 0) {
-        setProvedorIaSelecionado(res.configuracoes[0].provedor);
+        const salvoProv = typeof window !== 'undefined' ? localStorage.getItem('evolvi_provedor_ia_ativo') : null;
+        const confSalva = salvoProv ? res.configuracoes.find((c) => c.provedor === salvoProv) : null;
+        const configAtiva = confSalva || res.configuracoes[0];
+
+        setProvedorIaSelecionado(configAtiva.provedor);
+        setModeloIaSelecionado(
+          configAtiva.modelo ||
+            (configAtiva.provedor === 'DEEPSEEK' ? 'deepseek-chat' : 'gemini-3.8-flash')
+        );
+      } else if (res.hasEnvKey) {
+        setProvedorIaSelecionado('GEMINI');
+        setModeloIaSelecionado('gemini-3.8-flash');
       }
     } catch {
       setStatusIa(null);
@@ -138,10 +191,25 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
     }
   }, []);
 
+  // TASK-41: Carrega alertas de conciliação e histórico de arquivos
+  const carregarAlertasEHistorico = useCallback(async () => {
+    try {
+      const [resAlertas, resHist] = await Promise.all([
+        apiService.getAlertasConciliacao({ status: 'PENDENTE' }),
+        apiService.getHistoricoArquivosImportados(),
+      ]);
+      setAlertasConciliacao(resAlertas?.alertas || []);
+      setHistoricoArquivos(resHist?.historico || []);
+    } catch (err: any) {
+      console.warn('Erro ao carregar alertas ou histórico de arquivos:', err);
+    }
+  }, []);
+
   // Polling reativo e sincronização periódica a cada 3.5s enquanto o lote estiver em processamento
   useEffect(() => {
     carregarLotes();
-  }, [carregarLotes, usuarioId]);
+    carregarAlertasEHistorico();
+  }, [carregarLotes, carregarAlertasEHistorico, usuarioId]);
 
   useEffect(() => {
     if (!loteAtivo) return;
@@ -279,6 +347,30 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       return;
     }
 
+    // Pre-flight Check de Mídia no Frontend (Upload):
+    // Se selecionado provedor puramente textual (DeepSeek) e há arquivos de imagem, avisa e sugere Gemini
+    const temImagens = files.some((f) => {
+      const ext = f.name.toLowerCase();
+      return (
+        ext.endsWith('.png') ||
+        ext.endsWith('.jpg') ||
+        ext.endsWith('.jpeg') ||
+        ext.endsWith('.webp') ||
+        f.type.startsWith('image/')
+      );
+    });
+
+    if (temImagens && provedorIaSelecionado === 'DEEPSEEK') {
+      const confirma = window.confirm(
+        'Aviso de Mídia: Você incluiu arquivos de imagem (.png/.jpg), mas a IA selecionada (DeepSeek) é puramente textual e não processa mídias visuais.\n\nRecomendamos utilizar o Google Gemini para imagens.\n\nDeseja continuar mesmo assim? Os arquivos de imagem serão identificados como incompatíveis.'
+      );
+      if (!confirma) {
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        if (folderInputRef.current) folderInputRef.current.value = '';
+        return;
+      }
+    }
+
     setUploading(true);
     setUploadProgress(15);
     setMensagemErro(null);
@@ -286,7 +378,10 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
 
     try {
       setUploadProgress(45);
-      const resultado = await apiService.uploadLoteImportacao(files);
+      const resultado = await apiService.uploadLoteImportacao(files, {
+        provedorIa: provedorIaSelecionado,
+        modeloIa: modeloIaSelecionado,
+      });
       setUploadProgress(100);
 
       setMensagemSucesso(
@@ -330,11 +425,14 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
   };
 
   // Disparo manual das etapas do pipeline se necessário
-  const executarExtracaoComProvedor = async (loteId: string, provedorEscolhido?: string) => {
+  const executarExtracaoComProvedor = async (loteId: string, provedorEscolhido?: string, modeloEscolhido?: string) => {
     setProcessandoAcao(true);
     setMensagemErro(null);
     try {
-      await apiService.processarLoteIa(loteId, provedorEscolhido ? { provedorIa: provedorEscolhido } : undefined);
+      await apiService.processarLoteIa(
+        loteId,
+        provedorEscolhido ? { provedorIa: provedorEscolhido, modeloIa: modeloEscolhido } : undefined
+      );
       await carregarDetalhesLoteAtivo(loteId);
       await carregarLotes();
       setMensagemSucesso(`Extração executada com sucesso usando ${provedorEscolhido || 'a IA configurada'}!`);
@@ -343,6 +441,67 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
     } finally {
       setProcessandoAcao(false);
       setModalEscolhaIaAberto(false);
+    }
+  };
+
+  const executarReprocessamentoArquivoIndividualComIa = async (
+    arquivoId: string,
+    provedorEscolhido?: string,
+    modeloEscolhido?: string
+  ) => {
+    setReprocessandoArquivoId(arquivoId);
+    setMensagemErro(null);
+    setMensagemSucesso(null);
+    // Limpa imediatamente o motivo da falha do card do arquivo sendo reprocessado
+    setArquivoParaReprocessar((prev) => (prev ? { ...prev, mensagemErro: null } : null));
+
+    try {
+      const res = await apiService.reprocessarArquivoIa(arquivoId, {
+        provedorIa: provedorEscolhido,
+        modeloIa: modeloEscolhido,
+      });
+
+      if (loteAtivo?.id) {
+        await carregarDetalhesLoteAtivo(loteAtivo.id);
+      }
+      await carregarLotes();
+      onNovasContasOuMovimentos?.();
+
+      setMensagemSucesso(
+        `Arquivo reprocessado com sucesso com ${provedorEscolhido || 'a nova IA'}! (${res.resultado.totalTransacoes} transações extraídas)`
+      );
+      setArquivoParaReprocessar(null);
+    } catch (err: any) {
+      setMensagemErro(err.message || 'Erro ao reprocessar arquivo com a IA selecionada.');
+    } finally {
+      setReprocessandoArquivoId(null);
+    }
+  };
+
+  const handleExcluirArquivo = async (arquivoId: string, nomeArquivo: string) => {
+    const confirmou = window.confirm(
+      `Deseja realmente excluir o arquivo "${nomeArquivo}" do lote? Esta ação removerá os dados pendentes deste arquivo.`
+    );
+    if (!confirmou) return;
+
+    setExcluindoArquivoId(arquivoId);
+    setMensagemErro(null);
+    setMensagemSucesso(null);
+
+    try {
+      await apiService.excluirArquivoImportacao(arquivoId);
+      if (arquivoParaReprocessar?.id === arquivoId) {
+        setArquivoParaReprocessar(null);
+      }
+      if (loteAtivo?.id) {
+        await carregarDetalhesLoteAtivo(loteAtivo.id);
+      }
+      await carregarLotes();
+      setMensagemSucesso(`Arquivo "${nomeArquivo}" foi excluído com sucesso do lote.`);
+    } catch (err: any) {
+      setMensagemErro(err.message || 'Erro ao excluir o arquivo da importação.');
+    } finally {
+      setExcluindoArquivoId(null);
     }
   };
 
@@ -358,15 +517,8 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       return;
     }
 
-    // Se tiver mais de uma IA configurada, abre modal perguntando qual IA usar
-    if (statusIa?.configuracoes && statusIa.configuracoes.length > 1) {
-      setModalEscolhaIaAberto(true);
-      return;
-    }
-
-    // Se tiver apenas uma IA configurada, escolhe a única e não pergunta
-    const unicoProvedor = statusIa?.configuracoes?.[0]?.provedor || (statusIa?.hasEnvKey ? 'GEMINI' : undefined);
-    await executarExtracaoComProvedor(loteAtivo.id, unicoProvedor);
+    // Dispara a extração usando explicitamente a IA selecionada pelo usuário
+    await executarExtracaoComProvedor(loteAtivo.id, provedorIaSelecionado, modeloIaSelecionado);
   };
 
   const handleCarregarStaging = async () => {
@@ -529,35 +681,113 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
             background: 'rgba(34, 197, 94, 0.08)',
             border: '1px solid rgba(34, 197, 94, 0.25)',
             borderRadius: 'var(--radius-sm)',
-            padding: '10px 16px',
+            padding: '12px 16px',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '12px',
-            flexWrap: 'wrap',
+            flexDirection: 'column',
+            gap: '10px',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Sparkles size={18} style={{ color: 'var(--status-green, #22c55e)', flexShrink: 0 }} />
-            <div>
-              <span style={{ fontSize: '0.84rem', color: 'var(--text-primary)', fontWeight: 600 }}>
-                IA configurada:{' '}
-              </span>
-              <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-                {statusIa?.configuracoes && statusIa.configuracoes.length > 0
-                  ? statusIa.configuracoes.map(c => `${c.provedor} (${c.modelo})`).join(', ')
-                  : 'Pronta para uso'}
-              </span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <Sparkles size={18} style={{ color: 'var(--status-green, #22c55e)', flexShrink: 0 }} />
+              <div>
+                <span style={{ fontSize: '0.86rem', color: 'var(--text-primary)', fontWeight: 700 }}>
+                  IA Ativa para Importação de Lote:
+                </span>
+                <span style={{ fontSize: '0.82rem', color: 'var(--brand-primary)', marginLeft: '6px', fontWeight: 600 }}>
+                  {provedorIaSelecionado === 'GEMINI'
+                    ? 'Google Gemini'
+                    : provedorIaSelecionado === 'DEEPSEEK'
+                    ? 'DeepSeek'
+                    : provedorIaSelecionado === 'OPENAI'
+                    ? 'OpenAI (ChatGPT)'
+                    : provedorIaSelecionado === 'OPENROUTER'
+                    ? 'OpenRouter'
+                    : 'Anthropic (Claude)'}{' '}
+                  <code style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>({modeloIaSelecionado})</code>
+                </span>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => setModalConfigIaAberto(true)}
+              className="btn btn-secondary"
+              style={{ fontSize: '0.76rem', padding: '4px 10px', height: 'auto' }}
+            >
+              Gerenciar Chaves de IA
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={() => setModalConfigIaAberto(true)}
-            className="btn btn-secondary"
-            style={{ fontSize: '0.76rem', padding: '4px 10px', height: 'auto' }}
-          >
-            Gerenciar IAs
-          </button>
+
+          {/* Seletor rápido de IA quando há provedores disponíveis */}
+          {statusIa?.configuracoes && statusIa.configuracoes.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', paddingTop: '4px', borderTop: '1px dashed rgba(255,255,255,0.08)' }}>
+              <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Escolher IA do lote:</span>
+              {statusIa.configuracoes.map((cfg) => {
+                const isSelected = provedorIaSelecionado === cfg.provedor;
+                const nomeCurto =
+                  cfg.provedor === 'GEMINI'
+                    ? 'Gemini'
+                    : cfg.provedor === 'DEEPSEEK'
+                    ? 'DeepSeek'
+                    : cfg.provedor === 'OPENAI'
+                    ? 'OpenAI'
+                    : cfg.provedor === 'OPENROUTER'
+                    ? 'OpenRouter'
+                    : 'Claude';
+
+                return (
+                  <button
+                    key={cfg.provedor}
+                    type="button"
+                    onClick={() => {
+                      salvarPreferenciaIa(
+                        cfg.provedor,
+                        cfg.modelo || (cfg.provedor === 'DEEPSEEK' ? 'deepseek-chat' : 'gemini-3.8-flash')
+                      );
+                    }}
+                    style={{
+                      background: isSelected ? 'rgba(56, 189, 248, 0.2)' : 'rgba(15, 23, 42, 0.5)',
+                      border: isSelected ? '1px solid var(--brand-primary)' : '1px solid var(--border-subtle)',
+                      color: isSelected ? 'var(--brand-primary)' : 'var(--text-secondary)',
+                      borderRadius: 'var(--radius-sm)',
+                      padding: '4px 10px',
+                      fontSize: '0.75rem',
+                      fontWeight: isSelected ? 700 : 500,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                    }}
+                  >
+                    {isSelected && <CheckCircle2 size={12} />}
+                    <span>{nomeCurto} ({cfg.modelo})</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Aviso sobre capacidade de mídia caso o provedor selecionado seja puramente textual (DeepSeek) */}
+          {provedorIaSelecionado === 'DEEPSEEK' && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '8px 12px',
+                borderRadius: 'var(--radius-sm)',
+                backgroundColor: 'rgba(234, 179, 8, 0.1)',
+                border: '1px solid rgba(234, 179, 8, 0.3)',
+                fontSize: '0.78rem',
+                color: '#fef08a',
+              }}
+            >
+              <AlertTriangle size={15} style={{ color: 'var(--status-yellow, #eab308)', flexShrink: 0 }} />
+              <div>
+                <strong>Atenção com arquivos visuais:</strong> O modelo DeepSeek é estritamente textual e não processa imagens (.jpg, .png) ou PDFs escaneados. Para faturas em imagem, utilize o <strong>Google Gemini</strong>.
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -635,13 +865,20 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                     ? 'DeepSeek'
                     : cfg.provedor === 'OPENAI'
                     ? 'OpenAI (ChatGPT)'
+                    : cfg.provedor === 'OPENROUTER'
+                    ? 'OpenRouter'
                     : 'Anthropic (Claude)';
 
                 return (
                   <button
                     key={cfg.provedor}
                     type="button"
-                    onClick={() => setProvedorIaSelecionado(cfg.provedor)}
+                    onClick={() => {
+                      salvarPreferenciaIa(
+                        cfg.provedor,
+                        cfg.modelo || (cfg.provedor === 'DEEPSEEK' ? 'deepseek-chat' : 'gemini-3.8-flash')
+                      );
+                    }}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -683,12 +920,192 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                 disabled={processandoAcao || !loteAtivo}
                 onClick={() => {
                   if (loteAtivo) {
-                    executarExtracaoComProvedor(loteAtivo.id, provedorIaSelecionado);
+                    executarExtracaoComProvedor(loteAtivo.id, provedorIaSelecionado, modeloIaSelecionado);
                   }
                 }}
               >
                 {processandoAcao ? 'Processando...' : `Iniciar Extração com ${provedorIaSelecionado}`}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Reprocessamento Granular de Arquivo com Falha */}
+      {arquivoParaReprocessar && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '16px',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !reprocessandoArquivoId) {
+              setArquivoParaReprocessar(null);
+            }
+          }}
+        >
+          <div
+            className="login-card"
+            style={{ width: '100%', maxWidth: '520px', margin: 0, display: 'flex', flexDirection: 'column', gap: '16px' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <RefreshCw size={24} style={{ color: 'var(--brand-primary, #38bdf8)' }} />
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700 }}>
+                  Reprocessar Arquivo com outra IA
+                </h3>
+                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  Recupere apenas este arquivo sem perder os dados já consolidados do lote.
+                </p>
+              </div>
+            </div>
+
+            {/* Detalhes do arquivo e da falha */}
+            <div
+              style={{
+                background: 'rgba(15, 23, 42, 0.6)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '6px',
+              }}
+            >
+              <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                Arquivo: <code>{arquivoParaReprocessar.nomeArquivo}</code>
+              </div>
+              {arquivoParaReprocessar.mensagemErro && (
+                <div style={{ fontSize: '0.78rem', color: '#f87171', background: 'rgba(239, 68, 68, 0.1)', padding: '6px 8px', borderRadius: '4px' }}>
+                  <strong>Motivo da falha:</strong> {arquivoParaReprocessar.mensagemErro}
+                </div>
+              )}
+            </div>
+
+            {/* Lista das IAs disponíveis para escolher para este arquivo */}
+            <div>
+              <label style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '8px' }}>
+                Selecione a IA para reprocessar este arquivo:
+              </label>
+
+              {statusIa?.configuracoes && statusIa.configuracoes.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {statusIa.configuracoes.map((cfg) => {
+                    const isSelected = provedorIaSelecionado === cfg.provedor;
+                    const nomeAmigavel =
+                      cfg.provedor === 'GEMINI'
+                        ? 'Google Gemini'
+                        : cfg.provedor === 'DEEPSEEK'
+                        ? 'DeepSeek'
+                        : cfg.provedor === 'OPENAI'
+                        ? 'OpenAI (ChatGPT)'
+                        : cfg.provedor === 'OPENROUTER'
+                        ? 'OpenRouter'
+                        : 'Anthropic (Claude)';
+
+                    return (
+                      <button
+                        key={cfg.provedor}
+                        type="button"
+                        onClick={() => {
+                          salvarPreferenciaIa(
+                            cfg.provedor,
+                            cfg.modelo || (cfg.provedor === 'DEEPSEEK' ? 'deepseek-chat' : 'gemini-3.8-flash')
+                          );
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '10px 12px',
+                          borderRadius: 'var(--radius-sm)',
+                          border: isSelected ? '2px solid var(--brand-primary)' : '1px solid var(--border-color)',
+                          background: isSelected ? 'rgba(56, 189, 248, 0.12)' : 'var(--bg-secondary)',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)' }}>
+                            {nomeAmigavel}
+                          </div>
+                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                            Modelo: <code>{cfg.modelo}</code> • Chave: <code>{cfg.chaveMascarada}</code>
+                          </div>
+                        </div>
+                        {isSelected && <CheckCircle2 size={16} style={{ color: 'var(--brand-primary)' }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  Usando a IA padrão configurada no servidor ({provedorIaSelecionado} - {modeloIaSelecionado}).
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+              <button
+                type="button"
+                disabled={Boolean(reprocessandoArquivoId) || Boolean(excluindoArquivoId)}
+                onClick={() => handleExcluirArquivo(arquivoParaReprocessar.id, arquivoParaReprocessar.nomeArquivo)}
+                style={{
+                  background: 'rgba(239, 68, 68, 0.1)',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  color: '#f87171',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '6px 12px',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+                title="Excluir este arquivo do lote de importação"
+              >
+                <Trash2 size={14} className={excluindoArquivoId === arquivoParaReprocessar.id ? 'spin' : ''} />
+                {excluindoArquivoId === arquivoParaReprocessar.id ? 'Excluindo...' : 'Excluir Arquivo'}
+              </button>
+
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={Boolean(reprocessandoArquivoId) || Boolean(excluindoArquivoId)}
+                  onClick={() => setArquivoParaReprocessar(null)}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={Boolean(reprocessandoArquivoId) || Boolean(excluindoArquivoId)}
+                  onClick={() => {
+                    executarReprocessamentoArquivoIndividualComIa(
+                      arquivoParaReprocessar.id,
+                      provedorIaSelecionado,
+                      modeloIaSelecionado
+                    );
+                  }}
+                >
+                  {reprocessandoArquivoId ? (
+                    <>
+                      <RefreshCw size={14} className="spin" /> Reprocessando com {provedorIaSelecionado}...
+                    </>
+                  ) : (
+                    `Reprocessar com ${provedorIaSelecionado}`
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -740,6 +1157,93 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
           >
             &times;
           </button>
+        </div>
+      )}
+
+      {/* 2.5 TASK-41: Alertas Inteligentes de Conciliação e Lacunas de Faturas/Extratos */}
+      {alertasConciliacao.length > 0 && (
+        <div
+          className="card"
+          style={{
+            border: '1px solid rgba(245, 158, 11, 0.4)',
+            backgroundColor: 'rgba(245, 158, 11, 0.08)',
+            padding: '16px 18px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#fbbf24', fontWeight: 700, fontSize: '0.92rem' }}>
+              <Bell size={18} />
+              Alertas de Conciliação: Lacunas e Faturas Pendentes ({alertasConciliacao.length})
+            </div>
+            <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+              Identificado automaticamente pela auditoria de continuidade temporal
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {alertasConciliacao.map((alerta) => (
+              <div
+                key={alerta.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  backgroundColor: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px solid rgba(245, 158, 11, 0.2)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '10px 14px',
+                  gap: '12px',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div style={{ flex: 1, minWidth: '240px' }}>
+                  <div style={{ fontWeight: 700, fontSize: '0.86rem', color: '#fef3c7' }}>
+                    {alerta.titulo}
+                  </div>
+                  <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                    {alerta.descricao}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Competência: <strong>{alerta.competencia}</strong> • Criado em: {new Date(alerta.criadoEm).toLocaleDateString()}
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    style={{ fontSize: '0.76rem', padding: '6px 12px', minHeight: '32px' }}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <UploadCloud size={14} /> Importar Arquivo
+                  </button>
+
+                  <button
+                    type="button"
+                    style={{
+                      background: 'rgba(255, 255, 255, 0.05)',
+                      border: '1px solid var(--border-subtle)',
+                      color: 'var(--text-secondary)',
+                      fontSize: '0.76rem',
+                      padding: '6px 12px',
+                      borderRadius: 'var(--radius-sm)',
+                      cursor: 'pointer',
+                      minHeight: '32px',
+                    }}
+                    onClick={() => {
+                      setAlertaParaDispensar(alerta);
+                      setMotivoDispensaSelecionado('SEM_GASTOS');
+                    }}
+                  >
+                    Dispensar
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -944,6 +1448,26 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
           }}
         >
           <History size={15} /> Histórico de Lotes ({lotes.length})
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setVisualizacaoAba('arquivos')}
+          style={{
+            background: visualizacaoAba === 'arquivos' ? 'var(--bg-surface)' : 'transparent',
+            border: visualizacaoAba === 'arquivos' ? '1px solid var(--border-card)' : 'none',
+            color: visualizacaoAba === 'arquivos' ? 'var(--brand-primary)' : 'var(--text-secondary)',
+            fontWeight: 700,
+            fontSize: '0.85rem',
+            padding: '8px 14px',
+            borderRadius: 'var(--radius-sm)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+        >
+          <Database size={15} /> Arquivos Catalogados ({historicoArquivos.length})
         </button>
       </div>
 
@@ -1153,7 +1677,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                           cursor: 'pointer',
                         }}
                       >
-                        Re-executar IA
+                        {processandoAcao ? 'Processando...' : `Re-executar IA (${provedorIaSelecionado})`}
                       </button>
                       <button
                         type="button"
@@ -1323,7 +1847,77 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                                   )}
                                 </div>
                               )}
-                              <div>{getBadgeStatusArquivo(arq.status)}</div>
+                              <div>
+                                {arq.status === 'ERRO' ? (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    {arq.mensagemErro?.includes('não oferece suporte a imagens') ? (
+                                      <span
+                                        className="badge"
+                                        style={{
+                                          background: 'rgba(234, 179, 8, 0.2)',
+                                          color: '#fef08a',
+                                          border: '1px solid rgba(234, 179, 8, 0.4)',
+                                        }}
+                                      >
+                                        Mídia Incompatível
+                                      </span>
+                                    ) : (
+                                      <span className="badge badge-vermelho">Erro</span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      disabled={reprocessandoArquivoId === arq.id || excluindoArquivoId === arq.id}
+                                      onClick={() => {
+                                        setArquivoParaReprocessar({
+                                          id: arq.id,
+                                          nomeArquivo: arq.nomeArquivo,
+                                          mensagemErro: arq.mensagemErro,
+                                        });
+                                      }}
+                                      style={{
+                                        background: 'rgba(239, 68, 68, 0.15)',
+                                        border: '1px solid rgba(239, 68, 68, 0.4)',
+                                        color: '#f87171',
+                                        borderRadius: 'var(--radius-sm)',
+                                        padding: '3px 7px',
+                                        fontSize: '0.72rem',
+                                        fontWeight: 600,
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                      }}
+                                    >
+                                      <RefreshCw size={11} className={reprocessandoArquivoId === arq.id ? 'spin' : ''} />
+                                      Reprocessar IA
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={reprocessandoArquivoId === arq.id || excluindoArquivoId === arq.id}
+                                      onClick={() => handleExcluirArquivo(arq.id, arq.nomeArquivo)}
+                                      style={{
+                                        background: 'rgba(239, 68, 68, 0.1)',
+                                        border: '1px solid rgba(239, 68, 68, 0.25)',
+                                        color: '#fca5a5',
+                                        borderRadius: 'var(--radius-sm)',
+                                        padding: '3px 7px',
+                                        fontSize: '0.72rem',
+                                        fontWeight: 600,
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                      }}
+                                      title="Excluir arquivo com erro do lote"
+                                    >
+                                      <Trash2 size={11} className={excluindoArquivoId === arq.id ? 'spin' : ''} />
+                                      {excluindoArquivoId === arq.id ? 'Excluindo...' : 'Excluir'}
+                                    </button>
+                                  </div>
+                                ) : (
+                                  getBadgeStatusArquivo(arq.status)
+                                )}
+                              </div>
                             </div>
                           </div>
                         );
@@ -1372,13 +1966,78 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                             </div>
                           )}
                         </div>
-                        <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           {['IA_CONCLUIDO', 'STAGING_CARREGADO', 'PROCESSADO_FINAL'].includes(arq.status) ? (
                             <span className="badge badge-verde">Extraído com Sucesso</span>
                           ) : arq.status === 'ENVIADO_IA' ? (
                             <span className="badge badge-blue">Processando Agora...</span>
                           ) : arq.status === 'ERRO' ? (
-                            <span className="badge badge-vermelho">Falha</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              {arq.mensagemErro?.includes('não oferece suporte a imagens') ? (
+                                <span
+                                  className="badge"
+                                  style={{
+                                    background: 'rgba(234, 179, 8, 0.2)',
+                                    color: '#fef08a',
+                                    border: '1px solid rgba(234, 179, 8, 0.4)',
+                                  }}
+                                >
+                                  Mídia Incompatível
+                                </span>
+                              ) : (
+                                <span className="badge badge-vermelho">Falha</span>
+                              )}
+                              <button
+                                type="button"
+                                disabled={reprocessandoArquivoId === arq.id || excluindoArquivoId === arq.id}
+                                onClick={() => {
+                                  setArquivoParaReprocessar({
+                                    id: arq.id,
+                                    nomeArquivo: arq.nomeArquivo,
+                                    mensagemErro: arq.mensagemErro,
+                                  });
+                                }}
+                                style={{
+                                  background: 'rgba(239, 68, 68, 0.15)',
+                                  border: '1px solid rgba(239, 68, 68, 0.4)',
+                                  color: '#f87171',
+                                  borderRadius: 'var(--radius-sm)',
+                                  padding: '4px 8px',
+                                  fontSize: '0.74rem',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                                title="Reprocessar este arquivo escolhendo outra IA"
+                              >
+                                <RefreshCw size={12} className={reprocessandoArquivoId === arq.id ? 'spin' : ''} />
+                                {reprocessandoArquivoId === arq.id ? 'Reprocessando...' : 'Reprocessar com outra IA'}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={reprocessandoArquivoId === arq.id || excluindoArquivoId === arq.id}
+                                onClick={() => handleExcluirArquivo(arq.id, arq.nomeArquivo)}
+                                style={{
+                                  background: 'rgba(239, 68, 68, 0.1)',
+                                  border: '1px solid rgba(239, 68, 68, 0.25)',
+                                  color: '#fca5a5',
+                                  borderRadius: 'var(--radius-sm)',
+                                  padding: '4px 8px',
+                                  fontSize: '0.74rem',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                                title="Excluir este arquivo com erro do lote"
+                              >
+                                <Trash2 size={12} className={excluindoArquivoId === arq.id ? 'spin' : ''} />
+                                {excluindoArquivoId === arq.id ? 'Excluindo...' : 'Excluir'}
+                              </button>
+                            </div>
                           ) : (
                             <span className="badge badge-amarelo">Aguardando Fila</span>
                           )}
@@ -1634,6 +2293,198 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
           )}
         </div>
       )}
+
+      {/* 9. Aba 4: Histórico Estruturado de Arquivos Catalogados (TASK-41) */}
+      {visualizacaoAba === 'arquivos' && (
+        <div className="card" style={{ padding: '16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+            <h3 style={{ fontSize: '0.98rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Database size={18} color="var(--brand-primary)" />
+              Histórico Estruturado de Arquivos Importados
+            </h3>
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+              Metadados analíticos e conciliação temporal ({historicoArquivos.length} arquivos)
+            </span>
+          </div>
+
+          {historicoArquivos.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '30px 16px', color: 'var(--text-muted)' }}>
+              Nenhum arquivo catalogado analiticamente até o momento. Processe um lote de faturas ou extratos para gerar o catálogo.
+            </div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border-card)', color: 'var(--text-secondary)', textAlign: 'left' }}>
+                    <th style={{ padding: '8px 10px' }}>Instituição</th>
+                    <th style={{ padding: '8px 10px' }}>Tipo Documento</th>
+                    <th style={{ padding: '8px 10px' }}>Competência</th>
+                    <th style={{ padding: '8px 10px' }}>Período Coberto</th>
+                    <th style={{ padding: '8px 10px' }}>Conta Vinculada</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'right' }}>Qtd Itens</th>
+                    <th style={{ padding: '8px 10px', textAlign: 'right' }}>Valor Total</th>
+                    <th style={{ padding: '8px 10px' }}>Arquivo de Origem</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historicoArquivos.map((hist) => (
+                    <tr
+                      key={hist.id}
+                      style={{
+                        borderBottom: '1px solid var(--border-subtle)',
+                        backgroundColor: 'rgba(30, 41, 59, 0.25)',
+                      }}
+                    >
+                      <td style={{ padding: '10px', fontWeight: 700, color: '#f8fafc' }}>
+                        {hist.instituicao}
+                      </td>
+                      <td style={{ padding: '10px' }}>
+                        <span
+                          className={`badge ${
+                            hist.tipoDocumento === 'FATURA_CARTAO'
+                              ? 'badge-purple'
+                              : hist.tipoDocumento === 'EXTRATO_INVESTIMENTO'
+                              ? 'badge-green'
+                              : 'badge-blue'
+                          }`}
+                        >
+                          {hist.tipoDocumento.replace('_', ' ')}
+                        </span>
+                      </td>
+                      <td style={{ padding: '10px', fontFamily: 'var(--font-mono)' }}>
+                        {hist.competencia}
+                      </td>
+                      <td style={{ padding: '10px', fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                        {hist.periodoInicio ? new Date(hist.periodoInicio).toLocaleDateString() : 'N/A'} até{' '}
+                        {hist.periodoFim ? new Date(hist.periodoFim).toLocaleDateString() : 'N/A'}
+                      </td>
+                      <td style={{ padding: '10px', color: hist.conta?.nome ? 'var(--brand-primary)' : 'var(--text-muted)' }}>
+                        {hist.conta?.nome || 'Não vinculada'}
+                      </td>
+                      <td style={{ padding: '10px', textAlign: 'right', fontWeight: 600 }}>
+                        {hist.totalTransacoes}
+                      </td>
+                      <td style={{ padding: '10px', textAlign: 'right', fontWeight: 700, fontFamily: 'var(--font-mono)' }}>
+                        R$ {Number(hist.valorTotal).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td style={{ padding: '10px', fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                        {hist.arquivo?.nomeArquivo || 'Arquivo consolidado'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Modal de Dispensa de Alerta de Conciliação */}
+      {alertaParaDispensar && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+            padding: '16px',
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: '100%',
+              maxWidth: '460px',
+              padding: '24px',
+              border: '1px solid var(--border-card)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '16px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Bell size={18} color="#fbbf24" /> Dispensar Alerta de Conciliação
+              </h3>
+              <button
+                type="button"
+                onClick={() => setAlertaParaDispensar(null)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                &times;
+              </button>
+            </div>
+
+            <div style={{ fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
+              <strong>{alertaParaDispensar.titulo}</strong>
+              <div style={{ marginTop: '4px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                {alertaParaDispensar.descricao}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                Selecione o motivo da dispensa:
+              </label>
+              <select
+                className="input"
+                value={motivoDispensaSelecionado}
+                onChange={(e) => setMotivoDispensaSelecionado(e.target.value)}
+                style={{ fontSize: '0.85rem', width: '100%' }}
+              >
+                <option value="SEM_GASTOS">Não houve gastos/movimentações nesta competência</option>
+                <option value="CONTA_ENCERRADA">Conta ou cartão cancelado/encerrado (não alertar mais)</option>
+                <option value="DOCUMENTO_INDISPONIVEL">Extrato ou fatura indisponível no banco</option>
+                <option value="OUTRO">Outro motivo</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>
+              <button
+                type="button"
+                onClick={() => setAlertaParaDispensar(null)}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border-subtle)',
+                  color: 'var(--text-secondary)',
+                  padding: '8px 16px',
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: 'pointer',
+                  fontSize: '0.84rem',
+                }}
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                className="btn-primary"
+                style={{ fontSize: '0.84rem', padding: '8px 18px' }}
+                onClick={async () => {
+                  try {
+                    await apiService.dispensarAlertaConciliacao(
+                      alertaParaDispensar.id,
+                      motivoDispensaSelecionado
+                    );
+                    setAlertaParaDispensar(null);
+                    setMensagemSucesso('Alerta dispensado com sucesso.');
+                    carregarAlertasEHistorico();
+                  } catch (err: any) {
+                    setMensagemErro(err.message || 'Falha ao dispensar alerta.');
+                  }
+                }}
+              >
+                Confirmar Dispensa
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

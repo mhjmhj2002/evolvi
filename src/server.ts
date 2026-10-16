@@ -1,3 +1,4 @@
+import { setupConsoleLogger } from './infrastructure/logger/logger.js';
 import { buildApp } from './app.js';
 import { env } from './config/env.js';
 import { openFinanceSchedulerService } from './modules/conector/scheduler/open-finance-scheduler.service.js';
@@ -5,6 +6,10 @@ import { openFinanceWorkerService } from './modules/conector/worker/open-finance
 import { importacaoIaWorkerService } from './modules/importacao/worker/importacao-ia-worker.service.js';
 import { importacaoStagingWorkerService } from './modules/importacao/worker/importacao-staging-worker.service.js';
 import { importacaoConsolidacaoWorkerService } from './modules/importacao/worker/importacao-consolidacao-worker.service.js';
+import { movimentoRecalculoWorkerService } from './modules/movimento/movimento-recalculo-worker.service.js';
+
+// Inicializa formatação padronizada de logs (data/hora yyyy-mm-dd-hh:mm:ss.sss e app de origem)
+setupConsoleLogger('evolvi-backend');
 
 async function bootstrap() {
   const app = await buildApp();
@@ -16,6 +21,7 @@ async function bootstrap() {
     importacaoIaWorkerService.setupEventListener();
     importacaoStagingWorkerService.setupEventListener();
     importacaoConsolidacaoWorkerService.setupEventListener();
+    movimentoRecalculoWorkerService.setupEventListener();
 
     await app.listen({ port: env.PORT, host: env.HOST });
     console.log(`🚀 Servidor evolvi rodando em http://${env.HOST}:${env.PORT}`);
@@ -28,6 +34,7 @@ async function bootstrap() {
       importacaoIaWorkerService.removeEventListener();
       importacaoStagingWorkerService.removeEventListener();
       importacaoConsolidacaoWorkerService.removeEventListener();
+      movimentoRecalculoWorkerService.removeEventListener();
       app.close().then(() => {
         process.exit(0);
       });

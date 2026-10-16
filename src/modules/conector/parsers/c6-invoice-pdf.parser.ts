@@ -30,14 +30,17 @@ export class C6InvoicePdfParser {
   };
 
   /**
-   * Verifica se o texto extraído do PDF possui evidências claras de ser fatura do C6 Bank.
+   * Verifica se o texto extraído do PDF possui evidências claras de ser fatura ou extrato do C6 Bank.
    */
   public static isC6Invoice(texto: string): boolean {
     const lower = texto.toLowerCase();
-    return (
-      (lower.includes('c6 bank') || lower.includes('cartão c6') || lower.includes('c6 carbon')) &&
-      (lower.includes('fatura') || lower.includes('transações do cartão') || lower.includes('vencimento'))
-    );
+    const isC6 = lower.includes('c6 bank') || lower.includes('cartão c6') || lower.includes('c6 carbon') || lower.includes('agência: 1 • conta:');
+    const isDocumentoFinanceiro =
+      lower.includes('fatura') ||
+      lower.includes('transações do cartão') ||
+      lower.includes('vencimento') ||
+      (lower.includes('extrato') && (lower.includes('entradas:') || lower.includes('débito de cartão')));
+    return isC6 && isDocumentoFinanceiro;
   }
 
   /**
@@ -88,15 +91,27 @@ export class C6InvoicePdfParser {
     let currentCardNome = 'Cartão C6 Carbon';
 
     // 3. Regex para linhas de transação:
-    // "     28 jan    BOTOESTHETIC VV LTDA - Parcela 12/12                                75,00"
-    // "     22 dez       Pag Fatura Boleto                                             4.248,15"
-    const dateRegex =
+    // Fatura Cartão: "     28 jan    BOTOESTHETIC VV LTDA - Parcela 12/12                                75,00"
+    // Extrato Conta: "  18/09                  18/09                   Débito de Cartão   PadariaDiniz VILA VELHA BRA                                                                     -R$ 7,60"
+    const dateFaturaRegex =
       /^\s*(\d{2})\s+([a-z]{3})\s+(.+?)\s+((?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})\s*$/i;
+
+    const dateExtratoRegex =
+      /^\s*(\d{2})\/(\d{2})\s+(\d{2}\/\d{2})\s+([\s\S]+?)\s+(-?R\$\s*[\d\.,]+)\s*$/;
+
+    const anoHeaderRegex = /([A-Za-zç]+)\s+(\d{4})\s*\(\s*(\d{2}\/\d{2}\/\d{4})/;
+    let currentAnoExtrato = anoFatura;
 
     const transacoes: LancamentoConsolidadoIa[] = [];
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+
+      // Atualiza ano de competência se for extrato do C6 com divisões mensais
+      const anoMatch = line.match(anoHeaderRegex);
+      if (anoMatch) {
+        currentAnoExtrato = anoMatch[2];
+      }
 
       // Atualiza o cartão de contexto conforme avançamos nas páginas
       const cardMatch = line.match(cardHeaderRegex);
@@ -106,7 +121,55 @@ export class C6InvoicePdfParser {
         currentCardNome = `C6 Carbon Final ${finalDigitos} (${titular})`;
       }
 
-      const match = line.match(dateRegex);
+      // Caso A: Extrato de Conta Corrente C6 Bank
+      const matchExtrato = line.match(dateExtratoRegex);
+      if (matchExtrato) {
+        const dia = matchExtrato[1];
+        const mes = matchExtrato[2];
+        const dataMovimento = `${currentAnoExtrato}-${mes}-${dia}`;
+        const descBruta = matchExtrato[4].replace(/\s+/g, ' ').trim();
+        const rawValor = matchExtrato[5]
+          .replace('R$', '')
+          .replace(/\s+/g, '')
+          .replace(/\./g, '')
+          .replace(',', '.')
+          .trim();
+        const numValor = parseFloat(rawValor);
+
+        if (!isNaN(numValor) && numValor !== 0) {
+          const isNegativo = numValor < 0;
+          const valor = Math.abs(numValor);
+          const isPagamento = /pag(amento)?\s*(de)?\s*fat(ura)?|pgto\s*fat(ura)?|fatura\s*boleto/i.test(descBruta);
+          const natureza = isPagamento
+            ? 'TRANSFERENCIA_PROPRIA'
+            : isNegativo
+            ? 'DESPESA'
+            : 'RECEITA';
+
+          const categoriaSugerida = isPagamento
+            ? null
+            : this.classificarCategoriaPof(descBruta, contexto?.categorias);
+
+          transacoes.push({
+            dataMovimento,
+            descricao: descBruta,
+            valor,
+            natureza,
+            contaSugerida: 'Conta C6 Bank',
+            tipoConta: 'CONTA_CORRENTE',
+            categoriaSugerida,
+            parcelaAtual: null,
+            totalParcelas: null,
+            isPagamentoFatura: isPagamento,
+            observacao: 'Extrato C6 Bank (Conta Corrente)',
+            confianca: 0.99,
+          });
+        }
+        continue;
+      }
+
+      // Caso B: Fatura de Cartão de Crédito C6 Bank
+      const match = line.match(dateFaturaRegex);
       if (match) {
         const dia = match[1].padStart(2, '0');
         const mesStr = match[2].toLowerCase();
@@ -139,27 +202,24 @@ export class C6InvoicePdfParser {
           totalParcelas = parseInt(matchParcela[2], 10);
         }
 
-        // Anti-dupla contagem estrita em pagamentos de fatura
+        // Anti-dupla contagem estrita em pagamentos de fatura (BUG-13)
+        // Linhas de quitação/pagamento recebido DENTRO da fatura do cartão são informativas,
+        // pois a saída de caixa real ocorre pelo débito na conta bancária de origem.
         const isPagamento =
-          /pag(amento)?\s*(de)?\s*fat(ura)?|pgto\s*fat(ura)?|fatura\s*boleto/i.test(descBruta);
+          /pag(amento)?\s*(de)?\s*(fat(ura)?|fatura)|pgto\s*fat(ura)?|fatura\s*boleto|pagamento\s*recebido|cr[eé]dito\s*pagamento/i.test(descBruta);
 
         const natureza = isPagamento ? 'TRANSFERENCIA_PROPRIA' : 'DESPESA';
         const categoriaSugerida = isPagamento
           ? null
           : this.classificarCategoriaPof(descBruta, contexto?.categorias);
 
-        // Se for compra parcelada (ex: Parcela X/Y), a data impressa pelo banco representa a compra original.
-        // O débito / exigibilidade financeira desta parcela pertence à competência da fatura em cobrança!
-        // Portanto, a data de movimento financeiro é alocada no mês da fatura (no dia do vencimento/fechamento),
-        // preservando a data original de compra na observação para auditoria exata.
-        let dataMovimentoFinal = dataMovimento;
+        // BUG-12: A dataMovimento DEVE ser estritamente a data em que a compra ocorreu.
+        // NUNCA utilizar data de vencimento ou fechamento da fatura como data do lançamento.
+        const dataMovimentoFinal = dataMovimento;
         let observacaoTransacao = `Fatura C6 Bank - ${currentCardNome}`;
 
         if (parcelaAtual !== null && totalParcelas !== null) {
-          // Atribui o débito da parcela ao mês/ano da fatura (ex: 2026-01-20 ou dia do fechamento)
-          const diaFechamentoFatura = vencimentoMatch ? vencimentoMatch[1] : '10';
-          dataMovimentoFinal = `${anoFatura}-${mesFatura}-${diaFechamentoFatura}`;
-          observacaoTransacao += ` (Compra original parcelada em ${dia}/${mes}/${ano})`;
+          observacaoTransacao += ` (Parcela ${parcelaAtual}/${totalParcelas})`;
         }
 
         transacoes.push({

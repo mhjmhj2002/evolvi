@@ -12,8 +12,10 @@ export const createMovimentoSchema = z.object({
   }),
   status: z.enum(['PREVISTO', 'CONCILIADO', 'CANCELADO']).optional().default('CONCILIADO'),
   chaveDedupe: z.string().max(255).optional().nullable(),
+  idOrigem: z.string().max(255).optional().nullable(),
   observacao: z.string().optional().nullable(),
   origemDocumento: z.string().max(255).optional().nullable(),
+  categoriaFixadaPeloUsuario: z.boolean().optional(),
   // Campos específicos para transferência ou pagamento de fatura entre contas
   contaDestinoId: z.string().uuid({ message: 'ID da conta destino deve ser um UUID válido' }).optional().nullable(),
   isPagamentoFatura: z.boolean().optional(),
@@ -22,6 +24,7 @@ export const createMovimentoSchema = z.object({
 export const updateMovimentoSchema = z.object({
   contaId: z.string().uuid({ message: 'ID da conta deve ser um UUID válido' }).optional(),
   categoriaId: z.string().uuid({ message: 'ID da categoria deve ser um UUID válido' }).optional().nullable(),
+  categoriaFixadaPeloUsuario: z.boolean().optional(),
   dataMovimento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, { message: 'Data do movimento deve estar no formato YYYY-MM-DD' }).optional(),
   competencia: z.string().regex(/^\d{4}-\d{2}$/, { message: 'Competência deve estar no formato YYYY-MM' }).optional(),
   descricao: z.string().min(1, { message: 'Descrição não pode ser vazia' }).max(255).optional(),
@@ -29,8 +32,10 @@ export const updateMovimentoSchema = z.object({
   natureza: z.enum(['RECEITA', 'DESPESA', 'TRANSFERENCIA_PROPRIA', 'APORTE_PATRIMONIAL']).optional(),
   status: z.enum(['PREVISTO', 'CONCILIADO', 'CANCELADO']).optional(),
   chaveDedupe: z.string().max(255).optional().nullable(),
+  idOrigem: z.string().max(255).optional().nullable(),
   observacao: z.string().optional().nullable(),
   origemDocumento: z.string().max(255).optional().nullable(),
+  propagarMesmoVendedor: z.boolean().optional(),
 });
 
 export const queryMovimentosSchema = z.object({
@@ -54,6 +59,7 @@ export const importarMovimentosItemSchema = z.object({
   natureza: z.enum(['RECEITA', 'DESPESA', 'TRANSFERENCIA_PROPRIA', 'APORTE_PATRIMONIAL']).default('DESPESA'),
   status: z.enum(['PREVISTO', 'CONCILIADO', 'CANCELADO']).optional().default('CONCILIADO'),
   chaveDedupe: z.string().max(255).optional().nullable(),
+  idOrigem: z.string().max(255).optional().nullable(),
   observacao: z.string().optional().nullable(),
   origemDocumento: z.string().max(255).optional().nullable(),
   isPagamentoFatura: z.boolean().optional(),
@@ -64,7 +70,19 @@ export const importarMovimentosSchema = z.object({
   movimentos: z.array(importarMovimentosItemSchema).min(1, { message: 'Lista de movimentos não pode ser vazia' }),
 });
 
+export const splitItemSchema = z.object({
+  categoriaId: z.string().uuid({ message: 'ID da categoria deve ser um UUID válido' }),
+  valor: z.number().positive({ message: 'O valor da fatia deve ser positivo' }),
+  descricao: z.string().max(255).optional().nullable(),
+});
+
+export const splitMovimentoSchema = z.object({
+  splits: z.array(splitItemSchema).min(2, { message: 'Um desdobramento requer no mínimo 2 categorias/fatias' }),
+});
+
 export type CreateMovimentoInput = z.infer<typeof createMovimentoSchema>;
 export type UpdateMovimentoInput = z.infer<typeof updateMovimentoSchema>;
 export type QueryMovimentosInput = z.infer<typeof queryMovimentosSchema>;
 export type ImportarMovimentosInput = z.infer<typeof importarMovimentosSchema>;
+export type SplitItemInput = z.infer<typeof splitItemSchema>;
+export type SplitMovimentoInput = z.infer<typeof splitMovimentoSchema>;

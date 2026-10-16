@@ -13,6 +13,7 @@ import {
   parseLocalDeterministic,
   callGeminiApi,
   callDeepSeekApi,
+  callOpenRouterApi,
   ContextoUsuarioIA,
 } from './ia.service.js';
 
@@ -24,9 +25,10 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     const usuarioId = request.user.sub;
 
     // Busca todas as configurações de IA persistidas e criptografadas do usuário no PostgreSQL
+    // Ordena pela mais recentemente atualizada/usada primeiro
     const configsUsuario = await prisma.configuracaoIaUsuario.findMany({
       where: { usuarioId },
-      orderBy: { criadoEm: 'asc' },
+      orderBy: { atualizadoEm: 'desc' },
     });
 
     const configuracoes: Array<{
@@ -62,7 +64,7 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
 
     // Provedor ativo preferencial (primeiro configurado ou Gemini do env)
     const provedorAtivo = hasUserKey ? configuracoes[0].provedor : (hasEnvGemini ? 'GEMINI' : null);
-    const modeloAtivo = hasUserKey ? configuracoes[0].modelo : 'gemini-2.5-flash';
+    const modeloAtivo = hasUserKey ? configuracoes[0].modelo : 'gemini-3.8-flash';
     const chaveMascarada = hasUserKey ? configuracoes[0].chaveMascarada : null;
 
     return reply.status(200).send({
@@ -78,7 +80,7 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
         {
           id: 'GEMINI',
           nome: 'Google Gemini',
-          modelos: ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-3.8-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+          modelos: ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
           ajudaUrl: 'https://aistudio.google.com/app/apikey',
           temChaveServidor: hasEnvGemini,
           configurado: configuracoes.some((c) => c.provedor === 'GEMINI'),
@@ -106,6 +108,19 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
           ajudaUrl: 'https://console.anthropic.com/settings/keys',
           temChaveServidor: false,
           configurado: configuracoes.some((c) => c.provedor === 'ANTHROPIC'),
+        },
+        {
+          id: 'OPENROUTER',
+          nome: 'OpenRouter',
+          modelos: [
+            'deepseek/deepseek-chat',
+            'anthropic/claude-3.5-sonnet',
+            'openai/gpt-4o',
+            'meta-llama/llama-3.3-70b-instruct',
+          ],
+          ajudaUrl: 'https://openrouter.ai/keys',
+          temChaveServidor: false,
+          configurado: configuracoes.some((c) => c.provedor === 'OPENROUTER'),
         },
       ],
     });
@@ -140,13 +155,13 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       create: {
         usuarioId,
         provedor,
-        modelo: modelo || (provedor === 'DEEPSEEK' ? 'deepseek-chat' : provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-2.5-flash'),
+        modelo: modelo || (provedor === 'DEEPSEEK' ? 'deepseek-chat' : provedor === 'OPENROUTER' ? 'deepseek/deepseek-chat' : provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-3.8-flash'),
         apiKeyCifrada: enc.ciphertext,
         ivHex: enc.iv,
         tagHex: enc.tag,
       },
       update: {
-        modelo: modelo || (provedor === 'DEEPSEEK' ? 'deepseek-chat' : provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-2.5-flash'),
+        modelo: modelo || (provedor === 'DEEPSEEK' ? 'deepseek-chat' : provedor === 'OPENROUTER' ? 'deepseek/deepseek-chat' : provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-3.8-flash'),
         apiKeyCifrada: enc.ciphertext,
         ivHex: enc.iv,
         tagHex: enc.tag,
@@ -159,7 +174,7 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       message: `Configuração de IA (${provedor}) salva e criptografada com sucesso com AES-256-GCM!`,
       chaveMascarada: CryptoService.mascararApiKey(apiKey),
       provedor,
-      modelo: modelo || 'gemini-2.5-flash',
+      modelo: modelo || 'gemini-3.8-flash',
     });
   });
 
@@ -324,10 +339,17 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
             prompt,
             texto
           );
+        } else if (efetivoProvedor === 'OPENROUTER') {
+          parsed = await callOpenRouterApi(
+            efetivaApiKey,
+            efetivoModelo || 'deepseek/deepseek-chat',
+            prompt,
+            texto
+          );
         } else {
           parsed = await callGeminiApi(
             efetivaApiKey,
-            efetivoModelo || 'gemini-2.5-flash',
+            efetivoModelo || 'gemini-3.8-flash',
             prompt,
             texto
           );
@@ -504,6 +526,37 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
         return reply.status(500).send({
           sucesso: false,
           message: `Falha ao conectar com a Anthropic: ${err.message}`,
+        });
+      }
+    }
+
+    if (provedor === 'OPENROUTER') {
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/auth/key', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'HTTP-Referer': 'https://evolvi.app',
+            'X-Title': 'Evolvi Financeiro',
+          },
+        });
+
+        if (!res.ok) {
+          const errBody = await res.text();
+          return reply.status(400).send({
+            sucesso: false,
+            message: `Erro na validação da chave OpenRouter (${res.status}): ${errBody}`,
+          });
+        }
+
+        return reply.status(200).send({
+          sucesso: true,
+          message: 'Chave de API do OpenRouter validada com sucesso!',
+        });
+      } catch (err: any) {
+        return reply.status(500).send({
+          sucesso: false,
+          message: `Falha ao conectar com o OpenRouter: ${err.message}`,
         });
       }
     }

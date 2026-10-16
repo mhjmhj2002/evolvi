@@ -335,7 +335,7 @@ export class MetasZeroAZeroService {
       }
     }
 
-    // Buscar os gastos reais da competência informada
+    // Buscar os gastos reais da competência informada (incluindo possíveis rateios)
     const movimentosDespesa = await prisma.movimento.findMany({
       where: {
         usuarioId,
@@ -344,8 +344,15 @@ export class MetasZeroAZeroService {
         status: 'CONCILIADO',
       },
       select: {
+        id: true,
         categoriaId: true,
         valor: true,
+        rateios: {
+          select: {
+            categoriaId: true,
+            valor: true,
+          },
+        },
       },
     });
 
@@ -354,15 +361,25 @@ export class MetasZeroAZeroService {
     let totalRealizado = 0;
 
     for (const mov of movimentosDespesa) {
-      const valor = Number(mov.valor);
-      totalRealizado += valor;
+      const valorTotal = Number(mov.valor);
+      totalRealizado += valorTotal;
 
-      if (mov.categoriaId) {
+      if (mov.rateios && mov.rateios.length > 0) {
+        for (const r of mov.rateios) {
+          const raizId = subParaRaizMap.get(r.categoriaId);
+          if (raizId) {
+            gastosReaisPorRaiz.set(
+              raizId,
+              (gastosReaisPorRaiz.get(raizId) || 0) + Number(r.valor)
+            );
+          }
+        }
+      } else if (mov.categoriaId) {
         const raizId = subParaRaizMap.get(mov.categoriaId);
         if (raizId) {
           gastosReaisPorRaiz.set(
             raizId,
-            (gastosReaisPorRaiz.get(raizId) || 0) + valor
+            (gastosReaisPorRaiz.get(raizId) || 0) + valorTotal
           );
         }
       }

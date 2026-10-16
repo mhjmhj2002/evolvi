@@ -387,4 +387,316 @@ describe('TASK-33: Worker 1 de Extração Sequencial com IA e Geração de Arqui
       expect(body.message).toContain('Lote de importação não encontrado');
     });
   });
+
+  describe('4. TASK-37: Seleção de IA e Reprocessamento Granular por Arquivo', () => {
+    it('deve reprocessar individualmente um arquivo com erro usando uma IA diferente (ex: DEEPSEEK) e recuperar o lote', async () => {
+      const lote = await storageService.recepcionarLote({
+        usuarioId,
+        arquivos: [
+          {
+            nomeOriginal: 'fatura_inter_erro.csv',
+            buffer: Buffer.from('data,descricao,valor\n2026-10-10,Assinatura Streaming,49.90', 'utf-8'),
+            mimeType: 'text/csv',
+          },
+        ],
+      });
+      pastasParaLimpeza.push(path.resolve(process.cwd(), lote.caminhoDiretorio));
+
+      const arq = await prisma.arquivoImportacao.findFirst({
+        where: { loteId: lote.loteId },
+      });
+      expect(arq).toBeDefined();
+
+      // Força arquivo e lote em estado de ERRO prévio
+      await prisma.arquivoImportacao.update({
+        where: { id: arq!.id },
+        data: {
+          status: 'ERRO',
+          mensagemErro: 'Quota excedida no Gemini (HTTP 429)',
+        },
+      });
+
+      await prisma.loteImportacao.update({
+        where: { id: lote.loteId },
+        data: {
+          status: 'ERRO_TOTAL',
+          arquivosProcessados: 0,
+        },
+      });
+
+      // Cadastra configuração da IA DEEPSEEK para o usuário de teste
+      const { CryptoService } = await import('../../../infrastructure/security/crypto.service.js');
+      const enc = CryptoService.encrypt('sk-deepseek-mock-test-key-12345678');
+      await prisma.configuracaoIaUsuario.upsert({
+        where: {
+          usuarioId_provedor: {
+            usuarioId,
+            provedor: 'DEEPSEEK',
+          },
+        },
+        create: {
+          usuarioId,
+          provedor: 'DEEPSEEK',
+          modelo: 'deepseek-chat',
+          apiKeyCifrada: enc.ciphertext,
+          ivHex: enc.iv,
+          tagHex: enc.tag,
+        },
+        update: {
+          modelo: 'deepseek-chat',
+          apiKeyCifrada: enc.ciphertext,
+          ivHex: enc.iv,
+          tagHex: enc.tag,
+        },
+      });
+
+      // Mock de fetch para a chamada da API do DeepSeek
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockImplementation(async (url: any, opts: any) => {
+        if (typeof url === 'string' && url.includes('api.deepseek.com')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      transacoes: [
+                        {
+                          dataMovimento: '2026-10-10',
+                          descricao: 'Assinatura Streaming Recuperada',
+                          valor: 49.9,
+                          natureza: 'DESPESA',
+                          contaSugerida: 'Nubank Cartão',
+                          tipoConta: 'CARTAO_CREDITO',
+                          categoriaSugerida: 'Outros',
+                          isPagamentoFatura: false,
+                          confianca: 0.99,
+                        },
+                      ],
+                    }),
+                  },
+                },
+              ],
+            }),
+            text: async () => '',
+          } as any;
+        }
+        return originalFetch(url, opts);
+      });
+
+      // Dispara reprocessamento individual do arquivo via rota HTTP com DEEPSEEK
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/importacao/arquivos/${arq!.id}/reprocessar-ia`,
+        headers: {
+          authorization: `Bearer ${token}`,
+        },
+        payload: {
+          provedorIa: 'DEEPSEEK',
+          modeloIa: 'deepseek-chat',
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.resultado.sucesso).toBe(true);
+      expect(body.resultado.arquivoId).toBe(arq!.id);
+      expect(body.resultado.totalTransacoes).toBeGreaterThan(0);
+
+      // Valida que o arquivo foi para IA_CONCLUIDO e a mensagem de erro foi limpa
+      const arqAtualizado = await prisma.arquivoImportacao.findUnique({
+        where: { id: arq!.id },
+      });
+      expect(arqAtualizado?.status).toBe('IA_CONCLUIDO');
+      expect(arqAtualizado?.mensagemErro).toBeNull();
+
+      // Valida que o lote foi restaurado de ERRO_TOTAL para PROCESSANDO_IA (pronto para seguir fluxo de staging/conciliação)
+      const loteAtualizado = await prisma.loteImportacao.findUnique({
+        where: { id: lote.loteId },
+      });
+      expect(loteAtualizado?.status).toBe('PROCESSANDO_IA');
+      expect(loteAtualizado?.arquivosProcessados).toBe(1);
+
+      // Valida que o arquivo físico consolidado foi gerado com sucesso
+      const consolidadoPath = path.resolve(
+        process.cwd(),
+        lote.caminhoDiretorio,
+        `consolidado_${arq!.id}.json`
+      );
+      const consolidadoConteudo = await fs.readFile(consolidadoPath, 'utf-8');
+      const consolidadoJson = JSON.parse(consolidadoConteudo);
+      expect(consolidadoJson.metadados.provedor).toBe('DEEPSEEK');
+      expect(consolidadoJson.metadados.modelo).toBe('deepseek-chat');
+
+      // Restaura fetch
+      globalThis.fetch = originalFetch;
+    });
+
+    it('deve bloquear usuário não proprietário de reprocessar arquivo de outro usuário (Multi-Tenant HTTP 404)', async () => {
+      const loteUsuario1 = await storageService.recepcionarLote({
+        usuarioId,
+        arquivos: [
+          {
+            nomeOriginal: 'arquivo_privado.csv',
+            buffer: Buffer.from('data,descricao,valor\n2026-10-10,Privado,99.00', 'utf-8'),
+            mimeType: 'text/csv',
+          },
+        ],
+      });
+      pastasParaLimpeza.push(path.resolve(process.cwd(), loteUsuario1.caminhoDiretorio));
+
+      const arq = await prisma.arquivoImportacao.findFirst({
+        where: { loteId: loteUsuario1.loteId },
+      });
+      expect(arq).toBeDefined();
+
+      // Usuário 2 tenta reprocessar arquivo que pertence ao Usuário 1
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/importacao/arquivos/${arq!.id}/reprocessar-ia`,
+        headers: {
+          authorization: `Bearer ${token2}`,
+        },
+        payload: {
+          provedorIa: 'DEEPSEEK',
+        },
+      });
+
+      expect(res.statusCode).toBe(404);
+      const body = JSON.parse(res.body);
+      expect(body.message).toContain('não encontrado ou não pertence ao usuário');
+    });
+
+    it('deve rejeitar UUID inválido com HTTP 400', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/importacao/arquivos/uuid-invalido/reprocessar-ia',
+        headers: {
+          authorization: `Bearer ${token}`,
+        },
+        payload: {
+          provedorIa: 'GEMINI',
+        },
+      });
+
+      expect(res.statusCode).toBe(400);
+      const body = JSON.parse(res.body);
+      expect(body.message).toBe('ID do arquivo inválido.');
+    });
+  });
+
+  describe('5. TASK-38: Descarte Inteligente de Mídia Incompatível e Limpeza de Erros no Reprocessamento', () => {
+    it('deve descartar arquivos de imagem enviados com DeepSeek sem chamar API externa e com mensagem explicativa', async () => {
+      // Cria lote com arquivo de imagem (.png)
+      const lote = await storageService.recepcionarLote({
+        usuarioId,
+        arquivos: [
+          {
+            nomeOriginal: 'comprovante_pix.png',
+            buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+            mimeType: 'image/png',
+          },
+        ],
+      });
+      pastasParaLimpeza.push(path.resolve(process.cwd(), lote.caminhoDiretorio));
+
+      // Mock do fetch para assegurar que NENHUMA chamada externa é feita
+      const fetchSpy = vi.fn();
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = fetchSpy as any;
+
+      try {
+        const workerService = new ImportacaoIaWorkerService(undefined, process.cwd(), false);
+        const resultadoLote = await workerService.processarLote(lote.loteId, {
+          provedorIa: 'DEEPSEEK',
+          modeloIa: 'deepseek-chat',
+        });
+
+        // Não deve ter disparado fetch para o DeepSeek
+        expect(fetchSpy).not.toHaveBeenCalled();
+
+        // O arquivo deve ter sido registrado com erro explicativo
+        expect(resultadoLote.arquivosComErro).toBe(1);
+        const arq = await prisma.arquivoImportacao.findFirst({
+          where: { loteId: lote.loteId },
+        });
+
+        expect(arq?.status).toBe('ERRO');
+        expect(arq?.mensagemErro).toContain('não oferece suporte a imagens (.jpg/.png)');
+        expect(arq?.mensagemErro).toContain('Reprocesse individualmente selecionando o Google Gemini');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('deve limpar imediatamente a mensagem de erro anterior ao iniciar o reprocessamento de arquivo', async () => {
+      // 1. Cria lote e arquivo já marcado com erro
+      const lote = await storageService.recepcionarLote({
+        usuarioId,
+        arquivos: [
+          {
+            nomeOriginal: 'fatura_antiga_falha.csv',
+            buffer: Buffer.from('data,descricao,valor\n2026-10-10,Item Teste,15.00', 'utf-8'),
+            mimeType: 'text/csv',
+          },
+        ],
+      });
+      pastasParaLimpeza.push(path.resolve(process.cwd(), lote.caminhoDiretorio));
+
+      const arq = await prisma.arquivoImportacao.findFirst({
+        where: { loteId: lote.loteId },
+      });
+      expect(arq).toBeDefined();
+
+      // Força erro prévio no arquivo
+      await prisma.arquivoImportacao.update({
+        where: { id: arq!.id },
+        data: {
+          status: 'ERRO',
+          mensagemErro: 'Erro crítico anterior simulado de rede ou timeout.',
+        },
+      });
+
+      // 2. Mock do extrator para simular sucesso no reprocessamento
+      const mockExtrator: IIaExtratorClient = {
+        extrairTransacoes: vi.fn().mockResolvedValue([
+          {
+            dataMovimento: '2026-10-10',
+            descricao: 'Item Teste Recuperado',
+            valor: 15.0,
+            natureza: 'DESPESA',
+            contaSugerida: 'Nubank Cartão',
+            tipoConta: 'CARTAO_CREDITO',
+            categoriaSugerida: 'Alimentação',
+            parcelaAtual: null,
+            totalParcelas: null,
+            isPagamentoFatura: false,
+            observacao: 'Recuperado com sucesso',
+            confianca: 0.99,
+          },
+        ]),
+      };
+
+      const workerService = new ImportacaoIaWorkerService(mockExtrator, process.cwd(), false);
+
+      // 3. Executa reprocessamento
+      const resultado = await workerService.reprocessarArquivoIndividualComIa({
+        arquivoId: arq!.id,
+        usuarioId,
+        provedorIa: 'GEMINI',
+      });
+
+      expect(resultado.sucesso).toBe(true);
+      expect(resultado.totalTransacoes).toBe(1);
+
+      // 4. Valida que a mensagem de erro foi completamente limpa
+      const arqAtualizado = await prisma.arquivoImportacao.findUnique({
+        where: { id: arq!.id },
+      });
+      expect(arqAtualizado?.status).toBe('IA_CONCLUIDO');
+      expect(arqAtualizado?.mensagemErro).toBeNull();
+    });
+  });
 });

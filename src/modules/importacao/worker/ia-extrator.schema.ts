@@ -18,6 +18,7 @@ export const lancamentoConsolidadoIaSchema = z.object({
   categoriaSugerida: z.string().optional().nullable(),
   parcelaAtual: z.number().int().positive().optional().nullable(),
   totalParcelas: z.number().int().positive().optional().nullable(),
+  idOrigem: z.string().optional().nullable(),
   isPagamentoFatura: z.boolean().optional().default(false),
   observacao: z.string().optional().nullable(),
   confianca: z.number().min(0).max(1).optional().default(1.0),

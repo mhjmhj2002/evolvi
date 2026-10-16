@@ -227,7 +227,7 @@ export function parseLocalDeterministic(texto: string, contexto: ContextoUsuario
  */
 export async function callGeminiApi(
   apiKey: string,
-  model: string = 'gemini-2.5-flash',
+  model: string = 'gemini-3.8-flash',
   promptSistema: string,
   textoUsuario: string
 ): Promise<IaLancamentoParsed> {
@@ -307,6 +307,52 @@ export async function callDeepSeekApi(
   const rawText = data.choices?.[0]?.message?.content;
   if (!rawText) {
     throw new Error('A resposta do DeepSeek não continha texto de saída.');
+  }
+
+  return JSON.parse(rawText) as IaLancamentoParsed;
+}
+
+/**
+ * Chamada à API do OpenRouter (OpenAI-compatible chat completions)
+ */
+export async function callOpenRouterApi(
+  apiKey: string,
+  model: string = 'deepseek/deepseek-chat',
+  promptSistema: string,
+  textoUsuario: string
+): Promise<IaLancamentoParsed> {
+  const url = 'https://openrouter.ai/api/v1/chat/completions';
+
+  const body = {
+    model: model || 'deepseek/deepseek-chat',
+    messages: [
+      { role: 'system', content: promptSistema },
+      { role: 'user', content: `Texto a ser analisado:\n"""${textoUsuario}"""` },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.1,
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://evolvi.app',
+      'X-Title': 'Evolvi Financeiro',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Erro na API do OpenRouter (${response.status}): ${errText}`);
+  }
+
+  const data = (await response.json()) as any;
+  const rawText = data.choices?.[0]?.message?.content;
+  if (!rawText) {
+    throw new Error('A resposta do OpenRouter não continha texto de saída.');
   }
 
   return JSON.parse(rawText) as IaLancamentoParsed;

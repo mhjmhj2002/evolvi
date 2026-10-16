@@ -293,6 +293,14 @@ export interface CategoriaTreeItem {
   }>;
 }
 
+export interface MovimentoRateioItem {
+  id: string;
+  categoriaId: string;
+  categoria?: { id: string; nome: string; categoriaPaiId?: string | null } | null;
+  valor: number;
+  descricao?: string | null;
+}
+
 export interface MovimentoItem {
   id: string;
   contaId: string;
@@ -307,7 +315,9 @@ export interface MovimentoItem {
   natureza: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
   status: 'PREVISTO' | 'PENDENTE' | 'CONCILIADO' | 'CANCELADO';
   chaveDedupe?: string;
+  categoriaFixadaPeloUsuario?: boolean;
   observacao?: string | null;
+  rateios?: MovimentoRateioItem[];
 }
 
 export interface MovimentosResponse {
@@ -1360,16 +1370,37 @@ export const apiService = {
       natureza?: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
       status?: 'PREVISTO' | 'CONCILIADO' | 'CANCELADO';
       observacao?: string | null;
+      propagarMesmoVendedor?: boolean;
     }
-  ): Promise<{ message: string; movimento: MovimentoItem }> {
-    return apiFetch<{ message: string; movimento: MovimentoItem }>(`/api/movimentos/${id}`, {
+  ): Promise<{ message: string; movimento: MovimentoItem; totalPropagados?: number; termoVendedor?: string | null }> {
+    return apiFetch<{ message: string; movimento: MovimentoItem; totalPropagados?: number; termoVendedor?: string | null }>(`/api/movimentos/${id}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
   },
 
+  async obterSimilaresVendedor(id: string): Promise<{ termoVendedor: string | null; totalSimilares: number }> {
+    return apiFetch<{ termoVendedor: string | null; totalSimilares: number }>(`/api/movimentos/${id}/similares-vendedor`);
+  },
+
   async excluirMovimento(id: string): Promise<{ message: string; id: string }> {
     return apiFetch<{ message: string; id: string }>(`/api/movimentos/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async splitMovimento(
+    id: string,
+    splits: Array<{ categoriaId: string; valor: number; descricao?: string | null }>
+  ): Promise<{ sucesso: boolean; message: string; movimentoId: string; rateios: MovimentoRateioItem[] }> {
+    return apiFetch(`/api/movimentos/${id}/split`, {
+      method: 'POST',
+      body: JSON.stringify({ splits }),
+    });
+  },
+
+  async removerSplitMovimento(id: string): Promise<{ sucesso: boolean; message: string; movimentoId: string }> {
+    return apiFetch(`/api/movimentos/${id}/split`, {
       method: 'DELETE',
     });
   },
@@ -1732,7 +1763,10 @@ export const apiService = {
   },
 
   // Módulo de Importação Inteligente por IA (TASK-32 a TASK-35)
-  async uploadLoteImportacao(files: File[]): Promise<{
+  async uploadLoteImportacao(
+    files: File[],
+    opcoes?: { provedorIa?: string; modeloIa?: string }
+  ): Promise<{
     statusCode: number;
     message: string;
     loteId: string;
@@ -1746,6 +1780,12 @@ export const apiService = {
       // webkitRelativePath preserva a estrutura de pastas se selecionada via pasta
       const filename = (file as any).webkitRelativePath || file.name;
       formData.append('arquivos', file, filename);
+    }
+    if (opcoes?.provedorIa) {
+      formData.append('provedorIa', opcoes.provedorIa);
+    }
+    if (opcoes?.modeloIa) {
+      formData.append('modeloIa', opcoes.modeloIa);
     }
 
     const token = typeof window !== 'undefined' ? localStorage.getItem('evolvi_auth_token') : null;
@@ -1808,6 +1848,42 @@ export const apiService = {
     });
   },
 
+  async reprocessarArquivoIa(
+    arquivoId: string,
+    opcoes?: { provedorIa?: string; modeloIa?: string }
+  ): Promise<{
+    statusCode: number;
+    message: string;
+    resultado: {
+      arquivoId: string;
+      nomeArquivo: string;
+      sucesso: boolean;
+      totalTransacoes: number;
+      caminhoConsolidado?: string;
+      erro?: string;
+    };
+  }> {
+    return apiFetch(`/api/importacao/arquivos/${arquivoId}/reprocessar-ia`, {
+      method: 'POST',
+      body: opcoes ? JSON.stringify(opcoes) : undefined,
+    });
+  },
+
+  async excluirArquivoImportacao(arquivoId: string): Promise<{
+    statusCode: number;
+    message: string;
+    resultado: {
+      sucesso: boolean;
+      arquivoId: string;
+      loteId: string;
+      nomeArquivo: string;
+    };
+  }> {
+    return apiFetch(`/api/importacao/arquivos/${arquivoId}`, {
+      method: 'DELETE',
+    });
+  },
+
   async carregarLoteStaging(loteId: string): Promise<{
     statusCode: number;
     message: string;
@@ -1849,7 +1925,81 @@ export const apiService = {
       itens: [],
     });
   },
+
+  async getAlertasConciliacao(params?: { status?: 'PENDENTE' | 'RESOLVIDO' | 'DISPENSADO' }): Promise<{
+    alertas: AlertaConciliacaoItem[];
+  }> {
+    const qs = params?.status ? `?status=${params.status}` : '';
+    return apiFetch(`/api/importacao/alertas${qs}`, undefined, { alertas: [] });
+  },
+
+  async dispensarAlertaConciliacao(
+    alertaId: string,
+    motivoDispensa: string
+  ): Promise<{
+    statusCode: number;
+    message: string;
+    alerta: AlertaConciliacaoItem;
+  }> {
+    return apiFetch(`/api/importacao/alertas/${alertaId}/dispensar`, {
+      method: 'PATCH',
+      body: JSON.stringify({ motivoDispensa }),
+    });
+  },
+
+  async getHistoricoArquivosImportados(): Promise<{
+    historico: HistoricoImportacaoArquivoItem[];
+  }> {
+    return apiFetch('/api/importacao/historico-arquivos', undefined, { historico: [] });
+  },
 };
+
+export interface AlertaConciliacaoItem {
+  id: string;
+  usuarioId: string;
+  contaId?: string | null;
+  tipoAlerta: 'FATURA_NAO_IMPORTADA' | 'EXTRATO_LACUNA_TEMPORAL' | 'CONFLITO_SALDO';
+  titulo: string;
+  descricao: string;
+  competencia: string;
+  status: 'PENDENTE' | 'RESOLVIDO' | 'DISPENSADO';
+  motivoDispensa?: string | null;
+  criadoEm: string;
+  resolvidoEm?: string | null;
+  conta?: {
+    id: string;
+    nome: string;
+    tipo: string;
+  } | null;
+}
+
+export interface HistoricoImportacaoArquivoItem {
+  id: string;
+  usuarioId: string;
+  arquivoId: string;
+  contaId?: string | null;
+  tipoDocumento: 'FATURA_CARTAO' | 'EXTRATO_CONTA_CORRENTE' | 'EXTRATO_INVESTIMENTO' | 'OUTRO';
+  instituicao: string;
+  competencia: string;
+  dataVencimento?: string | null;
+  periodoInicio?: string | null;
+  periodoFim?: string | null;
+  totalTransacoes: number;
+  valorTotal: number;
+  criadoEm: string;
+  arquivo?: {
+    id: string;
+    nomeArquivo: string;
+    status: string;
+    tamanhoBytes: number;
+  } | null;
+  conta?: {
+    id: string;
+    nome: string;
+    tipo: string;
+  } | null;
+}
+
 
 export type StatusLoteImportacao =
   | 'RECEPCIONADO'

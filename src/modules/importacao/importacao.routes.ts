@@ -6,6 +6,8 @@ import {
   queryLotesImportacaoSchema,
   loteIdParamSchema,
   processarLoteIaBodySchema,
+  arquivoIdParamSchema,
+  reprocessarArquivoIaBodySchema,
 } from './importacao.schema.js';
 
 export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
@@ -41,6 +43,8 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
       }
 
       const files: SalvarArquivoInput[] = [];
+      let provedorIa: string | undefined = (request.query as any)?.provedorIa;
+      let modeloIa: string | undefined = (request.query as any)?.modeloIa;
       const parts = request.parts();
 
       for await (const part of parts) {
@@ -53,6 +57,12 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
             buffer,
             mimeType: part.mimetype,
           });
+        } else if (part.type === 'field') {
+          if (part.fieldname === 'provedorIa' && typeof part.value === 'string' && part.value.trim()) {
+            provedorIa = part.value.trim();
+          } else if (part.fieldname === 'modeloIa' && typeof part.value === 'string' && part.value.trim()) {
+            modeloIa = part.value.trim();
+          }
         }
       }
 
@@ -68,6 +78,8 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
         const resultado = await storageService.recepcionarLote({
           usuarioId,
           arquivos: files,
+          provedorIa,
+          modeloIa,
         });
 
         // HTTP 202 Accepted para resposta imediata assíncrona
@@ -182,6 +194,110 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
         message: 'Processamento de extração IA concluído para o lote.',
         resultado,
       });
+    });
+
+    /**
+     * POST /api/importacao/arquivos/:id/reprocessar-ia
+     * Reprocessa individualmente um arquivo com erro usando a IA ou modelo especificados.
+     * Não descarta o progresso dos demais arquivos já concluídos do lote.
+     */
+    authApp.post('/arquivos/:id/reprocessar-ia', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const params = arquivoIdParamSchema.safeParse(request.params);
+
+      if (!params.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'ID do arquivo inválido.',
+          issues: params.error.issues,
+        });
+      }
+
+      const bodyResult = reprocessarArquivoIaBodySchema.safeParse(request.body || {});
+      if (!bodyResult.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Parâmetros de reprocessamento inválidos.',
+          issues: bodyResult.error.issues,
+        });
+      }
+
+      const { importacaoIaWorkerService } = await import('./worker/importacao-ia-worker.service.js');
+
+      try {
+        const resultado = await importacaoIaWorkerService.reprocessarArquivoIndividualComIa({
+          arquivoId: params.data.id,
+          usuarioId,
+          provedorIa: bodyResult.data.provedorIa,
+          modeloIa: bodyResult.data.modeloIa,
+        });
+
+        if (!resultado.sucesso) {
+          return reply.status(422).send({
+            statusCode: 422,
+            error: 'Unprocessable Entity',
+            message: resultado.erro || 'Falha ao reprocessar arquivo com a IA especificada.',
+            resultado,
+          });
+        }
+
+        return reply.status(200).send({
+          statusCode: 200,
+          message: 'Arquivo reprocessado com sucesso pela IA.',
+          resultado,
+        });
+      } catch (err: any) {
+        const status = err.message?.includes('não encontrado') ? 404 : 500;
+        return reply.status(status).send({
+          statusCode: status,
+          error: status === 404 ? 'Not Found' : 'Internal Server Error',
+          message: err.message || 'Erro ao reprocessar arquivo individual.',
+        });
+      }
+    });
+
+    /**
+     * DELETE /api/importacao/arquivos/:id
+     * Exclui um arquivo do lote de importação (ex: arquivo com erro, arquivo indesejado ou incompatível).
+     * Remove do disco, da staging e do banco, atualizando as métricas do lote pai.
+     */
+    authApp.delete('/arquivos/:id', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const params = arquivoIdParamSchema.safeParse(request.params);
+
+      if (!params.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'ID do arquivo inválido.',
+          issues: params.error.issues,
+        });
+      }
+
+      try {
+        const resultado = await storageService.excluirArquivoImportacao(
+          params.data.id,
+          usuarioId
+        );
+
+        return reply.status(200).send({
+          statusCode: 200,
+          message: `Arquivo ${resultado.nomeArquivo} excluído com sucesso do lote.`,
+          resultado,
+        });
+      } catch (err: any) {
+        const isNotFound = err.message?.includes('não encontrado');
+        const isForbidden = err.message?.includes('Acesso negado');
+        const status = isNotFound ? 404 : isForbidden ? 403 : 500;
+
+        return reply.status(status).send({
+          statusCode: status,
+          error: isNotFound ? 'Not Found' : isForbidden ? 'Forbidden' : 'Internal Server Error',
+          message: err.message || 'Erro ao excluir arquivo de importação.',
+        });
+      }
     });
 
     /**
@@ -303,6 +419,91 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
         totalItens: stagingItens.length,
         itens: stagingItens,
       });
+    });
+
+    /**
+     * GET /api/importacao/alertas
+     * Retorna os alertas de conciliação do usuário (lacunas de extrato e faturas pendentes).
+     */
+    authApp.get('/alertas', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const { queryAlertasConciliacaoSchema } = await import('./importacao.schema.js');
+      const { conciliacaoService } = await import('./conciliacao.service.js');
+
+      const parsedQuery = queryAlertasConciliacaoSchema.safeParse(request.query);
+      if (!parsedQuery.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Parâmetros de consulta inválidos.',
+          details: parsedQuery.error.format(),
+        });
+      }
+
+      const alertas = await conciliacaoService.listarAlertas(usuarioId, parsedQuery.data.status as any);
+      return reply.status(200).send({ alertas });
+    });
+
+    /**
+     * PATCH /api/importacao/alertas/:id/dispensar
+     * Descarta um alerta de conciliação registrando o motivo (ex: CONTA_ENCERRADA, SEM_GASTOS).
+     */
+    authApp.patch('/alertas/:id/dispensar', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const { alertaIdParamSchema, dispensarAlertaBodySchema } = await import('./importacao.schema.js');
+      const { conciliacaoService } = await import('./conciliacao.service.js');
+
+      const parsedParams = alertaIdParamSchema.safeParse(request.params);
+      if (!parsedParams.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'ID do alerta inválido.',
+          details: parsedParams.error.format(),
+        });
+      }
+
+      const parsedBody = dispensarAlertaBodySchema.safeParse(request.body);
+      if (!parsedBody.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Corpo da requisição inválido.',
+          details: parsedBody.error.format(),
+        });
+      }
+
+      try {
+        const alertaAtualizado = await conciliacaoService.dispensarAlerta({
+          usuarioId,
+          alertaId: parsedParams.data.id,
+          motivoDispensa: parsedBody.data.motivoDispensa,
+        });
+
+        return reply.status(200).send({
+          statusCode: 200,
+          message: 'Alerta dispensado com sucesso.',
+          alerta: alertaAtualizado,
+        });
+      } catch (err: any) {
+        return reply.status(404).send({
+          statusCode: 404,
+          error: 'Not Found',
+          message: err.message || 'Alerta não encontrado.',
+        });
+      }
+    });
+
+    /**
+     * GET /api/importacao/historico-arquivos
+     * Retorna o histórico catalogado de arquivos importados pelo usuário.
+     */
+    authApp.get('/historico-arquivos', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const { conciliacaoService } = await import('./conciliacao.service.js');
+
+      const historico = await conciliacaoService.listarHistoricoArquivos(usuarioId);
+      return reply.status(200).send({ historico });
     });
 
     /**

@@ -25,6 +25,8 @@ import {
   RotateCcw,
   Trash2,
   CalendarDays,
+  Split,
+  Lock,
 } from 'lucide-react';
 
 interface TelaLancamentosProps {
@@ -70,6 +72,190 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
   const [itemSelecionado, setItemSelecionado] = useState<MovimentoItem | null>(null);
   const [excluindoId, setExcluindoId] = useState<string | null>(null);
   const [mensagemAviso, setMensagemAviso] = useState<string | null>(null);
+
+  // Estados de Ajuste e Propagação de Categoria por Vendedor (TASK-42)
+  const [categoriaEdicao, setCategoriaEdicao] = useState<string>('');
+  const [propagarVendedor, setPropagarVendedor] = useState<boolean>(false);
+  const [similaresInfo, setSimilaresInfo] = useState<{ termoVendedor: string | null; totalSimilares: number } | null>(null);
+  const [salvandoCategoria, setSalvandoCategoria] = useState<boolean>(false);
+  const [feedbackCategoria, setFeedbackCategoria] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(null);
+
+  // Ao abrir o bottom sheet do item selecionado, inicializa a categoria e consulta outros lançamentos similares
+  useEffect(() => {
+    if (itemSelecionado) {
+      setCategoriaEdicao(itemSelecionado.categoriaId || '');
+      setPropagarVendedor(false);
+      setFeedbackCategoria(null);
+      setSimilaresInfo(null);
+      apiService.obterSimilaresVendedor(itemSelecionado.id)
+        .then((info) => {
+          setSimilaresInfo(info);
+          if (info.totalSimilares > 0) {
+            setPropagarVendedor(true); // Sugere pré-marcado por conveniência quando houver compras similares
+          }
+        })
+        .catch((err) => {
+          console.warn('Erro ao buscar lançamentos similares:', err);
+        });
+    }
+  }, [itemSelecionado?.id]);
+
+  const handleSalvarCategoria = async () => {
+    if (!itemSelecionado) return;
+    setSalvandoCategoria(true);
+    setFeedbackCategoria(null);
+    try {
+      const res = await apiService.atualizarMovimento(itemSelecionado.id, {
+        categoriaId: categoriaEdicao || null,
+        propagarMesmoVendedor: propagarVendedor,
+      });
+
+      setFeedbackCategoria({ tipo: 'sucesso', texto: res.message || 'Categoria salva com sucesso!' });
+      await carregarMovimentos();
+      onMovimentoModificado?.();
+
+      // Atualiza o próprio item selecionado na tela
+      const catObj = categorias.find((c) => c.id === categoriaEdicao);
+      setItemSelecionado({
+        ...itemSelecionado,
+        categoriaId: categoriaEdicao || null,
+        categoriaFixadaPeloUsuario: true,
+        categoria: catObj ? { id: catObj.id, nome: catObj.nome, categoriaPaiId: null } : null,
+      });
+
+      setTimeout(() => {
+        setFeedbackCategoria(null);
+      }, 3500);
+    } catch (err: any) {
+      setFeedbackCategoria({ tipo: 'erro', texto: err.message || 'Erro ao atualizar categoria.' });
+    } finally {
+      setSalvandoCategoria(false);
+    }
+  };
+
+  // Estados de Desdobramento / Transaction Splitting (TASK-39)
+  const [modalSplitAberto, setModalSplitAberto] = useState(false);
+  const [movimentoEmSplit, setMovimentoEmSplit] = useState<MovimentoItem | null>(null);
+  const [splitsEmEdicao, setSplitsEmEdicao] = useState<Array<{ categoriaId: string; valor: string; descricao: string }>>([]);
+  const [salvandoSplit, setSalvandoSplit] = useState(false);
+  const [feedbackSplit, setFeedbackSplit] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(null);
+
+  const abrirModalSplit = (mov: MovimentoItem) => {
+    setMovimentoEmSplit(mov);
+    setFeedbackSplit(null);
+    if (mov.rateios && mov.rateios.length > 0) {
+      setSplitsEmEdicao(
+        mov.rateios.map((r) => ({
+          categoriaId: r.categoriaId,
+          valor: r.valor.toFixed(2),
+          descricao: r.descricao || '',
+        }))
+      );
+    } else {
+      // Sugere 2 fatias iniciais: metade no valor da categoria original (ou primeira) e a outra metade vazia
+      const metade = (mov.valor / 2).toFixed(2);
+      const resto = (mov.valor - parseFloat(metade)).toFixed(2);
+      const catPadrao = mov.categoriaId || (categorias.length > 0 ? categorias[0].id : '');
+      const outraCat = categorias.length > 1 ? (categorias.find((c) => c.id !== catPadrao)?.id || catPadrao) : catPadrao;
+
+      setSplitsEmEdicao([
+        { categoriaId: catPadrao, valor: metade, descricao: 'Fatia 1/2' },
+        { categoriaId: outraCat, valor: resto, descricao: 'Fatia 2/2' },
+      ]);
+    }
+    setModalSplitAberto(true);
+  };
+
+  const fecharModalSplit = () => {
+    setModalSplitAberto(false);
+    setMovimentoEmSplit(null);
+    setSplitsEmEdicao([]);
+    setFeedbackSplit(null);
+  };
+
+  const adicionarLinhaSplit = () => {
+    const catPadrao = categorias.length > 0 ? categorias[0].id : '';
+    setSplitsEmEdicao([...splitsEmEdicao, { categoriaId: catPadrao, valor: '0.00', descricao: '' }]);
+  };
+
+  const removerLinhaSplit = (index: number) => {
+    if (splitsEmEdicao.length <= 2) {
+      setFeedbackSplit({ tipo: 'erro', texto: 'Um desdobramento requer no mínimo 2 categorias.' });
+      return;
+    }
+    setSplitsEmEdicao(splitsEmEdicao.filter((_, i) => i !== index));
+  };
+
+  const atualizarLinhaSplit = (index: number, campo: 'categoriaId' | 'valor' | 'descricao', valor: string) => {
+    const novas = [...splitsEmEdicao];
+    novas[index] = { ...novas[index], [campo]: valor };
+    setSplitsEmEdicao(novas);
+  };
+
+  const handleSalvarSplit = async () => {
+    if (!movimentoEmSplit) return;
+    setFeedbackSplit(null);
+
+    const valorOriginal = Number(movimentoEmSplit.valor);
+    const parsedSplits = splitsEmEdicao.map((s) => ({
+      categoriaId: s.categoriaId,
+      valor: parseFloat(s.valor.replace(',', '.')) || 0,
+      descricao: s.descricao.trim() || undefined,
+    }));
+
+    if (parsedSplits.some((s) => !s.categoriaId)) {
+      setFeedbackSplit({ tipo: 'erro', texto: 'Selecione uma categoria para todas as fatias.' });
+      return;
+    }
+
+    if (parsedSplits.some((s) => s.valor <= 0)) {
+      setFeedbackSplit({ tipo: 'erro', texto: 'O valor de cada fatia deve ser maior que zero.' });
+      return;
+    }
+
+    const soma = Number(parsedSplits.reduce((acc, s) => acc + s.valor, 0).toFixed(2));
+    if (Math.abs(soma - valorOriginal) > 0.001) {
+      setFeedbackSplit({
+        tipo: 'erro',
+        texto: `A soma das fatias (R$ ${soma.toFixed(2)}) deve ser exatamente igual ao total (R$ ${valorOriginal.toFixed(2)}). Diferença: R$ ${(valorOriginal - soma).toFixed(2)}`,
+      });
+      return;
+    }
+
+    setSalvandoSplit(true);
+    try {
+      const res = await apiService.splitMovimento(movimentoEmSplit.id, parsedSplits);
+      setFeedbackSplit({ tipo: 'sucesso', texto: res.message || 'Desdobramento salvo com sucesso!' });
+      await carregarMovimentos();
+      onMovimentoModificado?.();
+      setTimeout(() => {
+        fecharModalSplit();
+        setItemSelecionado(null);
+      }, 700);
+    } catch (err: any) {
+      setFeedbackSplit({ tipo: 'erro', texto: err.message || 'Erro ao salvar desdobramento.' });
+    } finally {
+      setSalvandoSplit(false);
+    }
+  };
+
+  const handleRemoverSplit = async (movId: string) => {
+    setSalvandoSplit(true);
+    try {
+      await apiService.removerSplitMovimento(movId);
+      setFeedbackSplit({ tipo: 'sucesso', texto: 'Desdobramento revertido com sucesso!' });
+      await carregarMovimentos();
+      onMovimentoModificado?.();
+      setTimeout(() => {
+        fecharModalSplit();
+        setItemSelecionado(null);
+      }, 700);
+    } catch (err: any) {
+      setFeedbackSplit({ tipo: 'erro', texto: err.message || 'Erro ao reverter desdobramento.' });
+    } finally {
+      setSalvandoSplit(false);
+    }
+  };
 
   // Função para buscar dados
   const carregarMovimentos = async () => {
@@ -904,6 +1090,24 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                                   <span style={{ color: 'var(--brand-primary)' }}>{item.categoria.nome}</span>
                                 </>
                               )}
+                              {item.rateios && item.rateios.length > 0 && (
+                                <span
+                                  style={{
+                                    background: 'rgba(56, 189, 248, 0.15)',
+                                    color: 'var(--brand-primary)',
+                                    padding: '1px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 700,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                  }}
+                                  title={`Desdobrado em ${item.rateios.length} categorias`}
+                                >
+                                  <Split size={10} /> {item.rateios.length} fatias
+                                </span>
+                              )}
                               {item.status === 'PREVISTO' && (
                                 <span
                                   style={{
@@ -1020,11 +1224,128 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                 <span style={{ color: 'var(--text-muted)' }}>Conta:</span>
                 <span style={{ fontWeight: 600 }}>{itemSelecionado.conta?.nome || 'Conta Padrão'}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Categoria:</span>
-                <span style={{ fontWeight: 600, color: 'var(--brand-primary)' }}>
-                  {itemSelecionado.categoria?.nome || 'Sem categoria definida'}
-                </span>
+              {/* Campo Categoria com Ajuste Direto e Propagação por Vendedor (TASK-42) */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px', background: 'rgba(56, 189, 248, 0.05)', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(56, 189, 248, 0.2)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span style={{ color: 'var(--text-muted)', fontWeight: 600, fontSize: '0.8rem' }}>Categoria do Lançamento:</span>
+                    {itemSelecionado.categoriaFixadaPeloUsuario && (
+                      <span
+                        title="Categoria ajustada manualmente. Protegida contra alterações automáticas ou reclassificações por IA/rotinas."
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                          background: 'rgba(56, 189, 248, 0.15)',
+                          color: 'var(--brand-primary)',
+                          border: '1px solid rgba(56, 189, 248, 0.3)',
+                          borderRadius: 'var(--radius-full)',
+                          padding: '1px 7px',
+                          fontSize: '0.70rem',
+                          fontWeight: 700,
+                        }}
+                      >
+                        <Lock size={10} />
+                        Fixada pelo usuário
+                      </span>
+                    )}
+                  </div>
+                  {itemSelecionado.rateios && itemSelecionado.rateios.length > 0 && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--brand-primary)', fontWeight: 600 }}>
+                      Possui Rateio Analítico
+                    </span>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <select
+                    className="form-control"
+                    value={categoriaEdicao}
+                    onChange={(e) => setCategoriaEdicao(e.target.value)}
+                    style={{
+                      flex: 1,
+                      background: 'var(--bg-card)',
+                      border: '1px solid var(--border-subtle)',
+                      color: 'var(--text-primary)',
+                      borderRadius: 'var(--radius-sm)',
+                      padding: '8px',
+                      fontSize: '0.84rem',
+                    }}
+                  >
+                    <option value="">Sem categoria definida</option>
+                    {categorias.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.nome}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={handleSalvarCategoria}
+                    disabled={salvandoCategoria || (categoriaEdicao === (itemSelecionado.categoriaId || '') && !propagarVendedor)}
+                    style={{
+                      background: 'var(--brand-primary)',
+                      color: '#0f172a',
+                      border: 'none',
+                      borderRadius: 'var(--radius-sm)',
+                      padding: '0 14px',
+                      fontWeight: 700,
+                      fontSize: '0.82rem',
+                      cursor: salvandoCategoria || (categoriaEdicao === (itemSelecionado.categoriaId || '') && !propagarVendedor) ? 'not-allowed' : 'pointer',
+                      opacity: salvandoCategoria || (categoriaEdicao === (itemSelecionado.categoriaId || '') && !propagarVendedor) ? 0.6 : 1,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {salvandoCategoria ? 'Salvando...' : 'Salvar Categoria'}
+                  </button>
+                </div>
+
+                {/* Opção de Propagação para Lançamentos Similares do mesmo Vendedor */}
+                {similaresInfo && similaresInfo.totalSimilares > 0 && (
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      fontSize: '0.78rem',
+                      color: 'var(--text-secondary)',
+                      marginTop: '4px',
+                      padding: '4px 6px',
+                      background: 'rgba(255, 255, 255, 0.03)',
+                      borderRadius: 'var(--radius-xs)',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={propagarVendedor}
+                      onChange={(e) => setPropagarVendedor(e.target.checked)}
+                      style={{ cursor: 'pointer', accentColor: 'var(--brand-primary)' }}
+                    />
+                    <span>
+                      Aplicar também a todas as compras de{' '}
+                      <strong style={{ color: 'var(--brand-primary)' }}>"{similaresInfo.termoVendedor}"</strong>{' '}
+                      ({similaresInfo.totalSimilares} outro{similaresInfo.totalSimilares > 1 ? 's' : ''} lançamento{similaresInfo.totalSimilares > 1 ? 's' : ''})
+                    </span>
+                  </label>
+                )}
+
+                {feedbackCategoria && (
+                  <div
+                    style={{
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      padding: '6px 8px',
+                      borderRadius: 'var(--radius-xs)',
+                      background: feedbackCategoria.tipo === 'sucesso' ? 'var(--status-green-bg)' : 'var(--status-red-bg)',
+                      color: feedbackCategoria.tipo === 'sucesso' ? 'var(--status-green)' : 'var(--status-red)',
+                      border: `1px solid ${feedbackCategoria.tipo === 'sucesso' ? 'var(--status-green-border)' : 'var(--status-red-border)'}`,
+                    }}
+                  >
+                    {feedbackCategoria.texto}
+                  </div>
+                )}
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Status:</span>
@@ -1040,16 +1361,62 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                   </span>
                 </div>
               )}
+
+              {itemSelecionado.rateios && itemSelecionado.rateios.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '8px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--brand-primary)', fontWeight: 700, fontSize: '0.8rem' }}>
+                    <Split size={14} /> Fatias do Rateio Analítico ({itemSelecionado.rateios.length}):
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: 'rgba(255,255,255,0.03)', padding: '8px', borderRadius: 'var(--radius-sm)' }}>
+                    {itemSelecionado.rateios.map((r, i) => (
+                      <div key={r.id || i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem' }}>
+                        <span>
+                          <strong style={{ color: 'var(--text-primary)' }}>{r.categoria?.nome || 'Categoria'}:</strong>{' '}
+                          <span style={{ color: 'var(--text-muted)' }}>{r.descricao || '-'}</span>
+                        </span>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--brand-primary)' }}>
+                          R$ {formatarValor(r.valor)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Ações: Excluir Lançamento */}
-            <div style={{ display: 'flex', gap: '10px', marginTop: '10px' }}>
+            {/* Ações: Desdobrar e Excluir Lançamento */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+              <button
+                type="button"
+                onClick={() => abrirModalSplit(itemSelecionado)}
+                style={{
+                  width: '100%',
+                  background: 'rgba(56, 189, 248, 0.1)',
+                  border: '1px solid rgba(56, 189, 248, 0.4)',
+                  color: 'var(--brand-primary)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '10px',
+                  fontWeight: 700,
+                  fontSize: '0.88rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  cursor: 'pointer',
+                }}
+              >
+                <Split size={16} />
+                {itemSelecionado.rateios && itemSelecionado.rateios.length > 0
+                  ? 'Editar Rateio / Desdobramento'
+                  : 'Desdobrar / Ratear Categorias'}
+              </button>
+
               <button
                 type="button"
                 onClick={() => handleExcluirMovimento(itemSelecionado.id)}
                 disabled={excluindoId === itemSelecionado.id}
                 style={{
-                  flex: 1,
+                  width: '100%',
                   background: 'var(--status-red-bg)',
                   border: '1px solid var(--status-red-border)',
                   color: 'var(--status-red)',
@@ -1065,6 +1432,336 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                 }}
               >
                 <Trash2 size={16} /> Excluir Lançamento
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 9. Modal de Edição de Desdobramento / Transaction Splitting (TASK-39) */}
+      {modalSplitAberto && movimentoEmSplit && (
+        <div
+          className="bottom-sheet-backdrop"
+          onClick={fecharModalSplit}
+          style={{ zIndex: 110 }}
+        >
+          <div
+            className="bottom-sheet"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '580px', gap: '14px', maxHeight: '90vh', overflowY: 'auto' }}
+          >
+            <div className="bottom-sheet-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Split size={18} color="var(--brand-primary)" />
+                <span className="bottom-sheet-title">Rateio Analítico de Categorias</span>
+              </div>
+              <button
+                type="button"
+                className="bottom-sheet-close"
+                onClick={fecharModalSplit}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Cabeçalho do Lançamento em Edição de Split */}
+            <div
+              style={{
+                background: 'rgba(15, 23, 42, 0.6)',
+                border: '1px solid var(--border-card)',
+                borderRadius: 'var(--radius-md)',
+                padding: '12px 14px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <div>
+                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Lançamento Selecionado</div>
+                <div style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                  {movimentoEmSplit.descricao}
+                </div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Valor Total</div>
+                <div
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontWeight: 800,
+                    fontSize: '1.15rem',
+                    color: 'var(--brand-primary)',
+                  }}
+                >
+                  R$ {formatarValor(movimentoEmSplit.valor)}
+                </div>
+              </div>
+            </div>
+
+            {/* Mensagem de Feedback */}
+            {feedbackSplit && (
+              <div
+                style={{
+                  padding: '10px 12px',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: '0.82rem',
+                  fontWeight: 600,
+                  background:
+                    feedbackSplit.tipo === 'sucesso'
+                      ? 'var(--status-green-bg)'
+                      : 'var(--status-red-bg)',
+                  border: `1px solid ${
+                    feedbackSplit.tipo === 'sucesso'
+                      ? 'var(--status-green-border)'
+                      : 'var(--status-red-border)'
+                  }`,
+                  color:
+                    feedbackSplit.tipo === 'sucesso'
+                      ? 'var(--status-green)'
+                      : 'var(--status-red)',
+                }}
+              >
+                {feedbackSplit.texto}
+              </div>
+            )}
+
+            {/* Lista Dinâmica de Fatias */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                  Distribuição por Categoria
+                </span>
+                <button
+                  type="button"
+                  onClick={adicionarLinhaSplit}
+                  style={{
+                    background: 'transparent',
+                    border: '1px dashed var(--brand-primary)',
+                    color: 'var(--brand-primary)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '4px 8px',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <Plus size={14} /> Adicionar Fatia
+                </button>
+              </div>
+
+              {splitsEmEdicao.map((linha, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '10px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px',
+                  }}
+                >
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    {/* Categoria Select */}
+                    <div style={{ flex: 1 }}>
+                      <select
+                        value={linha.categoriaId}
+                        onChange={(e) => atualizarLinhaSplit(idx, 'categoriaId', e.target.value)}
+                        style={{
+                          width: '100%',
+                          background: 'var(--bg-card)',
+                          border: '1px solid var(--border-subtle)',
+                          color: 'var(--text-primary)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '8px',
+                          fontSize: '0.82rem',
+                        }}
+                      >
+                        <option value="">Selecione a categoria...</option>
+                        {categorias.map((cat) => (
+                          <option key={cat.id} value={cat.id}>
+                            {cat.nome}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Valor da Fatia */}
+                    <div style={{ width: '130px' }}>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={linha.valor}
+                        onChange={(e) => atualizarLinhaSplit(idx, 'valor', e.target.value)}
+                        style={{
+                          width: '100%',
+                          background: 'var(--bg-card)',
+                          border: '1px solid var(--border-subtle)',
+                          color: 'var(--text-primary)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '8px',
+                          fontSize: '0.85rem',
+                          fontFamily: 'var(--font-mono)',
+                          fontWeight: 700,
+                          textAlign: 'right',
+                        }}
+                      />
+                    </div>
+
+                    {/* Botão Remover Linha */}
+                    <button
+                      type="button"
+                      onClick={() => removerLinhaSplit(idx)}
+                      disabled={splitsEmEdicao.length <= 2}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: splitsEmEdicao.length <= 2 ? 'var(--text-muted)' : 'var(--status-red)',
+                        cursor: splitsEmEdicao.length <= 2 ? 'not-allowed' : 'pointer',
+                        padding: '4px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                      title={splitsEmEdicao.length <= 2 ? 'Mínimo de 2 fatias' : 'Remover fatia'}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+
+                  {/* Subdescrição Opcional da Fatia */}
+                  <div>
+                    <input
+                      type="text"
+                      placeholder="Subdescrição da fatia (ex: Alimentos, Farmácia, Bebidas...)"
+                      value={linha.descricao}
+                      onChange={(e) => atualizarLinhaSplit(idx, 'descricao', e.target.value)}
+                      style={{
+                        width: '100%',
+                        background: 'var(--bg-main)',
+                        border: '1px solid var(--border-subtle)',
+                        color: 'var(--text-secondary)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '6px 8px',
+                        fontSize: '0.78rem',
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Resumo da Soma e Validação Visual */}
+            {(() => {
+              const somaAtual = splitsEmEdicao.reduce(
+                (acc, s) => acc + (parseFloat(s.valor.replace(',', '.')) || 0),
+                0
+              );
+              const totalEsperado = Number(movimentoEmSplit.valor);
+              const diferenca = totalEsperado - somaAtual;
+              const estaBalanceado = Math.abs(diferenca) < 0.009;
+
+              return (
+                <div
+                  style={{
+                    background: estaBalanceado
+                      ? 'rgba(34, 197, 94, 0.08)'
+                      : 'rgba(239, 68, 68, 0.08)',
+                    border: `1px solid ${
+                      estaBalanceado
+                        ? 'var(--status-green-border)'
+                        : 'var(--status-red-border)'
+                    }`,
+                    borderRadius: 'var(--radius-md)',
+                    padding: '10px 14px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                      Total Distribuído
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontWeight: 800,
+                        fontSize: '0.95rem',
+                        color: estaBalanceado ? 'var(--status-green)' : 'var(--status-red)',
+                      }}
+                    >
+                      R$ {formatarValor(somaAtual)} / R$ {formatarValor(totalEsperado)}
+                    </div>
+                  </div>
+
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                      {estaBalanceado ? 'Status' : 'Diferença Restante'}
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontWeight: 800,
+                        fontSize: '0.9rem',
+                        color: estaBalanceado ? 'var(--status-green)' : 'var(--status-yellow)',
+                      }}
+                    >
+                      {estaBalanceado ? '✓ Balanceado' : `R$ ${formatarValor(diferenca)}`}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Ações do Modal de Rateio */}
+            <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+              {movimentoEmSplit.rateios && movimentoEmSplit.rateios.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => handleRemoverSplit(movimentoEmSplit.id)}
+                  disabled={salvandoSplit}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid var(--border-subtle)',
+                    color: 'var(--text-muted)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '10px',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    cursor: salvandoSplit ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  Remover Rateio
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleSalvarSplit}
+                disabled={salvandoSplit}
+                style={{
+                  flex: 1,
+                  background: 'var(--brand-primary)',
+                  border: 'none',
+                  color: '#0f172a',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '10px',
+                  fontWeight: 800,
+                  fontSize: '0.88rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                  cursor: salvandoSplit ? 'not-allowed' : 'pointer',
+                  opacity: salvandoSplit ? 0.7 : 1,
+                }}
+              >
+                {salvandoSplit ? 'Salvando Rateio...' : 'Salvar Desdobramento'}
               </button>
             </div>
           </div>

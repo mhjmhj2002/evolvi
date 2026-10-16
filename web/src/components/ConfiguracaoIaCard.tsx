@@ -27,15 +27,15 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
   const [statusIa, setStatusIa] = useState<StatusIaResponse | null>(null);
 
   // Provedor selecionado
-  const [provedor, setProvedor] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK'>('GEMINI');
-  const [modelo, setModelo] = useState('gemini-2.5-flash');
+  const [provedor, setProvedor] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | 'OPENROUTER'>('GEMINI');
+  const [modelo, setModelo] = useState('gemini-3.8-flash');
   const [apiKey, setApiKey] = useState('');
   const [mostrarChave, setMostrarChave] = useState(false);
 
   // Ações de teste e salvamento
   const [testando, setTestando] = useState(false);
   const [feedback, setFeedback] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(null);
-  const [guiaAberto, setGuiaAberto] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | null>('GEMINI');
+  const [guiaAberto, setGuiaAberto] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | 'OPENROUTER' | null>('GEMINI');
 
   const carregarStatus = async () => {
     try {
@@ -43,7 +43,7 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
       setStatusIa(res);
 
       const savedProvedor = (res.provedorAtivo as any) || (localStorage.getItem('evolvi_ia_byok_provedor') as any) || 'GEMINI';
-      const savedModelo = res.modeloPadrao || localStorage.getItem('evolvi_ia_byok_modelo') || 'gemini-2.5-flash';
+      const savedModelo = res.modeloPadrao || localStorage.getItem('evolvi_ia_byok_modelo') || 'gemini-3.8-flash';
 
       setProvedor(savedProvedor);
       setModelo(savedModelo);
@@ -217,6 +217,8 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
                     ? 'DeepSeek'
                     : cfg.provedor === 'OPENAI'
                     ? 'OpenAI (ChatGPT)'
+                    : cfg.provedor === 'OPENROUTER'
+                    ? 'OpenRouter'
                     : 'Anthropic (Claude)'}:
                 </strong>
                 <code>{cfg.chaveMascarada}</code>
@@ -411,6 +413,36 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
             </div>
             <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Claude 3.5 Sonnet / Haiku</span>
           </button>
+
+          {/* OpenRouter */}
+          <button
+            type="button"
+            className={`auth-tab-btn ${provedor === 'OPENROUTER' ? 'active' : ''}`}
+            onClick={() => {
+              setProvedor('OPENROUTER');
+              setModelo('deepseek/deepseek-chat');
+              setGuiaAberto('OPENROUTER');
+            }}
+            style={{
+              padding: '10px 14px',
+              borderRadius: 'var(--radius-sm)',
+              border: provedor === 'OPENROUTER' ? '1px solid var(--brand-primary)' : '1px solid var(--border-color)',
+              background: provedor === 'OPENROUTER' ? 'rgba(56, 189, 248, 0.12)' : 'var(--bg-card)',
+              cursor: 'pointer',
+              textAlign: 'left',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+              <span style={{ fontWeight: 700, fontSize: '0.88rem' }}>OpenRouter</span>
+              {statusIa?.configuracoes?.some((c) => c.provedor === 'OPENROUTER') && (
+                <span className="badge badge-verde" style={{ fontSize: '0.65rem' }}>✓ Configurada</span>
+              )}
+            </div>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Multi-Provedor • Catálogo Global</span>
+          </button>
         </div>
 
         {/* Campo de Chave e Modelo */}
@@ -430,6 +462,8 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
                     ? 'Ex: sk-...'
                     : provedor === 'OPENAI'
                     ? 'Ex: sk-proj-...'
+                    : provedor === 'OPENROUTER'
+                    ? 'Ex: sk-or-v1-...'
                     : 'Ex: sk-ant-...'
                 }
                 value={apiKey}
@@ -729,6 +763,57 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
                 <li>Faça login ou cadastre-se no console da Anthropic.</li>
                 <li>Clique em <strong>"Create Key"</strong>, nomeie a chave e copie o token gerado (inicia com <code>sk-ant-...</code>).</li>
                 <li>Cole no campo de chave de API e clique em <strong>Salvar</strong>.</li>
+              </ol>
+            </div>
+          )}
+        </div>
+
+        {/* Guia OpenRouter */}
+        <div
+          style={{
+            border: '1px solid var(--border-color)',
+            borderRadius: 'var(--radius-sm)',
+            overflow: 'hidden',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setGuiaAberto(guiaAberto === 'OPENROUTER' ? null : 'OPENROUTER')}
+            style={{
+              width: '100%',
+              padding: '10px 14px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: 'var(--bg-secondary)',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--text-primary)',
+              fontWeight: 600,
+              fontSize: '0.84rem',
+            }}
+          >
+            <span>4. OpenRouter (openrouter.ai/keys)</span>
+            {guiaAberto === 'OPENROUTER' ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+          </button>
+          {guiaAberto === 'OPENROUTER' && (
+            <div style={{ padding: '14px', fontSize: '0.82rem', lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+              <ol style={{ paddingLeft: '20px', margin: 0, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <li>
+                  Acesse o portal do OpenRouter:{' '}
+                  <a
+                    href="https://openrouter.ai/keys"
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: 'var(--brand-primary)', textDecoration: 'underline', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                  >
+                    openrouter.ai/keys <ExternalLink size={12} />
+                  </a>
+                </li>
+                <li>Faça login ou cadastre-se na sua conta do OpenRouter.</li>
+                <li>Adicione créditos ou saldo em dólares na sua carteira (ex: $5 ou $10).</li>
+                <li>Clique em <strong>"Create Key"</strong>, atribua um nome (ex: <em>Evolvi Importador</em>) e copie a chave gerada (inicia com <code>sk-or-v1-...</code>).</li>
+                <li>Cole no campo acima, selecione seu modelo predileto (ex: <code>deepseek/deepseek-chat</code> ou <code>anthropic/claude-3.5-sonnet</code>) e clique em <strong>Salvar</strong>.</li>
               </ol>
             </div>
           )}

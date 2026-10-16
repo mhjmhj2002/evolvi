@@ -109,24 +109,33 @@ export class NormalizationPipelineService {
           }
         }
 
-        await prisma.movimento.create({
-          data: {
-            usuarioId,
-            contaId,
-            categoriaId,
-            dataMovimento: dataMovimentoDate,
-            competencia,
-            descricao: tx.descricao,
-            valor: tx.valor,
-            natureza: naturezaFinal,
-            status: 'CONCILIADO',
-            chaveDedupe,
-            origemDocumento: origemDocumento || 'HUB_OPEN_FINANCE',
-            observacao: tx.memo || (tx.idExterno ? `ID Externo: ${tx.idExterno}` : null),
-          },
-        });
+        try {
+          await prisma.movimento.create({
+            data: {
+              usuarioId,
+              contaId,
+              categoriaId,
+              dataMovimento: dataMovimentoDate,
+              competencia,
+              descricao: tx.descricao,
+              valor: tx.valor,
+              natureza: naturezaFinal,
+              status: 'CONCILIADO',
+              chaveDedupe,
+              idOrigem: tx.idExterno || null,
+              origemDocumento: origemDocumento || 'HUB_OPEN_FINANCE',
+              observacao: tx.memo || (tx.idExterno ? `ID Externo: ${tx.idExterno}` : null),
+            },
+          });
 
-        result.novosInseridos++;
+          result.novosInseridos++;
+        } catch (createErr: any) {
+          if (createErr?.code === 'P2002') {
+            result.duplicadasIgnoradas++;
+            continue;
+          }
+          throw createErr;
+        }
       } catch (err: unknown) {
         result.erros.push({
           index: i,

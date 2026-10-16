@@ -317,6 +317,58 @@ describe('Módulo de IA para Registro de Lançamentos (TASK-12)', () => {
         cookies: { token: tokenAuth },
       });
     });
+
+    it('TASK-36: deve configurar, listar e validar provedor OPENROUTER no banco de dados', async () => {
+      // 1. GET /api/ia/status deve listar OPENROUTER como provedor suportado
+      const resStatusInicial = await app.inject({
+        method: 'GET',
+        url: '/api/ia/status',
+        cookies: { token: tokenAuth },
+      });
+      expect(resStatusInicial.statusCode).toBe(200);
+      const bodyInicial = JSON.parse(resStatusInicial.body);
+      const openRouterSuportado = bodyInicial.provedoresSuportados.find((p: any) => p.id === 'OPENROUTER');
+      expect(openRouterSuportado).toBeDefined();
+      expect(openRouterSuportado.nome).toBe('OpenRouter');
+      expect(openRouterSuportado.ajudaUrl).toBe('https://openrouter.ai/keys');
+
+      // 2. PUT /api/ia/configuracao com OPENROUTER
+      const resPut = await app.inject({
+        method: 'PUT',
+        url: '/api/ia/configuracao',
+        cookies: { token: tokenAuth },
+        payload: {
+          provedor: 'OPENROUTER',
+          apiKey: 'sk-or-v1-chaveSecretaOpenRouterTeste1234567890',
+          modelo: 'deepseek/deepseek-chat',
+        },
+      });
+      expect(resPut.statusCode).toBe(200);
+      const bodyPut = JSON.parse(resPut.body);
+      expect(bodyPut.sucesso).toBe(true);
+      expect(bodyPut.provedor).toBe('OPENROUTER');
+
+      // 3. GET /api/ia/status deve refletir OPENROUTER configurado e mascarado
+      const resStatusApos = await app.inject({
+        method: 'GET',
+        url: '/api/ia/status',
+        cookies: { token: tokenAuth },
+      });
+      const bodyStatusApos = JSON.parse(resStatusApos.body);
+      const cfgOpenRouter = bodyStatusApos.configuracoes.find((c: any) => c.provedor === 'OPENROUTER');
+      expect(cfgOpenRouter).toBeDefined();
+      expect(cfgOpenRouter.modelo).toBe('deepseek/deepseek-chat');
+      expect(cfgOpenRouter.chaveMascarada).toBeDefined();
+      expect(cfgOpenRouter.chaveMascarada).not.toContain('chaveSecretaOpenRouterTeste');
+
+      // 4. DELETE /api/ia/configuracao?provedor=OPENROUTER
+      const resDel = await app.inject({
+        method: 'DELETE',
+        url: '/api/ia/configuracao?provedor=OPENROUTER',
+        cookies: { token: tokenAuth },
+      });
+      expect(resDel.statusCode).toBe(200);
+    });
   });
 });
 

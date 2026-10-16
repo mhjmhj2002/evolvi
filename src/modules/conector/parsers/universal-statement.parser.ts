@@ -141,14 +141,57 @@ export class UniversalStatementParser {
         return { formato: 'CSV', transacoes: [], erros: ['Arquivo CSV vazio'] };
       }
 
-      // Detecção de delimitador com base no cabeçalho
+      // Detecção da primeira linha com delimitadores para avaliar estrutura tabular
       const primeiroLinha = linhas[0];
-      const countPontoEVirgula = (primeiroLinha.match(/;/g) || []).length;
-      const countVirgula = (primeiroLinha.match(/,/g) || []).length;
-      const countTab = (primeiroLinha.match(/\t/g) || []).length;
+      const countPontoEVirgulaPrimeira = (primeiroLinha.match(/;/g) || []).length;
+      const countVirgulaPrimeira = (primeiroLinha.match(/,/g) || []).length;
+      const countTabPrimeira = (primeiroLinha.match(/\t/g) || []).length;
 
-      // Um CSV estruturado bancário DEVE conter colunas separadas por delimitador
-      if (countPontoEVirgula === 0 && countVirgula === 0 && countTab === 0) {
+      // Varredura inteligente das primeiras 15 linhas para encontrar a linha do cabeçalho
+      let linhaCabecalhoIdx = -1;
+      let delimitador = ';';
+      let idxData = -1;
+      let idxDesc = -1;
+      let idxValor = -1;
+
+      const maxScan = Math.min(linhas.length, 15);
+      for (let i = 0; i < maxScan; i++) {
+        const linhaCandidata = linhas[i];
+        const countPontoEVirgula = (linhaCandidata.match(/;/g) || []).length;
+        const countVirgula = (linhaCandidata.match(/,/g) || []).length;
+        const countTab = (linhaCandidata.match(/\t/g) || []).length;
+
+        if (countPontoEVirgula === 0 && countVirgula === 0 && countTab === 0) {
+          continue;
+        }
+
+        let candDelim = ';';
+        if (countTab > countPontoEVirgula && countTab > countVirgula) {
+          candDelim = '\t';
+        } else if (countVirgula > countPontoEVirgula) {
+          candDelim = ',';
+        }
+
+        const colunas = linhaCandidata
+          .split(candDelim)
+          .map((col) => col.replace(/["']/g, '').trim().toLowerCase());
+
+        const cData = colunas.findIndex((c) => /^(data|date|dt|data\s+movimento|data\s+lan[cç]amento)$/i.test(c) || /\b(data|date|dt)\b/i.test(c));
+        const cDesc = colunas.findIndex((c) => /^(descri[cç][aã]o|historico|hist[oó]rico|memo|detalhe|lan[cç]amento)$/i.test(c) || /\b(descri[cç][aã]o|historico|hist[oó]rico|memo)\b/i.test(c));
+        const cValor = colunas.findIndex((c) => /^(valor|value|amount|quantia|valor\s+r\$)$/i.test(c) || /\b(valor|value|amount|quantia)\b/i.test(c));
+
+        if (cData >= 0 && cValor >= 0 && cData !== cValor && colunas.length >= 2) {
+          linhaCabecalhoIdx = i;
+          delimitador = candDelim;
+          idxData = cData;
+          idxDesc = cDesc;
+          idxValor = cValor;
+          break;
+        }
+      }
+
+      // Se não encontrou cabeçalho e a primeira linha não tinha delimitador tabular estrutural, retorna erro de delimitador
+      if (countPontoEVirgulaPrimeira === 0 && countVirgulaPrimeira === 0 && countTabPrimeira === 0 && linhaCabecalhoIdx < 0) {
         return {
           formato: 'CSV',
           transacoes: [],
@@ -156,24 +199,8 @@ export class UniversalStatementParser {
         };
       }
 
-      let delimitador = ';';
-      if (countTab > countPontoEVirgula && countTab > countVirgula) {
-        delimitador = '\t';
-      } else if (countVirgula > countPontoEVirgula) {
-        delimitador = ',';
-      }
-
-      // Identificar colunas do cabeçalho
-      const cabecalho = primeiroLinha
-        .split(delimitador)
-        .map((col) => col.replace(/["']/g, '').trim().toLowerCase());
-
-      const idxData = cabecalho.findIndex((c) => /^(data|date|dt|data\s+movimento|data\s+lan[cç]amento)$/i.test(c) || /\b(data|date|dt)\b/i.test(c));
-      const idxDesc = cabecalho.findIndex((c) => /^(descri[cç][aã]o|historico|hist[oó]rico|memo|detalhe|lan[cç]amento)$/i.test(c) || /\b(descri[cç][aã]o|historico|hist[oó]rico|memo)\b/i.test(c));
-      const idxValor = cabecalho.findIndex((c) => /^(valor|value|amount|quantia|valor\s+r\$)$/i.test(c) || /\b(valor|value|amount|quantia)\b/i.test(c));
-
       // Rigor estrito: CSV bancário DEVE possuir cabeçalho reconhecível com data e valor em colunas distintas
-      if (idxData < 0 || idxValor < 0 || idxData === idxValor || cabecalho.length < 2) {
+      if (linhaCabecalhoIdx < 0 || idxData < 0 || idxValor < 0 || idxData === idxValor) {
         return {
           formato: 'CSV',
           transacoes: [],
@@ -181,7 +208,7 @@ export class UniversalStatementParser {
         };
       }
 
-      const startIdx = 1;
+      const startIdx = linhaCabecalhoIdx + 1;
       const colData = idxData;
       const colDesc = idxDesc >= 0 ? idxDesc : (idxData === 0 ? 1 : 0);
       const colValor = idxValor;

@@ -6,6 +6,8 @@ export interface ImportacaoLoteRecepcionadoEvent {
   totalArquivos: number;
   caminhoDiretorio: string;
   recepcionadoEm: Date;
+  provedorIa?: string;
+  modeloIa?: string;
 }
 
 export interface ImportacaoArquivoProgressoEvent {

@@ -348,4 +348,275 @@ describe('Motor de Movimentos e Anti-Dupla Contagem (TASK-05)', () => {
     expect(bodyBusca.movimentos.length).toBe(1);
     expect(bodyBusca.movimentos[0].descricao).toBe('Farmácia Droga Raia');
   });
+
+  describe('Rateio Analítico de Categorias / Transaction Splitting (TASK-39)', () => {
+    let catSaudeId: string;
+    let catTransporteId: string;
+    let movParaSplitId: string;
+
+    beforeAll(async () => {
+      // Buscar categorias existentes do seed POF (21 categorias padrão)
+      const todasCategorias = await prisma.categoria.findMany({
+        where: { categoriaPaiId: null, usuarioId: null },
+      });
+      categoriaAlimentacaoId = todasCategorias.find((c) => /alim/i.test(c.nome))?.id || todasCategorias[0].id;
+      catSaudeId = todasCategorias.find((c) => /saud/i.test(c.nome))?.id || todasCategorias[1].id;
+      catTransporteId = todasCategorias.find((c) => /transp/i.test(c.nome))?.id || todasCategorias[2].id;
+
+      // Criar lançamento base de R$ 300,00 para rateio
+      const respMov = await app.inject({
+        method: 'POST',
+        url: '/api/movimentos',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          contaId: contaCorrenteId,
+          categoriaId: categoriaAlimentacaoId,
+          dataMovimento: '2026-10-15',
+          descricao: 'Compras Hipermercado Carrefour',
+          valor: 300.0,
+          natureza: 'DESPESA',
+          status: 'CONCILIADO',
+        },
+      });
+      movParaSplitId = JSON.parse(respMov.body).movimento.id;
+    });
+
+    it('deve rejeitar rateio se a soma das fatias for diferente do valor total do movimento', async () => {
+      const resp = await app.inject({
+        method: 'POST',
+        url: `/api/movimentos/${movParaSplitId}/split`,
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          splits: [
+            { categoriaId: categoriaAlimentacaoId, valor: 150.0, descricao: 'Alimentação' },
+            { categoriaId: catSaudeId, valor: 100.0, descricao: 'Farmácia' },
+          ], // Total: 250 != 300
+        },
+      });
+
+      expect(resp.statusCode).toBe(400);
+      const body = JSON.parse(resp.body);
+      expect(body.message).toMatch(/soma dos valores/i);
+    });
+
+    it('deve rejeitar rateio se o movimento pertencer a outro usuário (isolamento multi-tenant)', async () => {
+      const resp = await app.inject({
+        method: 'POST',
+        url: `/api/movimentos/${movParaSplitId}/split`,
+        headers: { authorization: `Bearer ${tokenInvasor}` },
+        payload: {
+          splits: [
+            { categoriaId: categoriaAlimentacaoId, valor: 200.0 },
+            { categoriaId: catSaudeId, valor: 100.0 },
+          ],
+        },
+      });
+
+      expect(resp.statusCode).toBe(404);
+    });
+
+    it('deve desdobrar movimento com sucesso quando soma bater exatamente com valor original', async () => {
+      const resp = await app.inject({
+        method: 'POST',
+        url: `/api/movimentos/${movParaSplitId}/split`,
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          splits: [
+            { categoriaId: categoriaAlimentacaoId, valor: 180.5, descricao: 'Compras Alimentos' },
+            { categoriaId: catSaudeId, valor: 79.5, descricao: 'Medicamentos' },
+            { categoriaId: catTransporteId, valor: 40.0, descricao: 'Acessório para carro' },
+          ], // Total = 180.5 + 79.5 + 40 = 300.0
+        },
+      });
+
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.sucesso).toBe(true);
+      expect(body.rateios).toHaveLength(3);
+      expect(body.rateios[0].valor).toBe(180.5);
+      expect(body.rateios[1].valor).toBe(79.5);
+      expect(body.rateios[2].valor).toBe(40.0);
+    });
+
+    it('deve retornar os rateios aninhados no GET /api/movimentos', async () => {
+      const resp = await app.inject({
+        method: 'GET',
+        url: `/api/movimentos?busca=Carrefour`,
+        headers: { authorization: `Bearer ${tokenUser}` },
+      });
+
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      const mov = body.movimentos.find((m: any) => m.id === movParaSplitId);
+      expect(mov).toBeDefined();
+      expect(mov.rateios).toBeDefined();
+      expect(mov.rateios.length).toBe(3);
+    });
+
+    it('deve remover rateio e restaurar integridade simples via DELETE /api/movimentos/:id/split', async () => {
+      const resp = await app.inject({
+        method: 'DELETE',
+        url: `/api/movimentos/${movParaSplitId}/split`,
+        headers: { authorization: `Bearer ${tokenUser}` },
+      });
+
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.sucesso).toBe(true);
+
+      // Conferir no banco
+      const countRateios = await prisma.movimentoRateio.count({
+        where: { movimentoId: movParaSplitId },
+      });
+      expect(countRateios).toBe(0);
+    });
+  });
+
+  describe('8. Propagação de Categoria por Vendedor / Estabelecimento (TASK-42)', () => {
+    let movA1Id: string;
+    let movA2Id: string;
+    let movA3Id: string;
+    let movBId: string; // Outro usuário para garantir multi-tenant
+    let categoriaDestinoId: string;
+
+    beforeAll(async () => {
+      // Obter uma categoria válida diferente da de alimentação
+      const cat = await prisma.categoria.findFirst({
+        where: { id: { not: categoriaAlimentacaoId } },
+      });
+      categoriaDestinoId = cat?.id || categoriaAlimentacaoId;
+
+      // Cria 3 compras com descrições variantes do mesmo comerciante para tokenUser
+      const mov1 = await prisma.movimento.create({
+        data: {
+          usuarioId: userId,
+          contaId: contaCorrenteId,
+          dataMovimento: new Date('2026-08-01T00:00:00.000Z'),
+          competencia: '2026-08',
+          descricao: 'Compra no débito - BARRACA DO JULIO',
+          valor: 10.0,
+          natureza: 'DESPESA',
+          categoriaId: null,
+        },
+      });
+      movA1Id = mov1.id;
+
+      const mov2 = await prisma.movimento.create({
+        data: {
+          usuarioId: userId,
+          contaId: contaCorrenteId,
+          dataMovimento: new Date('2026-08-15T00:00:00.000Z'),
+          competencia: '2026-08',
+          descricao: 'Barraca Do Julio Vila Velha Bra',
+          valor: 10.0,
+          natureza: 'DESPESA',
+          categoriaId: null,
+        },
+      });
+      movA2Id = mov2.id;
+
+      const mov3 = await prisma.movimento.create({
+        data: {
+          usuarioId: userId,
+          contaId: contaCorrenteId,
+          dataMovimento: new Date('2026-08-22T00:00:00.000Z'),
+          competencia: '2026-08',
+          descricao: 'Compra no débito - BARRACA DO JULIO I',
+          valor: 10.0,
+          natureza: 'DESPESA',
+          categoriaId: null,
+        },
+      });
+      movA3Id = mov3.id;
+
+      // Cria conta para o usuário invasor
+      const contaInvasor = await prisma.conta.create({
+        data: {
+          usuarioId: invasorId,
+          nome: 'Conta Invasor',
+          tipo: 'CONTA_CORRENTE',
+        },
+      });
+
+      // Movimento similar de outro usuário (não pode ser alterado)
+      const movOutro = await prisma.movimento.create({
+        data: {
+          usuarioId: invasorId,
+          contaId: contaInvasor.id,
+          dataMovimento: new Date('2026-08-05T00:00:00.000Z'),
+          competencia: '2026-08',
+          descricao: 'Compra no débito - BARRACA DO JULIO',
+          valor: 10.0,
+          natureza: 'DESPESA',
+          categoriaId: null,
+        },
+      });
+      movBId = movOutro.id;
+    });
+
+    it('deve retornar quantidade de similares e termo vendedor via GET /:id/similares-vendedor', async () => {
+      const resp = await app.inject({
+        method: 'GET',
+        url: `/api/movimentos/${movA1Id}/similares-vendedor`,
+        headers: { authorization: `Bearer ${tokenUser}` },
+      });
+
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.termoVendedor).toBe('BARRACA DO JULIO');
+      expect(body.totalSimilares).toBe(2); // movA2 e movA3
+    });
+
+    it('deve atualizar categoria pontual sem propagar quando propagarMesmoVendedor for false', async () => {
+      const resp = await app.inject({
+        method: 'PUT',
+        url: `/api/movimentos/${movA1Id}`,
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          categoriaId: categoriaAlimentacaoId,
+          propagarMesmoVendedor: false,
+        },
+      });
+
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.totalPropagados).toBe(0);
+
+      // Confere que movA2 permanece nulo
+      const mov2 = await prisma.movimento.findUnique({ where: { id: movA2Id } });
+      expect(mov2?.categoriaId).toBeNull();
+    });
+
+    it('deve atualizar e propagar categoria para todos os similares do usuário preservando multi-tenant', async () => {
+      const resp = await app.inject({
+        method: 'PUT',
+        url: `/api/movimentos/${movA1Id}`,
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          categoriaId: categoriaDestinoId,
+          propagarMesmoVendedor: true,
+        },
+      });
+
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.totalPropagados).toBe(2);
+      expect(body.termoVendedor).toBe('BARRACA DO JULIO');
+
+      // Confere que movA1, movA2 e movA3 foram atualizados para categoriaDestinoId
+      const [m1, m2, m3] = await Promise.all([
+        prisma.movimento.findUnique({ where: { id: movA1Id } }),
+        prisma.movimento.findUnique({ where: { id: movA2Id } }),
+        prisma.movimento.findUnique({ where: { id: movA3Id } }),
+      ]);
+      expect(m1?.categoriaId).toBe(categoriaDestinoId);
+      expect(m2?.categoriaId).toBe(categoriaDestinoId);
+      expect(m3?.categoriaId).toBe(categoriaDestinoId);
+
+      // Garante que o movimento do outro usuário NUNCA foi alterado
+      const mOutro = await prisma.movimento.findUnique({ where: { id: movBId } });
+      expect(mOutro?.categoriaId).toBeNull();
+    });
+  });
 });
+

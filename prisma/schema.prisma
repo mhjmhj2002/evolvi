@@ -74,6 +74,7 @@ model Usuario {
   role             RoleUsuario @default(USER)
   rendaBaseMensal  Decimal     @default(0.00) @map("renda_base_mensal") @db.Decimal(12, 2)
   faseAtual        Int         @default(1) @map("fase_atual")
+  versaoRegrasMovimentos Int   @default(1) @map("versao_regras_movimentos")
   criadoEm         DateTime    @default(now()) @map("criado_em") @db.Timestamptz(6)
   atualizadoEm     DateTime    @default(now()) @updatedAt @map("atualizado_em") @db.Timestamptz(6)
 
@@ -88,6 +89,8 @@ model Usuario {
   configuracoesIa  ConfiguracaoIaUsuario[]
   dadosBrutosOpenFinance DadoBrutoOpenFinance[]
   lotesImportacao  LoteImportacao[]
+  historicoImportacaoArquivos HistoricoImportacaoArquivo[]
+  alertasConciliacao AlertaConciliacao[]
 
   @@map("usuarios")
 }
@@ -124,19 +127,22 @@ model ConfiguracaoUsuario {
 }
 
 model Conta {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  usuarioId     String    @map("usuario_id") @db.Uuid
-  nome          String    @db.VarChar(100)
-  tipo          TipoConta
-  diaFechamento Int?      @map("dia_fechamento")
-  diaVencimento Int?      @map("dia_vencimento")
-  saldoInicial  Decimal   @default(0.00) @map("saldo_inicial") @db.Decimal(12, 2)
-  ativo         Boolean   @default(true)
-  criadoEm      DateTime  @default(now()) @map("criado_em") @db.Timestamptz(6)
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId           String    @map("usuario_id") @db.Uuid
+  nome                String    @db.VarChar(100)
+  tipo                TipoConta
+  diaFechamento       Int?      @map("dia_fechamento")
+  diaVencimento       Int?      @map("dia_vencimento")
+  saldoInicial        Decimal   @default(0.00) @map("saldo_inicial") @db.Decimal(12, 2)
+  ativo               Boolean   @default(true)
+  monitorarConciliacao Boolean  @default(true) @map("monitorar_conciliacao")
+  criadoEm            DateTime  @default(now()) @map("criado_em") @db.Timestamptz(6)
 
-  usuario       Usuario   @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
-  movimentos    Movimento[]
-  parcelamentos Parcelamento[]
+  usuario             Usuario   @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  movimentos          Movimento[]
+  parcelamentos       Parcelamento[]
+  historicoArquivos   HistoricoImportacaoArquivo[]
+  alertasConciliacao  AlertaConciliacao[]
 
   @@index([usuarioId], map: "idx_contas_usuario")
   @@map("contas")
@@ -157,6 +163,7 @@ model Categoria {
   categoriaPai            Categoria? @relation("CategoriaFilhas", fields: [categoriaPaiId], references: [id], onDelete: Restrict)
   subcategorias           Categoria[] @relation("CategoriaFilhas")
   movimentos              Movimento[]
+  rateios                 MovimentoRateio[]
   recorrencias            Recorrencia[]
   parcelamentos           Parcelamento[]
   metasZeroAZero          MetaZeroAZero[]
@@ -177,9 +184,11 @@ model Movimento {
   natureza               NaturezaMovimento
   status                 StatusMovimento    @default(CONCILIADO)
   chaveDedupe            String?            @map("chave_dedupe") @db.VarChar(255)
+  idOrigem               String?            @map("id_origem") @db.VarChar(255)
   transferenciaVinculoId String?            @map("transferencia_vinculo_id") @db.Uuid
   observacao             String?            @db.Text
   origemDocumento        String?            @map("origem_documento") @db.VarChar(255)
+  categoriaFixadaPeloUsuario Boolean        @default(false) @map("categoria_fixada_usuario")
   criadoEm               DateTime           @default(now()) @map("criado_em") @db.Timestamptz(6)
 
   usuario                Usuario            @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
@@ -187,11 +196,31 @@ model Movimento {
   categoria              Categoria?         @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
   transferenciaVinculo   Movimento?         @relation("TransferenciaRel", fields: [transferenciaVinculoId], references: [id], onDelete: SetNull)
   movimentosVinculados   Movimento[]        @relation("TransferenciaRel")
+  rateios                MovimentoRateio[]
 
+  @@unique([usuarioId, chaveDedupe], map: "uq_movimentos_usuario_chave_dedupe")
   @@index([usuarioId, competencia], map: "idx_movimentos_usuario_competencia")
   @@index([chaveDedupe], map: "idx_movimentos_chave_dedupe")
   @@index([categoriaId], map: "idx_movimentos_categoria")
+  @@index([usuarioId, categoriaFixadaPeloUsuario], map: "idx_movimentos_usuario_fixada")
   @@map("movimentos")
+}
+
+model MovimentoRateio {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  movimentoId  String    @map("movimento_id") @db.Uuid
+  categoriaId  String    @map("categoria_id") @db.Uuid
+  valor        Decimal   @db.Decimal(12, 2)
+  descricao    String?   @db.VarChar(255)
+  criadoEm     DateTime  @default(now()) @map("criado_em") @db.Timestamptz(6)
+  atualizadoEm DateTime  @default(now()) @updatedAt @map("atualizado_em") @db.Timestamptz(6)
+
+  movimento    Movimento @relation(fields: [movimentoId], references: [id], onDelete: Cascade)
+  categoria    Categoria @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+
+  @@index([movimentoId], map: "idx_movimentos_rateio_movimento")
+  @@index([categoriaId], map: "idx_movimentos_rateio_categoria")
+  @@map("movimentos_rateio")
 }
 
 model Recorrencia {
@@ -393,6 +422,7 @@ model ArquivoImportacao {
 
   lote                LoteImportacao          @relation(fields: [loteId], references: [id], onDelete: Cascade)
   stagingLancamentos  StagingLancamentoImportacao[]
+  historico           HistoricoImportacaoArquivo?
 
   @@index([loteId, status], map: "idx_arquivos_lote_status")
   @@map("arquivos_importacao")
@@ -412,6 +442,7 @@ model StagingLancamentoImportacao {
   categoriaSugerida    String?                 @map("categoria_sugerida") @db.VarChar(100)
   parcelaAtual         Int?                    @map("parcela_atual")
   totalParcelas        Int?                    @map("total_parcelas")
+  idOrigem             String?                 @map("id_origem") @db.VarChar(255)
   observacao           String?                 @db.Text
   statusProcessamento  StatusStagingLancamento @default(PENDENTE) @map("status_processamento")
   criadoEm             DateTime                @default(now()) @map("criado_em") @db.Timestamptz(6)
@@ -423,5 +454,76 @@ model StagingLancamentoImportacao {
   @@index([arquivoId], map: "idx_staging_arquivo")
   @@map("staging_lancamentos_importacao")
 }
+
+enum TipoDocumentoImportado {
+  FATURA_CARTAO
+  EXTRATO_CONTA_CORRENTE
+  EXTRATO_INVESTIMENTO
+  OUTRO
+
+  @@map("tipo_documento_importado")
+}
+
+enum TipoAlertaConciliacao {
+  FATURA_NAO_IMPORTADA
+  EXTRATO_LACUNA_TEMPORAL
+  CONFLITO_SALDO
+
+  @@map("tipo_alerta_conciliacao")
+}
+
+enum StatusAlertaConciliacao {
+  PENDENTE
+  RESOLVIDO
+  DISPENSADO
+
+  @@map("status_alerta_conciliacao")
+}
+
+model HistoricoImportacaoArquivo {
+  id               String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId        String                 @map("usuario_id") @db.Uuid
+  arquivoId        String                 @unique @map("arquivo_id") @db.Uuid
+  contaId          String?                @map("conta_id") @db.Uuid
+  tipoDocumento    TipoDocumentoImportado @default(OUTRO) @map("tipo_documento")
+  instituicao      String                 @db.VarChar(100)
+  competencia      String                 @db.VarChar(7)
+  dataVencimento   DateTime?              @map("data_vencimento") @db.Date
+  periodoInicio    DateTime?              @map("periodo_inicio") @db.Date
+  periodoFim       DateTime?              @map("periodo_fim") @db.Date
+  totalTransacoes  Int                    @default(0) @map("total_transacoes")
+  valorTotal       Decimal                @default(0.00) @map("valor_total") @db.Decimal(12, 2)
+  criadoEm         DateTime               @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  usuario          Usuario                @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  arquivo          ArquivoImportacao      @relation(fields: [arquivoId], references: [id], onDelete: Cascade)
+  conta            Conta?                 @relation(fields: [contaId], references: [id], onDelete: SetNull)
+
+  @@index([usuarioId, competencia], map: "idx_historico_importacao_usuario_comp")
+  @@index([usuarioId, contaId], map: "idx_historico_importacao_usuario_conta")
+  @@map("historico_importacao_arquivos")
+}
+
+model AlertaConciliacao {
+  id             String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  usuarioId      String                  @map("usuario_id") @db.Uuid
+  contaId        String?                 @map("conta_id") @db.Uuid
+  tipoAlerta     TipoAlertaConciliacao   @map("tipo_alerta")
+  titulo         String                  @db.VarChar(200)
+  descricao      String                  @db.Text
+  competencia    String                  @db.VarChar(7)
+  status         StatusAlertaConciliacao @default(PENDENTE)
+  motivoDispensa String?                 @map("motivo_dispensa") @db.VarChar(100)
+  criadoEm       DateTime                @default(now()) @map("criado_em") @db.Timestamptz(6)
+  resolvidoEm    DateTime?               @map("resolvido_em") @db.Timestamptz(6)
+
+  usuario        Usuario                 @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  conta          Conta?                  @relation(fields: [contaId], references: [id], onDelete: SetNull)
+
+  @@index([usuarioId, status], map: "idx_alertas_conciliacao_usuario_status")
+  @@index([usuarioId, contaId, competencia], map: "idx_alertas_conciliacao_usuario_conta_comp")
+  @@map("alertas_conciliacao")
+}
+
 
 

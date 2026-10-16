@@ -219,7 +219,7 @@ export class HistoricoConsumoService {
       }
     }
 
-    // Buscar despesas conciliadas nos meses fechados
+    // Buscar despesas conciliadas nos meses fechados (incluindo possíveis rateios)
     const despesasFechadas = await prisma.movimento.findMany({
       where: {
         usuarioId,
@@ -228,12 +228,19 @@ export class HistoricoConsumoService {
         natureza: 'DESPESA',
       },
       select: {
+        id: true,
         categoriaId: true,
         valor: true,
+        rateios: {
+          select: {
+            categoriaId: true,
+            valor: true,
+          },
+        },
       },
     });
 
-    // Buscar despesas no mês aberto para comparativo
+    // Buscar despesas no mês aberto para comparativo (incluindo possíveis rateios)
     const despesasMesAberto = await prisma.movimento.findMany({
       where: {
         usuarioId,
@@ -242,8 +249,15 @@ export class HistoricoConsumoService {
         natureza: 'DESPESA',
       },
       select: {
+        id: true,
         categoriaId: true,
         valor: true,
+        rateios: {
+          select: {
+            categoriaId: true,
+            valor: true,
+          },
+        },
       },
     });
 
@@ -263,32 +277,45 @@ export class HistoricoConsumoService {
       const val = Number(mov.valor);
       totalGeralPeriodo += val;
 
-      if (!mov.categoriaId) continue;
+      const fatias = mov.rateios && mov.rateios.length > 0
+        ? mov.rateios.map((r) => ({ categoriaId: r.categoriaId, valor: Number(r.valor) }))
+        : mov.categoriaId
+        ? [{ categoriaId: mov.categoriaId, valor: val }]
+        : [];
 
-      // Subcategoria direta
-      const subReg = totalPorSub.get(mov.categoriaId) || { total: 0, qtd: 0 };
-      subReg.total += val;
-      subReg.qtd += 1;
-      totalPorSub.set(mov.categoriaId, subReg);
+      for (const fatia of fatias) {
+        // Subcategoria direta
+        const subReg = totalPorSub.get(fatia.categoriaId) || { total: 0, qtd: 0 };
+        subReg.total += fatia.valor;
+        subReg.qtd += 1;
+        totalPorSub.set(fatia.categoriaId, subReg);
 
-      // Categoria raiz
-      const cat = catMap.get(mov.categoriaId);
-      const raizId = cat ? (cat.categoriaPaiId ? cat.categoriaPaiId : cat.id) : null;
-      if (raizId && totalPorRaiz.has(raizId)) {
-        const raizReg = totalPorRaiz.get(raizId)!;
-        raizReg.total += val;
-        raizReg.qtd += 1;
+        // Categoria raiz
+        const cat = catMap.get(fatia.categoriaId);
+        const raizId = cat ? (cat.categoriaPaiId ? cat.categoriaPaiId : cat.id) : null;
+        if (raizId && totalPorRaiz.has(raizId)) {
+          const raizReg = totalPorRaiz.get(raizId)!;
+          raizReg.total += fatia.valor;
+          raizReg.qtd += 1;
+        }
       }
     }
 
     // Acumular mês aberto
     for (const mov of despesasMesAberto) {
-      if (!mov.categoriaId) continue;
       const val = Number(mov.valor);
-      const cat = catMap.get(mov.categoriaId);
-      const raizId = cat ? (cat.categoriaPaiId ? cat.categoriaPaiId : cat.id) : null;
-      if (raizId && totalAbertoPorRaiz.has(raizId)) {
-        totalAbertoPorRaiz.set(raizId, totalAbertoPorRaiz.get(raizId)! + val);
+      const fatias = mov.rateios && mov.rateios.length > 0
+        ? mov.rateios.map((r) => ({ categoriaId: r.categoriaId, valor: Number(r.valor) }))
+        : mov.categoriaId
+        ? [{ categoriaId: mov.categoriaId, valor: val }]
+        : [];
+
+      for (const fatia of fatias) {
+        const cat = catMap.get(fatia.categoriaId);
+        const raizId = cat ? (cat.categoriaPaiId ? cat.categoriaPaiId : cat.id) : null;
+        if (raizId && totalAbertoPorRaiz.has(raizId)) {
+          totalAbertoPorRaiz.set(raizId, totalAbertoPorRaiz.get(raizId)! + fatia.valor);
+        }
       }
     }
 

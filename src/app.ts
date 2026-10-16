@@ -3,11 +3,16 @@ import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import jwt from '@fastify/jwt';
 import { env } from './config/env.js';
+import { formatLogTimestamp } from './infrastructure/logger/logger.js';
 
 export async function buildApp() {
   const app = Fastify({
     logger: {
       level: env.NODE_ENV === 'production' ? 'info' : 'debug',
+      base: {
+        app: 'evolvi-backend',
+      },
+      timestamp: () => `,"time":"${formatLogTimestamp()}"`,
     },
   });
 

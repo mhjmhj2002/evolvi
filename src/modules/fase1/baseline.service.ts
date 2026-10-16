@@ -114,7 +114,7 @@ export class BaselineService {
       }
     }
 
-    // Buscar despesas conciliadas do usuário nos meses da janela N=6
+    // Buscar despesas conciliadas do usuário nos meses da janela N=6 (incluindo possíveis rateios analíticos)
     const movimentosDespesa = await prisma.movimento.findMany({
       where: {
         usuarioId,
@@ -123,8 +123,15 @@ export class BaselineService {
         status: 'CONCILIADO',
       },
       select: {
+        id: true,
         categoriaId: true,
         valor: true,
+        rateios: {
+          select: {
+            categoriaId: true,
+            valor: true,
+          },
+        },
       },
     });
 
@@ -136,15 +143,27 @@ export class BaselineService {
 
     let totalPeriodo = 0;
     for (const mov of movimentosDespesa) {
-      const valor = Number(mov.valor);
-      totalPeriodo += valor;
+      const valorTotalMov = Number(mov.valor);
+      totalPeriodo += valorTotalMov;
 
-      if (mov.categoriaId) {
+      // Se houver rateios definidos para o movimento, acumulamos pelas categorias dos splits
+      if (mov.rateios && mov.rateios.length > 0) {
+        for (const rat of mov.rateios) {
+          const valSplit = Number(rat.valor);
+          const raizId = subParaRaizMap.get(rat.categoriaId);
+          if (raizId && totalPorCategoriaRaiz.has(raizId)) {
+            totalPorCategoriaRaiz.set(
+              raizId,
+              (totalPorCategoriaRaiz.get(raizId) || 0) + valSplit
+            );
+          }
+        }
+      } else if (mov.categoriaId) {
         const raizId = subParaRaizMap.get(mov.categoriaId);
         if (raizId && totalPorCategoriaRaiz.has(raizId)) {
           totalPorCategoriaRaiz.set(
             raizId,
-            (totalPorCategoriaRaiz.get(raizId) || 0) + valor
+            (totalPorCategoriaRaiz.get(raizId) || 0) + valorTotalMov
           );
         }
       }

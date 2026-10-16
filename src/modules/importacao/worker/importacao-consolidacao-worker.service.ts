@@ -5,6 +5,7 @@ import {
   ImportacaoArquivoStagingCarregadoEvent,
 } from '../../../infrastructure/events/importacao-event-bus.js';
 import { gerarChaveDedupe } from '../../movimento/movimento.util.js';
+import { classificadorCombinatorioService } from '../../movimento/classificador-combinatorio.service.js';
 
 export interface ConsolidacaoLoteResultado {
   loteId: string;
@@ -21,6 +22,8 @@ export interface ConsolidacaoLoteResultado {
 export class ImportacaoConsolidacaoWorkerService {
   private isListeningEvents: boolean = false;
   private boundListener?: (event: ImportacaoArquivoStagingCarregadoEvent) => void;
+  // Mutex / Lock de fila serializada por loteId para eliminar concorrência
+  private locksPorLote: Map<string, Promise<any>> = new Map();
 
   constructor(autoListen: boolean = false) {
     if (autoListen) {
@@ -149,13 +152,16 @@ export class ImportacaoConsolidacaoWorkerService {
     }
 
     const nomeBusca = categoriaSugerida.trim();
+    const nomeSemAcento = nomeBusca.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
-    // 1. Busca exata insensível a maiúsculas
+    // 1. Busca exata insensível a maiúsculas (com e sem acento)
     let categoria = await prisma.categoria.findFirst({
       where: {
         OR: [
           { usuarioId, nome: { equals: nomeBusca, mode: 'insensitive' } },
           { usuarioId: null, nome: { equals: nomeBusca, mode: 'insensitive' } },
+          { usuarioId, nome: { equals: nomeSemAcento, mode: 'insensitive' } },
+          { usuarioId: null, nome: { equals: nomeSemAcento, mode: 'insensitive' } },
         ],
       },
     });
@@ -170,6 +176,8 @@ export class ImportacaoConsolidacaoWorkerService {
         OR: [
           { usuarioId, nome: { contains: nomeBusca, mode: 'insensitive' } },
           { usuarioId: null, nome: { contains: nomeBusca, mode: 'insensitive' } },
+          { usuarioId, nome: { contains: nomeSemAcento, mode: 'insensitive' } },
+          { usuarioId: null, nome: { contains: nomeSemAcento, mode: 'insensitive' } },
         ],
       },
     });
@@ -179,8 +187,31 @@ export class ImportacaoConsolidacaoWorkerService {
 
   /**
    * Consolida todos os lançamentos em Staging com status PENDENTE de um lote.
+   * Utiliza fila serializada por loteId para impedir race conditions de arquivos do mesmo lote.
    */
   public async consolidarLote(
+    loteId: string,
+    usuarioIdEsperado?: string
+  ): Promise<ConsolidacaoLoteResultado> {
+    const lockAnterior = this.locksPorLote.get(loteId) || Promise.resolve();
+
+    const operacaoAtual = (async () => {
+      await lockAnterior.catch(() => {});
+      return this.executarConsolidacaoLoteInterno(loteId, usuarioIdEsperado);
+    })();
+
+    this.locksPorLote.set(loteId, operacaoAtual);
+
+    try {
+      return await operacaoAtual;
+    } finally {
+      if (this.locksPorLote.get(loteId) === operacaoAtual) {
+        this.locksPorLote.delete(loteId);
+      }
+    }
+  }
+
+  private async executarConsolidacaoLoteInterno(
     loteId: string,
     usuarioIdEsperado?: string
   ): Promise<ConsolidacaoLoteResultado> {
@@ -188,6 +219,9 @@ export class ImportacaoConsolidacaoWorkerService {
       where: { id: loteId },
       include: {
         arquivos: true,
+        usuario: {
+          select: { id: true, nome: true },
+        },
       },
     });
 
@@ -256,12 +290,13 @@ export class ImportacaoConsolidacaoWorkerService {
         const competencia = dataMovimentoStr.substring(0, 7);
         const valorNum = Number(item.valor);
 
-        // 1. Chave Dedupe determinística
+        // 1. Chave Dedupe determinística estruturada (com idOrigem se disponível)
         const chaveDedupe = gerarChaveDedupe({
           contaId: contaInfo.id,
           dataMovimento: dataMovimentoStr,
           valor: valorNum,
           descricao: item.descricao,
+          idOrigem: item.idOrigem,
         });
 
         // Verificar duplicata no banco de movimentos oficiais
@@ -301,44 +336,155 @@ export class ImportacaoConsolidacaoWorkerService {
           continue;
         }
 
-        // 2. Regra Anti-Dupla Contagem: pagamento de fatura vira TRANSFERENCIA_PROPRIA
+        // BUG-13: Se o item for em conta de cartão de crédito e corresponder a quitação/pagamento recebido,
+        // ele é puramente compensatório/informativo na fatura e deve ser ignorado para não duplicar com o débito da conta corrente
+        const isQuitacaoEmCartao =
+          item.tipoConta === 'CARTAO_CREDITO' &&
+          (/pag(amento)?\s*(de)?\s*(fat(ura)?|cart[aã]o)|pagamento\s*recebido|cr[eé]dito\s*pagamento/i.test(
+            item.descricao
+          ) ||
+            /informativ[ao]\s*de\s*quita[cç][aã]o/i.test(item.observacao || ''));
+
+        if (isQuitacaoEmCartao) {
+          resultado.duplicadasIgnoradas++;
+
+          await prisma.stagingLancamentoImportacao.update({
+            where: { id: item.id },
+            data: {
+              statusProcessamento: 'IGNORADO',
+              observacao: 'Linha informativa de pagamento em fatura de cartão (ignorado para evitar redundância)',
+            },
+          });
+
+          continue;
+        }
+
+        // 2. Regra Anti-Dupla Contagem (Anti-Inflação): pagamento de fatura, PIX/TED próprio e resgates viram TRANSFERENCIA_PROPRIA
         let naturezaFinal = item.natureza;
         let isPagamentoFaturaConvertido = false;
-        if (
+        const descUpper = item.descricao.toUpperCase();
+
+        const isPagamentoFatura =
           /pag(amento)?\s*(de)?\s*fat(ura)?|fatura\s*cart[aã]o|debito\s*automatico\s*fatura/i.test(
             item.descricao
-          )
-        ) {
+          );
+
+        const isResgateInvestimento =
+          /resgate\s*(de)?\s*(cdb|poupanc|investimento|rdb|lci|lca|tesouro)/i.test(
+            item.descricao
+          );
+
+        // Regra Universal de Proventos, Salários e PLR:
+        // Expressões padronizadas bancárias de crédito de folha, conta salário ou PLR
+        // prevalecem SEMPRE como RECEITA, mesmo que o nome do titular conste na TED/crédito
+        const isSalarioOuPlr =
+          /ted\s*conta\s*sal[aá]rio|cred\s*(ted\s*)?sal[aá]rio|folha\s*pag(amento)?|remunera[cç][aã]o|pagamento\s*de\s*sal[aá]rio|(?:\b|^)plr(?:\b|$)|participa[cç][aã]o\s*lucros|b[oô]nus\s*salarial|abono\s*salarial|13[oº]?\s*sal[aá]rio|sal[aá]rio\s*mensal/i.test(
+            item.descricao
+          );
+
+        // Verifica se a descrição de entrada contém o nome do titular cadastrado
+        let isTransferenciaPropriaTitular = false;
+        const nomeTitular = lote.usuario?.nome;
+        if (nomeTitular) {
+          const partesNome = nomeTitular
+            .trim()
+            .split(/\s+/)
+            .filter((p) => p.length >= 3);
+          const containsNomeCompleto = descUpper.includes(nomeTitular.toUpperCase());
+          const containsPartesSignificativas =
+            partesNome.length >= 2 &&
+            partesNome.every((p) => descUpper.includes(p.toUpperCase()));
+
+          if (containsNomeCompleto || containsPartesSignificativas) {
+            isTransferenciaPropriaTitular = true;
+          }
+        }
+
+        if (isSalarioOuPlr) {
+          // Prevalência absoluta de salário/PLR: SEMPRE RECEITA operacional
+          naturezaFinal = 'RECEITA';
+        } else if (isPagamentoFatura) {
           naturezaFinal = 'TRANSFERENCIA_PROPRIA';
           isPagamentoFaturaConvertido = true;
           resultado.pagamentosFaturaConvertidos++;
+        } else if (isResgateInvestimento) {
+          naturezaFinal = 'TRANSFERENCIA_PROPRIA';
+        } else if (isTransferenciaPropriaTitular) {
+          naturezaFinal = 'TRANSFERENCIA_PROPRIA';
         }
 
-        // 3. Resolução de Categoria POF
+        // 3. Resolução de Categoria POF (com suporte a Inteligência Combinatória TASK-43)
+        let categoriaParaBuscar = item.categoriaSugerida;
+        const inferenciaComb = classificadorCombinatorioService.inferirCategoria(
+          item.descricao,
+          item.dataMovimento,
+          valorNum
+        );
+        if (inferenciaComb && inferenciaComb.confianca >= 0.90) {
+          categoriaParaBuscar = inferenciaComb.categoriaSugerida;
+        }
+
         const categoriaId = await this.resolverCategoriaPof(
           lote.usuarioId,
-          item.categoriaSugerida
+          categoriaParaBuscar
         );
 
-        // 4. Inserção Atômica do Movimento Oficial
-        const novoMovimento = await prisma.movimento.create({
-          data: {
-            usuarioId: lote.usuarioId,
-            contaId: contaInfo.id,
-            categoriaId,
-            dataMovimento: item.dataMovimento,
-            competencia,
-            descricao: item.descricao,
-            valor: valorNum,
-            natureza: naturezaFinal,
-            status: 'CONCILIADO',
-            chaveDedupe,
-            origemDocumento: `IA_LOTE_${item.arquivoOrigem}`,
-            observacao: item.observacao || null,
-          },
-        });
+        // 4. Inserção Atômica do Movimento Oficial com tratamento de concorrência P2002
+        let novoMovimento: any;
+        try {
+          novoMovimento = await prisma.movimento.create({
+            data: {
+              usuarioId: lote.usuarioId,
+              contaId: contaInfo.id,
+              categoriaId,
+              dataMovimento: item.dataMovimento,
+              competencia,
+              descricao: item.descricao,
+              valor: valorNum,
+              natureza: naturezaFinal,
+              status: 'CONCILIADO',
+              chaveDedupe,
+              idOrigem: item.idOrigem || null,
+              origemDocumento: `IA_LOTE_${item.arquivoOrigem}`,
+              observacao: item.observacao || null,
+            },
+          });
 
-        resultado.novosMovimentosInseridos++;
+          resultado.novosMovimentosInseridos++;
+        } catch (createErr: any) {
+          if (createErr?.code === 'P2002') {
+            // Concorrência interceptada pela constraint UNIQUE do banco
+            resultado.duplicadasIgnoradas++;
+
+            await prisma.stagingLancamentoImportacao.update({
+              where: { id: item.id },
+              data: { statusProcessamento: 'IGNORADO' },
+            });
+
+            const movSalvo = await prisma.movimento.findFirst({
+              where: { usuarioId: lote.usuarioId, chaveDedupe },
+            });
+
+            importacaoEventBus.emitTransacaoConsolidada({
+              loteId,
+              arquivoId: item.arquivoId,
+              arquivoOrigem: item.arquivoOrigem,
+              usuarioId: lote.usuarioId,
+              stagingId: item.id,
+              movimentoId: movSalvo?.id || 'duplicada',
+              dataMovimento: dataMovimentoStr,
+              descricao: item.descricao,
+              valor: valorNum,
+              natureza: item.natureza,
+              contaNome: contaInfo.nome,
+              duplicadaIgnorada: true,
+              timestamp: new Date(),
+            });
+
+            continue;
+          }
+          throw createErr;
+        }
 
         // 5. Suporte a Parcelamento se identificado parcelaAtual e totalParcelas
         if (
@@ -460,6 +606,21 @@ export class ImportacaoConsolidacaoWorkerService {
             mensagem: 'Lançamentos consolidados e integrados aos movimentos oficiais.',
             timestamp: new Date(),
           });
+
+          // TASK-41: Catalogar analiticamente no HistoricoImportacaoArquivo e verificar lacunas
+          try {
+            const { conciliacaoService } = await import('../conciliacao.service.js');
+            await conciliacaoService.catalogarArquivo({
+              usuarioId: lote.usuarioId,
+              arquivoId: arqAtual.id,
+              loteId,
+            });
+          } catch (errCatalog) {
+            console.error(
+              `[ImportacaoConsolidacaoWorker] Erro ao catalogar histórico do arquivo ${arqAtual.id}:`,
+              errCatalog
+            );
+          }
         }
       }
     }
