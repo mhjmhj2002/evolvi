@@ -151,3 +151,5 @@ vite.config.ts.timestamp-*
 
 .local
 uploads/
+# Se UPLOADS_DIR apontar para outro diretório relativo (ex.: storage/uploads), ignore-o também:
+# storage/uploads/

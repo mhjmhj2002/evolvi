@@ -71,6 +71,13 @@ export class HistoricoConsumoService {
       fechamentoMap.set(m, { despesas: 0, receitas: 0, qtd: 0 });
     }
 
+    // Buscar exclusões ativas de despesas para desconsiderar da média
+    const exclusoesAtivas = await prisma.exclusaoMovimentoMedia.findMany({
+      where: { usuarioId, ativo: true },
+      select: { movimentoId: true },
+    });
+    const idsExcluidosSet = new Set<string>(exclusoesAtivas.map((e) => e.movimentoId));
+
     let totalDespesas = 0;
     let totalReceitas = 0;
     let qtdDespesas = 0;
@@ -79,6 +86,9 @@ export class HistoricoConsumoService {
       const val = Number(mov.valor);
       const reg = fechamentoMap.get(mov.competencia);
       if (mov.natureza === 'DESPESA') {
+        if (idsExcluidosSet.has(mov.id)) {
+          continue;
+        }
         totalDespesas += val;
         qtdDespesas += 1;
         if (reg) {
@@ -273,7 +283,17 @@ export class HistoricoConsumoService {
       totalAbertoPorRaiz.set(raiz.id, 0);
     }
 
+    // Buscar exclusões ativas de despesas para desconsiderar da análise de categorias
+    const exclusoesAtivas = await prisma.exclusaoMovimentoMedia.findMany({
+      where: { usuarioId, ativo: true },
+      select: { movimentoId: true },
+    });
+    const idsExcluidosSet = new Set<string>(exclusoesAtivas.map((e) => e.movimentoId));
+
     for (const mov of despesasFechadas) {
+      if (idsExcluidosSet.has(mov.id)) {
+        continue;
+      }
       const val = Number(mov.valor);
       totalGeralPeriodo += val;
 

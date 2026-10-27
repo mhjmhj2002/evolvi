@@ -26,7 +26,7 @@ flowchart TD
 
     subgraph S2["2. Ingestão & Armazenamento (Backend)"]
         B1["⚙️ API de Upload<br/>(POST /api/importacao/upload)"]
-        B2["📁 Disco Temporário<br/>uploads/yyyy-mm-dd.../"]
+        B2["📁 Disco Temporário<br/>UPLOADS_DIR/usuarioId/lote/"]
         B3["📢 Barramento de Eventos<br/>(importacaoEventBus)"]
     end
 
@@ -168,10 +168,11 @@ sequenceDiagram
 ---
 
 ### 2. Ingestão e Armazenamento ([`ImportacaoStorageService`](../src/modules/importacao/importacao-storage.service.ts))
-- **Diretório seguro:** Arquivos salvos em pasta física isolada:
+- **Diretório seguro:** Arquivos salvos em pasta física isolada, com **uma subpasta por usuário**:
   ```
-  uploads/yyyy-mm-dd-hh-mm-ss-{usuarioId}/
+  {UPLOADS_DIR}/{usuarioId}/yyyy-mm-dd-hh-mm-ss-{usuarioId}/
   ```
+  `UPLOADS_DIR` vem da variável de ambiente homônima (padrão: `uploads`, relativo à raiz do projeto). O caminho persistido em `LoteImportacao.caminhoDiretorio` permanece **relativo** quando `UPLOADS_DIR` é relativo, e é resolvido pelos leitores via `path.resolve(process.cwd(), caminhoDiretorio)`.
 - **Sanitização de caminhos:** Bloqueio de *Path Traversal* (rejeição de `../` e paths absolutos).
 - **Rastreabilidade no Banco:** Criação atômica em `lotes_importacao` e `arquivos_importacao` com status inicial `RECEPCIONADO`.
 

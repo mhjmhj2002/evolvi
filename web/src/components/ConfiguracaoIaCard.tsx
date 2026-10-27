@@ -11,7 +11,13 @@ import {
   Server,
   RefreshCw,
 } from 'lucide-react';
-import { apiService, StatusIaResponse } from '../api.ts';
+import {
+  apiService,
+  StatusIaResponse,
+  ProvedorIa,
+  modeloPadraoDoProvedor,
+  nomeAmigavelDoProvedor,
+} from '../api.ts';
 
 interface ConfiguracaoIaCardProps {
   onChaveAtualizada?: (configurada: boolean) => void;
@@ -27,23 +33,31 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
   const [statusIa, setStatusIa] = useState<StatusIaResponse | null>(null);
 
   // Provedor selecionado
-  const [provedor, setProvedor] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | 'OPENROUTER'>('GEMINI');
-  const [modelo, setModelo] = useState('gemini-3.8-flash');
+  const [provedor, setProvedor] = useState<ProvedorIa>('GEMINI');
+  const [modelo, setModelo] = useState(modeloPadraoDoProvedor('GEMINI'));
   const [apiKey, setApiKey] = useState('');
   const [mostrarChave, setMostrarChave] = useState(false);
 
   // Ações de teste e salvamento
   const [testando, setTestando] = useState(false);
-  const [feedback, setFeedback] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(null);
-  const [guiaAberto, setGuiaAberto] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | 'OPENROUTER' | null>('GEMINI');
+  const [feedback, setFeedback] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(
+    null
+  );
+  const [guiaAberto, setGuiaAberto] = useState<ProvedorIa | null>('GEMINI');
 
   const carregarStatus = async () => {
     try {
       const res = await apiService.getStatusIa();
       setStatusIa(res);
 
-      const savedProvedor = (res.provedorAtivo as any) || (localStorage.getItem('evolvi_ia_byok_provedor') as any) || 'GEMINI';
-      const savedModelo = res.modeloPadrao || localStorage.getItem('evolvi_ia_byok_modelo') || 'gemini-3.8-flash';
+      const savedProvedor: ProvedorIa =
+        (res.provedorAtivo as ProvedorIa) ||
+        (localStorage.getItem('evolvi_ia_byok_provedor') as ProvedorIa) ||
+        'GEMINI';
+      const savedModelo =
+        res.modeloPadrao ||
+        localStorage.getItem('evolvi_ia_byok_modelo') ||
+        modeloPadraoDoProvedor(savedProvedor);
 
       setProvedor(savedProvedor);
       setModelo(savedModelo);
@@ -131,6 +145,22 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
   };
 
   const isConfigurada = Boolean(statusIa?.hasUserKey || statusIa?.hasEnvKey || apiKey.trim().length > 0);
+
+  // Catálogo de modelos do provedor selecionado (vindo de provedoresSuportados)
+  const infoProvedorSelecionado = statusIa?.provedoresSuportados?.find(p => p.id === provedor);
+  const modelosDoProvedor =
+    infoProvedorSelecionado?.modelos && infoProvedorSelecionado.modelos.length > 0
+      ? infoProvedorSelecionado.modelos
+      : [modeloPadraoDoProvedor(provedor)];
+  const modeloNoCatalogo = modelosDoProvedor.includes(modelo);
+
+  /** Troca de provedor mantendo o modelo padrão/do catálogo coerente. */
+  const selecionarProvedor = (novo: ProvedorIa) => {
+    setProvedor(novo);
+    const cfgExistente = statusIa?.configuracoes?.find(c => c.provedor === novo);
+    setModelo(cfgExistente?.modelo || modeloPadraoDoProvedor(novo));
+    setGuiaAberto(novo);
+  };
 
   return (
     <div className="login-card" style={{ maxWidth: '100%', margin: 0 }}>
@@ -297,9 +327,7 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
             type="button"
             className={`auth-tab-btn ${provedor === 'GEMINI' ? 'active' : ''}`}
             onClick={() => {
-              setProvedor('GEMINI');
-              setModelo('gemini-3.8-flash');
-              setGuiaAberto('GEMINI');
+              selecionarProvedor('GEMINI');
             }}
             style={{
               padding: '10px 14px',
@@ -329,9 +357,7 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
             type="button"
             className={`auth-tab-btn ${provedor === 'DEEPSEEK' ? 'active' : ''}`}
             onClick={() => {
-              setProvedor('DEEPSEEK');
-              setModelo('deepseek-chat');
-              setGuiaAberto('DEEPSEEK');
+              selecionarProvedor('DEEPSEEK');
             }}
             style={{
               padding: '10px 14px',
@@ -359,9 +385,7 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
             type="button"
             className={`auth-tab-btn ${provedor === 'OPENAI' ? 'active' : ''}`}
             onClick={() => {
-              setProvedor('OPENAI');
-              setModelo('gpt-4o-mini');
-              setGuiaAberto('OPENAI');
+              selecionarProvedor('OPENAI');
             }}
             style={{
               padding: '10px 14px',
@@ -389,9 +413,7 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
             type="button"
             className={`auth-tab-btn ${provedor === 'ANTHROPIC' ? 'active' : ''}`}
             onClick={() => {
-              setProvedor('ANTHROPIC');
-              setModelo('claude-3-5-sonnet-20241022');
-              setGuiaAberto('ANTHROPIC');
+              selecionarProvedor('ANTHROPIC');
             }}
             style={{
               padding: '10px 14px',
@@ -419,9 +441,7 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
             type="button"
             className={`auth-tab-btn ${provedor === 'OPENROUTER' ? 'active' : ''}`}
             onClick={() => {
-              setProvedor('OPENROUTER');
-              setModelo('deepseek/deepseek-chat');
-              setGuiaAberto('OPENROUTER');
+              selecionarProvedor('OPENROUTER');
             }}
             style={{
               padding: '10px 14px',
@@ -445,8 +465,85 @@ export const ConfiguracaoIaCard: React.FC<ConfiguracaoIaCardProps> = ({
           </button>
         </div>
 
-        {/* Campo de Chave e Modelo */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '10px', alignItems: 'flex-end' }}>
+        {/* Seletor de Modelo: catálogo do provedor + slug livre (OpenRouter) */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <label
+            htmlFor="cfg-ia-modelo"
+            style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-secondary)' }}
+          >
+            Modelo ({nomeAmigavelDoProvedor(provedor)}):
+          </label>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(160px, 1fr) minmax(200px, 1.4fr)',
+              gap: '10px',
+            }}
+          >
+            <select
+              className="form-select"
+              value={modeloNoCatalogo ? modelo : ''}
+              onChange={e => {
+                if (e.target.value) setModelo(e.target.value);
+              }}
+              title="Modelos conhecidos do provedor (catálogo da API)"
+              style={{ fontSize: '0.82rem' }}
+            >
+              <option value="">
+                {modeloNoCatalogo ? 'Escolher do catálogo...' : 'Modelo personalizado'}
+              </option>
+              {modelosDoProvedor.map(m => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+            <input
+              id="cfg-ia-modelo"
+              type="text"
+              className="input"
+              value={modelo}
+              onChange={e => setModelo(e.target.value)}
+              placeholder={
+                provedor === 'OPENROUTER'
+                  ? 'slug vendor/model (ex: deepseek/deepseek-chat)'
+                  : 'slug do modelo'
+              }
+              style={{ fontFamily: 'var(--font-mono)', fontSize: '0.82rem' }}
+            />
+          </div>
+          {provedor === 'OPENROUTER' && (
+            <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+              OpenRouter usa catálogo aberto: informe o slug completo no formato{' '}
+              <code>vendor/model</code> (ex: <code>deepseek/deepseek-chat</code>).
+            </span>
+          )}
+          {!modeloNoCatalogo && (
+            <span
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '0.74rem',
+                color: 'var(--status-yellow, #eab308)',
+              }}
+            >
+              <AlertCircle size={13} style={{ flexShrink: 0 }} />
+              Modelo não reconhecido no catálogo do provedor — a telemetria de custo pode ficar nula
+              para ele.
+            </span>
+          )}
+        </div>
+
+        {/* Campo de Chave e Ações */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr auto',
+            gap: '10px',
+            alignItems: 'flex-end',
+          }}
+        >
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             <label style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
               Chave de API ({provedor}):

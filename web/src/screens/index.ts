@@ -5,4 +5,6 @@ export * from './TelaCompromissos.tsx';
 export * from './TelaCadastros.tsx';
 export * from './TelaFasesEducativas.tsx';
 export * from './TelaImportacaoIa.tsx';
+export * from './TelaValidacaoSuspeitas.tsx';
+export * from './TelaInvestimentos.tsx';
 export * from './TelaLogin.tsx';

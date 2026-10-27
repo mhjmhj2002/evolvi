@@ -1,11 +1,15 @@
+import fs from 'fs/promises';
+import path from 'path';
 import { prisma } from '../../../infrastructure/database/prisma.js';
 import {
   importacaoEventBus,
   ImportacaoEventBus,
   ImportacaoArquivoStagingCarregadoEvent,
 } from '../../../infrastructure/events/importacao-event-bus.js';
-import { gerarChaveDedupe } from '../../movimento/movimento.util.js';
+import { gerarChaveDedupe, extrairRaizComerciante, extrairInfoParcelamento } from '../../movimento/movimento.util.js';
 import { classificadorCombinatorioService } from '../../movimento/classificador-combinatorio.service.js';
+import { addMesesCompetencia } from '../../parcelamento/parcelamento.util.js';
+import { inferirCompetenciaFaturaDocumento } from '../../movimento/movimento-recalculo.service.js';
 
 export interface ConsolidacaoLoteResultado {
   loteId: string;
@@ -40,11 +44,14 @@ export class ImportacaoConsolidacaoWorkerService {
       return;
     }
 
+    console.log('[evolvi-worker:consolidacao] Inicializando ouvinte de consolidação de staging...');
+
     this.boundListener = (event: ImportacaoArquivoStagingCarregadoEvent) => {
+      console.log(`[evolvi-worker:consolidacao] Staging carregado (${event.totalLinhasStaging} linhas) para arquivo [${event.nomeArquivo}]. Consolidando movimentos...`);
       // Processa a consolidação dos itens pendentes do lote
       this.consolidarLote(event.loteId, event.usuarioId).catch((err) => {
         console.error(
-          `[ImportacaoConsolidacaoWorker] Erro ao consolidar lote ${event.loteId}:`,
+          `[evolvi-worker:consolidacao] Erro ao consolidar lote ${event.loteId}:`,
           err
         );
       });
@@ -79,14 +86,64 @@ export class ImportacaoConsolidacaoWorkerService {
 
   /**
    * Obtém uma conta existente ou provisiona automaticamente uma nova conta sem travar o pipeline.
+   * Evita fragmentação (BUG-16) buscando primeiro por identificadores unívocos (numeroConta, digitosCartao).
    */
   public async obterOuAutoCadastrarConta(params: {
     usuarioId: string;
     contaSugerida?: string | null;
     tipoConta?: 'CONTA_CORRENTE' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO' | null;
     arquivoOrigem?: string;
+    numeroConta?: string | null;
+    digitosCartao?: string | null;
   }): Promise<{ contaId: string; contaNome: string; criadaAgora: boolean }> {
-    const { usuarioId, contaSugerida, tipoConta, arquivoOrigem } = params;
+    const { usuarioId, contaSugerida, tipoConta, arquivoOrigem, numeroConta, digitosCartao } = params;
+
+    // Busca todas as contas do usuário para comparação flexível e vinculação unívoca
+    const contasExistentes = await prisma.conta.findMany({
+      where: { usuarioId },
+    });
+
+    // 1. Identificação prioritária por número de conta corrente (se presente, suportando com/sem dígito)
+    if (numeroConta && numeroConta.trim()) {
+      const rawNum = numeroConta.trim();
+      const numLimpo = rawNum.replace(/\D/g, '');
+      const baseNum = rawNum.split(/[-–—]/)[0].replace(/\D/g, '');
+
+      if (numLimpo) {
+        const contaPorNumero = contasExistentes.find((c) => {
+          if (!c.numeroConta) return false;
+          const cRaw = c.numeroConta.trim();
+          const cLimpo = cRaw.replace(/\D/g, '');
+          const cBase = cRaw.split(/[-–—]/)[0].replace(/\D/g, '');
+          return cLimpo === numLimpo || (baseNum && cBase && baseNum === cBase);
+        });
+
+        if (contaPorNumero) {
+          return {
+            contaId: contaPorNumero.id,
+            contaNome: contaPorNumero.nome,
+            criadaAgora: false,
+          };
+        }
+      }
+    }
+
+    // 2. Identificação prioritária por dígitos do cartão (se presente)
+    if (digitosCartao && digitosCartao.trim()) {
+      const digitosLimpos = digitosCartao.trim().replace(/\D/g, '');
+      if (digitosLimpos) {
+        const contaPorCartao = contasExistentes.find(
+          (c) => c.digitosCartao && c.digitosCartao.replace(/\D/g, '') === digitosLimpos
+        );
+        if (contaPorCartao) {
+          return {
+            contaId: contaPorCartao.id,
+            contaNome: contaPorCartao.nome,
+            criadaAgora: false,
+          };
+        }
+      }
+    }
 
     // Define nome padrão se vazio
     let nomeFinal = contaSugerida?.trim();
@@ -101,17 +158,27 @@ export class ImportacaoConsolidacaoWorkerService {
       }
     }
 
-    // Busca todas as contas do usuário para comparação flexível
-    const contasExistentes = await prisma.conta.findMany({
-      where: { usuarioId },
-    });
-
     const nomeNormalizado = this.normalizarNome(nomeFinal);
     const contaEncontrada = contasExistentes.find(
       (c) => this.normalizarNome(c.nome) === nomeNormalizado
     );
 
     if (contaEncontrada) {
+      // Se a conta encontrada não possuía numeroConta ou digitosCartao e agora temos, enriquece a conta
+      const dadosAtualizar: { numeroConta?: string; digitosCartao?: string } = {};
+      if (numeroConta && !contaEncontrada.numeroConta) {
+        dadosAtualizar.numeroConta = numeroConta.trim();
+      }
+      if (digitosCartao && !contaEncontrada.digitosCartao) {
+        dadosAtualizar.digitosCartao = digitosCartao.trim();
+      }
+      if (Object.keys(dadosAtualizar).length > 0) {
+        await prisma.conta.update({
+          where: { id: contaEncontrada.id },
+          data: dadosAtualizar,
+        });
+      }
+
       return {
         contaId: contaEncontrada.id,
         contaNome: contaEncontrada.nome,
@@ -127,6 +194,8 @@ export class ImportacaoConsolidacaoWorkerService {
         usuarioId,
         nome: nomeFinal,
         tipo: tipoFinal,
+        numeroConta: numeroConta ? numeroConta.trim() : null,
+        digitosCartao: digitosCartao ? digitosCartao.trim() : null,
         saldoInicial: 0,
         diaFechamento: tipoFinal === 'CARTAO_CREDITO' ? 1 : null,
         diaVencimento: tipoFinal === 'CARTAO_CREDITO' ? 10 : null,
@@ -265,9 +334,12 @@ export class ImportacaoConsolidacaoWorkerService {
     // Cache local de contas criadas/resolvidas no ciclo para não reconsultar desnecessariamente
     const cacheContas = new Map<string, { id: string; nome: string }>();
 
+    // Mapeamento de contaId resolvido por arquivoId para catalogação com alta fidelidade
+    const arquivoContasMap = new Map<string, string>();
+
     for (const item of stagingItens) {
       try {
-        const cacheKey = `${item.contaSugerida || ''}_${item.tipoConta || ''}_${item.arquivoOrigem}`;
+        const cacheKey = `${item.contaSugerida || ''}_${item.tipoConta || ''}_${item.numeroConta || ''}_${item.digitosCartao || ''}_${item.arquivoOrigem}`;
         let contaInfo = cacheContas.get(cacheKey);
 
         if (!contaInfo) {
@@ -276,6 +348,8 @@ export class ImportacaoConsolidacaoWorkerService {
             contaSugerida: item.contaSugerida,
             tipoConta: item.tipoConta,
             arquivoOrigem: item.arquivoOrigem,
+            numeroConta: item.numeroConta,
+            digitosCartao: item.digitosCartao,
           });
 
           if (resConta.criadaAgora) {
@@ -284,6 +358,10 @@ export class ImportacaoConsolidacaoWorkerService {
 
           contaInfo = { id: resConta.contaId, nome: resConta.contaNome };
           cacheContas.set(cacheKey, contaInfo);
+        }
+
+        if (item.arquivoId && !arquivoContasMap.has(item.arquivoId)) {
+          arquivoContasMap.set(item.arquivoId, contaInfo.id);
         }
 
         const dataMovimentoStr = item.dataMovimento.toISOString().split('T')[0];
@@ -365,9 +443,12 @@ export class ImportacaoConsolidacaoWorkerService {
         const descUpper = item.descricao.toUpperCase();
 
         const isPagamentoFatura =
-          /pag(amento)?\s*(de)?\s*fat(ura)?|fatura\s*cart[aã]o|debito\s*automatico\s*fatura/i.test(
+          /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|fatura\s*cart[aã]o|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
             item.descricao
-          );
+          ) ||
+          (/pag\s*boleto|pagamento\s*boleto|pagto\s*boleto/i.test(item.descricao) &&
+            /nu\s*pagamentos|nubank|c6\s*bank|banco\s*c6|bradescard|itaucard|cart[aã]o|credicard|santander\s*cart[oõ]es/i.test(item.descricao));
+
 
         const isResgateInvestimento =
           /resgate\s*(de)?\s*(cdb|poupanc|investimento|rdb|lci|lca|tesouro)/i.test(
@@ -400,6 +481,11 @@ export class ImportacaoConsolidacaoWorkerService {
           }
         }
 
+        const isAporteInvestimento =
+          /aplica[cç][aã]o\s*(de)?\s*(cdb|rdb|lci|lca|tesouro|fundo|investimento|financeira)?|(?:\b|^)(cdb|rdb|lci|lca)(?:\b|$)|tesouro\s*direto|dep[oó]sito\s*poupan[cç]a|compra\s*a[cç][oõ]es|(?:\b|^)investimento(?:\b|$)/i.test(
+            item.descricao
+          );
+
         if (isSalarioOuPlr) {
           // Prevalência absoluta de salário/PLR: SEMPRE RECEITA operacional
           naturezaFinal = 'RECEITA';
@@ -408,49 +494,129 @@ export class ImportacaoConsolidacaoWorkerService {
           isPagamentoFaturaConvertido = true;
           resultado.pagamentosFaturaConvertidos++;
         } else if (isResgateInvestimento) {
+          // Resgates de investimentos (CDB, poupança, etc.) retornando para conta são transferências entre patrimônio líquido
           naturezaFinal = 'TRANSFERENCIA_PROPRIA';
+        } else if (isAporteInvestimento) {
+          // Identificação de investimentos / aportes patrimoniais novos de saída (TASK-44)
+          naturezaFinal = 'APORTE_PATRIMONIAL';
         } else if (isTransferenciaPropriaTitular) {
           naturezaFinal = 'TRANSFERENCIA_PROPRIA';
         }
 
-        // 3. Resolução de Categoria POF (com suporte a Inteligência Combinatória TASK-43)
-        let categoriaParaBuscar = item.categoriaSugerida;
-        const inferenciaComb = classificadorCombinatorioService.inferirCategoria(
-          item.descricao,
-          item.dataMovimento,
-          valorNum
-        );
-        if (inferenciaComb && inferenciaComb.confianca >= 0.90) {
-          categoriaParaBuscar = inferenciaComb.categoriaSugerida;
+        // 3. Resolução de Categoria POF (Prioridade: Regra do Usuário por Vendedor > Inteligência Combinatória TASK-43 > Sugestão de Arquivo)
+        let categoriaIdFinal: string | null = null;
+        let categoriaFixadaAutomaticamente = false;
+
+        const raizComerciante = extrairRaizComerciante(item.descricao);
+        if (raizComerciante && raizComerciante.length >= 3) {
+          const regraVendedor = await prisma.regraVendedorCategoria.findFirst({
+            where: {
+              usuarioId: lote.usuarioId,
+              termoVendedor: { equals: raizComerciante, mode: 'insensitive' },
+            },
+          });
+          if (regraVendedor) {
+            categoriaIdFinal = regraVendedor.categoriaId;
+            categoriaFixadaAutomaticamente = true;
+            // Incrementa o contador de uso da regra
+            await prisma.regraVendedorCategoria.update({
+              where: { id: regraVendedor.id },
+              data: {
+                totalAplicacoes: { increment: 1 },
+                atualizadoEm: new Date(),
+              },
+            }).catch(() => {});
+          }
         }
 
-        const categoriaId = await this.resolverCategoriaPof(
-          lote.usuarioId,
-          categoriaParaBuscar
-        );
+        if (!categoriaIdFinal) {
+          let categoriaParaBuscar = item.categoriaSugerida;
+          const inferenciaComb = classificadorCombinatorioService.inferirCategoria(
+            item.descricao,
+            item.dataMovimento,
+            valorNum
+          );
+          if (inferenciaComb && inferenciaComb.confianca >= 0.90) {
+            categoriaParaBuscar = inferenciaComb.categoriaSugerida;
+          }
+
+          categoriaIdFinal = await this.resolverCategoriaPof(
+            lote.usuarioId,
+            categoriaParaBuscar
+          );
+        }
 
         // 4. Inserção Atômica do Movimento Oficial com tratamento de concorrência P2002
         let novoMovimento: any;
-        try {
-          novoMovimento = await prisma.movimento.create({
-            data: {
+
+        // Se existir um movimento PREVISTO correspondente (gerado previamente pelo parcelamento),
+        // promovemos o lançamento previsto para CONCILIADO com os dados oficiais da fatura
+        let movimentoPrevistoExistente: any = null;
+        if (item.parcelaAtual && item.totalParcelas && item.totalParcelas > 1) {
+          const infoParcItem = extrairInfoParcelamento(item.descricao);
+          const pBase = (infoParcItem?.prefixoBase || item.descricao).trim();
+          const candidatosPrevistos = await prisma.movimento.findMany({
+            where: {
               usuarioId: lote.usuarioId,
               contaId: contaInfo.id,
-              categoriaId,
-              dataMovimento: item.dataMovimento,
-              competencia,
-              descricao: item.descricao,
-              valor: valorNum,
+              status: 'PREVISTO',
               natureza: naturezaFinal,
-              status: 'CONCILIADO',
-              chaveDedupe,
-              idOrigem: item.idOrigem || null,
-              origemDocumento: `IA_LOTE_${item.arquivoOrigem}`,
-              observacao: item.observacao || null,
             },
           });
+          movimentoPrevistoExistente = candidatosPrevistos.find((mp) => {
+            const infoMp = extrairInfoParcelamento(mp.descricao);
+            if (!infoMp) return false;
+            const bMp = infoMp.prefixoBase.trim().toUpperCase();
+            return (
+              (bMp === pBase.toUpperCase() || bMp.includes(pBase.toUpperCase()) || pBase.toUpperCase().includes(bMp)) &&
+              infoMp.parcelaAtual === item.parcelaAtual &&
+              infoMp.totalParcelas === item.totalParcelas
+            );
+          });
+        }
 
-          resultado.novosMovimentosInseridos++;
+        try {
+          if (movimentoPrevistoExistente) {
+            novoMovimento = await prisma.movimento.update({
+              where: { id: movimentoPrevistoExistente.id },
+              data: {
+                dataMovimento: item.dataMovimento,
+                competencia,
+                descricao: item.descricao,
+                valor: valorNum,
+                categoriaId: categoriaIdFinal,
+                categoriaFixadaPeloUsuario: categoriaFixadaAutomaticamente,
+                validadoDedupe: categoriaFixadaAutomaticamente ? 'S' : 'N',
+                status: 'CONCILIADO',
+                chaveDedupe,
+                idOrigem: item.idOrigem || null,
+                origemDocumento: `IA_LOTE_${item.arquivoOrigem}`,
+                observacao: item.observacao || null,
+              },
+            });
+            resultado.novosMovimentosInseridos++;
+          } else {
+            novoMovimento = await prisma.movimento.create({
+              data: {
+                usuarioId: lote.usuarioId,
+                contaId: contaInfo.id,
+                categoriaId: categoriaIdFinal,
+                categoriaFixadaPeloUsuario: categoriaFixadaAutomaticamente,
+                validadoDedupe: categoriaFixadaAutomaticamente ? 'S' : 'N',
+                dataMovimento: item.dataMovimento,
+                competencia,
+                descricao: item.descricao,
+                valor: valorNum,
+                natureza: naturezaFinal,
+                status: 'CONCILIADO',
+                chaveDedupe,
+                idOrigem: item.idOrigem || null,
+                origemDocumento: `IA_LOTE_${item.arquivoOrigem}`,
+                observacao: item.observacao || null,
+              },
+            });
+            resultado.novosMovimentosInseridos++;
+          }
         } catch (createErr: any) {
           if (createErr?.code === 'P2002') {
             // Concorrência interceptada pela constraint UNIQUE do banco
@@ -486,45 +652,69 @@ export class ImportacaoConsolidacaoWorkerService {
           throw createErr;
         }
 
-        // 5. Suporte a Parcelamento se identificado parcelaAtual e totalParcelas
+        // 5. Suporte a Parcelamento se identificado parcelaAtual e totalParcelas (BUG-18)
         if (
           item.parcelaAtual &&
           item.totalParcelas &&
           item.totalParcelas > 1 &&
           naturezaFinal === 'DESPESA'
         ) {
-          // Checar se já existe parcelamento ativo com descrição similar
-          const parcelamentoExistente = await prisma.parcelamento.findFirst({
+          const infoParc = extrairInfoParcelamento(item.descricao);
+          const prefixoBase = (infoParc?.prefixoBase || item.descricao).trim();
+
+          // Buscar contratos existentes para o usuário, mesma conta e total de parcelas
+          const parcelamentosCandidatos = await prisma.parcelamento.findMany({
             where: {
               usuarioId: lote.usuarioId,
-              descricao: item.descricao,
+              contaId: contaInfo.id,
               totalParcelas: item.totalParcelas,
             },
           });
 
-          if (!parcelamentoExistente) {
+          // Casar por prefixoBase idêntico (case-insensitive) ou descrição exata
+          const parcelamentoExistente = parcelamentosCandidatos.find((p) => {
+            if (p.descricao.toLowerCase() === item.descricao.toLowerCase()) return true;
+            const pInfo = extrairInfoParcelamento(p.descricao);
+            const pBase = (pInfo?.prefixoBase || p.descricao).trim().toLowerCase();
+            return pBase === prefixoBase.toLowerCase();
+          });
+
+          if (parcelamentoExistente) {
+            // Se já existe, atualiza a maior parcela observada e avança status caso atinja o total
+            const novaParcela = Math.max(parcelamentoExistente.parcelaAtual, item.parcelaAtual);
+            const statusAtualizado =
+              novaParcela >= item.totalParcelas ? 'QUITADO' : parcelamentoExistente.status;
+
+            await prisma.parcelamento.update({
+              where: { id: parcelamentoExistente.id },
+              data: {
+                descricao: prefixoBase,
+                parcelaAtual: novaParcela,
+                status: statusAtualizado,
+              },
+            });
+          } else {
+            // Se for fatura de cartão de crédito, a exigibilidade da parcela é a competência da fatura
+            const compFatura = inferirCompetenciaFaturaDocumento(item.arquivoOrigem);
+            const competenciaBase = compFatura || competencia;
             const valorTotal = valorNum * item.totalParcelas;
-            const primeiroVencimento = competencia;
-            // Estima último vencimento adicionando meses
-            const [ano, mes] = competencia.split('-').map(Number);
-            const dataFim = new Date(ano, mes - 1 + (item.totalParcelas - 1), 1);
-            const ultimoVencimento = `${dataFim.getFullYear()}-${String(
-              dataFim.getMonth() + 1
-            ).padStart(2, '0')}`;
+            const primeiroVencimento = addMesesCompetencia(competenciaBase, -(item.parcelaAtual - 1));
+            const ultimoVencimento = addMesesCompetencia(primeiroVencimento, item.totalParcelas - 1);
+            const statusInicial = item.parcelaAtual >= item.totalParcelas ? 'QUITADO' : 'ATIVO';
 
             await prisma.parcelamento.create({
               data: {
                 usuarioId: lote.usuarioId,
                 contaId: contaInfo.id,
-                categoriaId,
-                descricao: item.descricao,
+                categoriaId: categoriaIdFinal,
+                descricao: prefixoBase,
                 valorTotal,
                 parcelaValor: valorNum,
                 parcelaAtual: item.parcelaAtual,
                 totalParcelas: item.totalParcelas,
                 primeiroVencimento,
                 ultimoVencimento,
-                status: 'ATIVO',
+                status: statusInicial,
               },
             });
             resultado.parcelamentosCriados++;
@@ -607,13 +797,24 @@ export class ImportacaoConsolidacaoWorkerService {
             timestamp: new Date(),
           });
 
+          // Dispara evento de conclusão de arquivo consolidado para os workers pós-importação
+          importacaoEventBus.emitArquivoConsolidadoFinal({
+            loteId,
+            arquivoId: arqAtual.id,
+            usuarioId: lote.usuarioId,
+            nomeArquivo: arqAtual.nomeArquivo,
+            timestamp: new Date(),
+          });
+
           // TASK-41: Catalogar analiticamente no HistoricoImportacaoArquivo e verificar lacunas
           try {
             const { conciliacaoService } = await import('../conciliacao.service.js');
+            const contaIdResolvido = arquivoContasMap.get(arqAtual.id);
             await conciliacaoService.catalogarArquivo({
               usuarioId: lote.usuarioId,
               arquivoId: arqAtual.id,
               loteId,
+              contaId: contaIdResolvido,
             });
           } catch (errCatalog) {
             console.error(
@@ -627,10 +828,23 @@ export class ImportacaoConsolidacaoWorkerService {
 
 
     // 9. Verificar se ainda restam arquivos não finalizados no lote
+    // Arquivos em RECEPCIONADO marcados como duplicados (jaImportadoAnteriormente) ou finalizados
+    // não impedem o encerramento do lote.
     const arquivosNaoFinalizados = await prisma.arquivoImportacao.count({
       where: {
         loteId,
         status: { notIn: ['PROCESSADO_FINAL', 'ERRO'] },
+        AND: [
+          {
+            OR: [
+              { jaImportadoAnteriormente: false },
+              { status: 'ENVIADO_IA' },
+            ],
+          },
+          {
+            NOT: { statusFinal: 'DUPLICADO' },
+          },
+        ],
       },
     });
 
@@ -641,7 +855,7 @@ export class ImportacaoConsolidacaoWorkerService {
       },
     });
 
-    // Só encerra o lote se TODOS os arquivos já tiverem sido processados (final ou erro)
+    // Só encerra o lote se TODOS os arquivos ativos já tiverem sido processados (final ou erro)
     // e não houver mais nenhum staging pendente.
     if (arquivosNaoFinalizados === 0 && stagingsRestantes === 0) {
       const arquivosComErro = await prisma.arquivoImportacao.count({
@@ -659,7 +873,14 @@ export class ImportacaoConsolidacaoWorkerService {
       }
 
       const arquivosProcessadosCount = await prisma.arquivoImportacao.count({
-        where: { loteId, status: 'PROCESSADO_FINAL' },
+        where: {
+          loteId,
+          OR: [
+            { status: 'PROCESSADO_FINAL' },
+            { jaImportadoAnteriormente: true },
+            { statusFinal: { in: ['DUPLICADO', 'VAZIO'] } },
+          ],
+        },
       });
 
       await prisma.loteImportacao.update({
@@ -670,7 +891,18 @@ export class ImportacaoConsolidacaoWorkerService {
         },
       });
 
-      // 10. Emite evento de lote concluído
+      // Reavalia lacunas de conciliação para garantir que alertas atendidos saiam imediatamente da fila
+      try {
+        const { conciliacaoService } = await import('../conciliacao.service.js');
+        await conciliacaoService.verificarLacunas(lote.usuarioId);
+      } catch (errLacunas) {
+        console.error(
+          `[ImportacaoConsolidacaoWorker] Erro ao reavaliar lacunas após conclusão do lote ${loteId}:`,
+          errLacunas
+        );
+      }
+
+      // 10. Emite evento de lote concluído (dispara workers de recalculo, deduplicacao e parcelamento)
       importacaoEventBus.emitLoteConcluido({
         loteId,
         usuarioId: lote.usuarioId,
@@ -680,6 +912,16 @@ export class ImportacaoConsolidacaoWorkerService {
         totalContasCriadas: resultado.contasCriadas,
         timestamp: new Date(),
       });
+
+      // 11. Limpeza do diretório temporário do lote: todos os dados e lançamentos já estão no banco
+      if (lote.caminhoDiretorio) {
+        try {
+          const caminhoAbsoluto = path.resolve(process.cwd(), lote.caminhoDiretorio);
+          await fs.rm(caminhoAbsoluto, { recursive: true, force: true });
+        } catch {
+          // Ignora se o diretório já foi excluído
+        }
+      }
     }
 
     return resultado;

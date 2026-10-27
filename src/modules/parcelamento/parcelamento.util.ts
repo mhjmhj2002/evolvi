@@ -31,6 +31,7 @@ export interface ParcelamentoCalculado {
   totalParcelas: number;
   primeiroVencimento: string;
   ultimoVencimento: string;
+  dataCompra?: string;
   status: 'ATIVO' | 'QUITADO' | 'CANCELADO';
   criadoEm: Date;
   parcelasRestantes: number;
@@ -68,12 +69,15 @@ export function formatarParcelamento(parcelamento: any): ParcelamentoCalculado {
     }
   }
 
+  const dataCompra = parcelamento.dataCompra || parcelamento.primeiroVencimento;
+
   return {
     ...parcelamento,
     valorTotal,
     parcelaValor,
     parcelaAtual,
     totalParcelas,
+    dataCompra,
     parcelasRestantes,
     saldoDevedorRestante,
   };

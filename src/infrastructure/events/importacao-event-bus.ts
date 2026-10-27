@@ -66,12 +66,21 @@ export interface ImportacaoLoteConcluidoEvent {
   timestamp: Date;
 }
 
+export interface ImportacaoArquivoConsolidadoFinalEvent {
+  loteId: string;
+  arquivoId: string;
+  usuarioId: string;
+  nomeArquivo: string;
+  timestamp: Date;
+}
+
 export class ImportacaoEventBus extends EventEmitter {
   public static readonly EVENT_LOTE_RECEPCIONADO = 'importacao:lote_recepcionado';
   public static readonly EVENT_ARQUIVO_PROGRESSO = 'importacao:arquivo_progresso';
   public static readonly EVENT_ARQUIVO_CONSOLIDADO_PRONTO = 'importacao:arquivo_consolidado_pronto';
   public static readonly EVENT_ARQUIVO_STAGING_CARREGADO = 'importacao:arquivo_staging_carregado';
   public static readonly EVENT_TRANSACAO_CONSOLIDADA = 'importacao:transacao_consolidada';
+  public static readonly EVENT_ARQUIVO_CONSOLIDADO_FINAL = 'importacao:arquivo_consolidado_final';
   public static readonly EVENT_LOTE_CONCLUIDO = 'importacao:lote_concluido';
 
   public emitLoteRecepcionado(event: ImportacaoLoteRecepcionadoEvent): boolean {
@@ -118,6 +127,16 @@ export class ImportacaoEventBus extends EventEmitter {
     listener: (event: ImportacaoTransacaoConsolidadaEvent) => void
   ): this {
     return this.on(ImportacaoEventBus.EVENT_TRANSACAO_CONSOLIDADA, listener);
+  }
+
+  public emitArquivoConsolidadoFinal(event: ImportacaoArquivoConsolidadoFinalEvent): boolean {
+    return this.emit(ImportacaoEventBus.EVENT_ARQUIVO_CONSOLIDADO_FINAL, event);
+  }
+
+  public onArquivoConsolidadoFinal(
+    listener: (event: ImportacaoArquivoConsolidadoFinalEvent) => void
+  ): this {
+    return this.on(ImportacaoEventBus.EVENT_ARQUIVO_CONSOLIDADO_FINAL, listener);
   }
 
   public emitLoteConcluido(event: ImportacaoLoteConcluidoEvent): boolean {

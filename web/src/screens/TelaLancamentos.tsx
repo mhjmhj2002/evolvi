@@ -27,6 +27,11 @@ import {
   CalendarDays,
   Split,
   Lock,
+  PiggyBank,
+  Building2,
+  CreditCard,
+  Layers,
+  Sliders,
 } from 'lucide-react';
 
 interface TelaLancamentosProps {
@@ -35,6 +40,7 @@ interface TelaLancamentosProps {
   categorias: CategoriaTreeItem[];
   onOpenNovoLancamento: () => void;
   onMovimentoModificado?: () => void;
+  onNavigateTab?: (tab: any) => void;
 }
 
 export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
@@ -43,6 +49,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
   categorias,
   onOpenNovoLancamento,
   onMovimentoModificado,
+  onNavigateTab,
 }) => {
   // Competência padrão (Ano-Mês atual ou 2026-10 de referência)
   const [competencia, setCompetencia] = useState<string>('2026-10');
@@ -53,6 +60,59 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
   const [filtroCategoriaId, setFiltroCategoriaId] = useState<string>('');
   const [filtroNatureza, setFiltroNatureza] = useState<string>('TODOS');
   const [filtroStatus, setFiltroStatus] = useState<string>('TODOS');
+
+  // Estados de Investigação Avançada (Instituição, Forma de Pagamento, Subcategoria, Agrupamento Multidimensional)
+  const [filtroInstituicao, setFiltroInstituicao] = useState<string>('TODAS');
+  const [filtroFormaPagamento, setFiltroFormaPagamento] = useState<string>('TODAS');
+  const [filtroSubcategoriaId, setFiltroSubcategoriaId] = useState<string>('');
+  const [modoAgrupamento, setModoAgrupamento] = useState<'DATA' | 'INSTITUICAO' | 'FORMA_PAGAMENTO' | 'CATEGORIA'>('DATA');
+
+  // Helper canônico para inferir instituição do lançamento (via conta e origem)
+  const inferirInstituicao = (item: MovimentoItem): string => {
+    const nome = item.conta?.nome || '';
+    const norm = nome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (/nubank|nu\s*pagamentos/i.test(norm)) return 'Nubank';
+    if (/inter|banco\s*inter/i.test(norm)) return 'Banco Inter';
+    if (/santander/i.test(norm)) return 'Santander';
+    if (/itau|itaú/i.test(norm)) return 'Itaú';
+    if (/c6|c6\s*bank/i.test(norm)) return 'C6 Bank';
+    if (/mercado\s*pago/i.test(norm)) return 'Mercado Pago';
+    if (/neon/i.test(norm)) return 'Neon';
+    if (/pagbank|pagseguro/i.test(norm)) return 'PagBank';
+    if (/picpay/i.test(norm)) return 'PicPay';
+    if (/bradesco/i.test(norm)) return 'Bradesco';
+    if (/caixa/i.test(norm)) return 'Caixa Econômica';
+    if (/banco\s*do\s*brasil|bb/i.test(norm)) return 'Banco do Brasil';
+    return nome.trim() || 'Outra Instituição';
+  };
+
+  // Helper para inferir forma de pagamento a partir da descrição e tipo de conta
+  const inferirFormaPagamento = (item: MovimentoItem): string => {
+    const d = item.descricao.toLowerCase();
+    const isCartao = item.conta?.tipo === 'CARTAO_CREDITO';
+    if (d.includes('pix') || /transfer[êe]ncia\s+enviada\s+pelo\s+pix|transfer[êe]ncia\s+recebida\s+pelo\s+pix/i.test(d)) {
+      return 'PIX';
+    }
+    if (d.includes('boleto') || /pagamento\s+de\s+boleto|pagto\s+titulo/i.test(d)) {
+      return 'Boleto Bancário';
+    }
+    if (d.includes('ted') || d.includes('doc') || /transf\s+(?:ted|doc)/i.test(d)) {
+      return 'TED / DOC';
+    }
+    if (d.includes('debito') || d.includes('débito')) {
+      return 'Cartão de Débito';
+    }
+    if (isCartao || d.includes('credito') || d.includes('crédito') || /(?:parcela|\d+\/\d+)/i.test(d)) {
+      return 'Cartão de Crédito';
+    }
+    if (item.natureza === 'APORTE_PATRIMONIAL') {
+      return 'Aplicação / Aporte';
+    }
+    if (item.natureza === 'TRANSFERENCIA_PROPRIA') {
+      return 'Transferência entre Contas';
+    }
+    return 'Outros / Não Especificado';
+  };
 
   // Controle de Painel de Filtros Avançados
   const [showFiltrosAvancados, setShowFiltrosAvancados] = useState<boolean>(false);
@@ -79,6 +139,9 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
   const [similaresInfo, setSimilaresInfo] = useState<{ termoVendedor: string | null; totalSimilares: number } | null>(null);
   const [salvandoCategoria, setSalvandoCategoria] = useState<boolean>(false);
   const [feedbackCategoria, setFeedbackCategoria] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(null);
+  const [salvandoNatureza, setSalvandoNatureza] = useState<boolean>(false);
+  const [feedbackNatureza, setFeedbackNatureza] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(null);
+
 
   // Ao abrir o bottom sheet do item selecionado, inicializa a categoria e consulta outros lançamentos similares
   useEffect(() => {
@@ -86,13 +149,12 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
       setCategoriaEdicao(itemSelecionado.categoriaId || '');
       setPropagarVendedor(false);
       setFeedbackCategoria(null);
+      setFeedbackNatureza(null);
       setSimilaresInfo(null);
+
       apiService.obterSimilaresVendedor(itemSelecionado.id)
         .then((info) => {
           setSimilaresInfo(info);
-          if (info.totalSimilares > 0) {
-            setPropagarVendedor(true); // Sugere pré-marcado por conveniência quando houver compras similares
-          }
         })
         .catch((err) => {
           console.warn('Erro ao buscar lançamentos similares:', err);
@@ -132,6 +194,45 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
       setSalvandoCategoria(false);
     }
   };
+
+  const handleAlternarPagamentoFaturaTransferencia = async (novaNatureza: 'TRANSFERENCIA_PROPRIA' | 'DESPESA') => {
+    if (!itemSelecionado) return;
+    setSalvandoNatureza(true);
+    setFeedbackNatureza(null);
+    try {
+      const res = await apiService.atualizarMovimento(itemSelecionado.id, {
+        natureza: novaNatureza,
+      });
+
+      setFeedbackNatureza({
+        tipo: 'sucesso',
+        texto: res.message || (novaNatureza === 'TRANSFERENCIA_PROPRIA'
+          ? 'Lançamento catalogado como Pagamento de Fatura / Transferência Própria (anti-dupla contagem ativado).'
+          : 'Lançamento reclassificado como Despesa de consumo.'),
+      });
+
+
+      await carregarMovimentos();
+      onMovimentoModificado?.();
+
+      setItemSelecionado({
+        ...itemSelecionado,
+        natureza: novaNatureza,
+      });
+
+      setTimeout(() => {
+        setFeedbackNatureza(null);
+      }, 4000);
+    } catch (err: any) {
+      setFeedbackNatureza({
+        tipo: 'erro',
+        texto: err.message || 'Erro ao alterar classificação do lançamento.',
+      });
+    } finally {
+      setSalvandoNatureza(false);
+    }
+  };
+
 
   // Estados de Desdobramento / Transaction Splitting (TASK-39)
   const [modalSplitAberto, setModalSplitAberto] = useState(false);
@@ -342,34 +443,165 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
     if (!confirm('Deseja realmente excluir este lançamento financeiro?')) return;
     setExcluindoId(id);
     try {
+      // Remoção otimista imediata do estado local da interface para evitar que o item pareça não ter sido excluído
+      setMovimentos((prev) => prev.filter((m) => m.id !== id));
+      setItemSelecionado(null);
+
       await apiService.excluirMovimento(id);
       setMensagemAviso('Lançamento removido com sucesso!');
       setTimeout(() => setMensagemAviso(null), 3000);
-      setItemSelecionado(null);
       await carregarMovimentos();
       if (onMovimentoModificado) onMovimentoModificado();
     } catch (err) {
       console.error('Falha ao excluir lançamento:', err);
       alert('Não foi possível excluir o lançamento.');
+      await carregarMovimentos();
     } finally {
       setExcluindoId(null);
     }
   };
 
-  // Agrupamento por data (Timeline / Mercado Financeiro)
-  const movimentosAgrupados = useMemo(() => {
-    const grupos: { [data: string]: MovimentoItem[] } = {};
-    for (const mov of movimentos) {
-      const dataChave = mov.dataMovimento;
-      if (!grupos[dataChave]) {
-        grupos[dataChave] = [];
+  // Mapeamento plano de subcategorias para filtros e investigações
+  const subcategoriasDisponiveis = useMemo(() => {
+    if (filtroCategoriaId) {
+      const cat = categorias.find((c) => c.id === filtroCategoriaId);
+      return cat?.subcategorias || [];
+    }
+    const todas: Array<{ id: string; nome: string; categoriaPaiId: string; categoriaPaiNome: string }> = [];
+    categorias.forEach((cat) => {
+      cat.subcategorias?.forEach((sub) => {
+        todas.push({
+          id: sub.id,
+          nome: sub.nome,
+          categoriaPaiId: cat.id,
+          categoriaPaiNome: cat.nome,
+        });
+      });
+    });
+    return todas;
+  }, [categorias, filtroCategoriaId]);
+
+  // Lista única de instituições inferidas para o dropdown de investigação
+  const instituicoesDisponiveis = useMemo(() => {
+    const setInst = new Set<string>();
+    contas.forEach((c) => {
+      const inst = inferirInstituicao({ conta: c } as any);
+      if (inst) setInst.add(inst);
+    });
+    movimentos.forEach((m) => {
+      const inst = inferirInstituicao(m);
+      if (inst) setInst.add(inst);
+    });
+    return Array.from(setInst).sort((a, b) => a.localeCompare(b));
+  }, [contas, movimentos]);
+
+  // Lista única de formas de pagamento inferidas
+  const formasPagamentoDisponiveis = useMemo(() => {
+    return [
+      'PIX',
+      'Cartão de Crédito',
+      'Cartão de Débito',
+      'Boleto Bancário',
+      'TED / DOC',
+      'Aplicação / Aporte',
+      'Transferência entre Contas',
+      'Outros / Não Especificado',
+    ];
+  }, []);
+
+  // Movimentos filtrados em memória (para filtros investigativos complementares: Instituição, Forma de Pagamento e Subcategoria)
+  const movimentosFiltrados = useMemo(() => {
+    return movimentos.filter((mov) => {
+      if (filtroInstituicao !== 'TODAS') {
+        const inst = inferirInstituicao(mov);
+        if (inst !== filtroInstituicao) return false;
       }
-      grupos[dataChave].push(mov);
+      if (filtroFormaPagamento !== 'TODAS') {
+        const fp = inferirFormaPagamento(mov);
+        if (fp !== filtroFormaPagamento) return false;
+      }
+      if (filtroSubcategoriaId) {
+        // Verifica se a categoria do movimento é a subcategoria selecionada
+        const temSub = mov.categoriaId === filtroSubcategoriaId ||
+          mov.rateios?.some((r) => r.categoriaId === filtroSubcategoriaId);
+        if (!temSub) return false;
+      }
+      return true;
+    });
+  }, [movimentos, filtroInstituicao, filtroFormaPagamento, filtroSubcategoriaId]);
+
+  // Totalizadores dinâmicos dos movimentos investigados (filtrados)
+  const totalizadorInvestigacao = useMemo(() => {
+    let receitas = 0;
+    let despesas = 0;
+    let transferencias = 0;
+    let aportes = 0;
+
+    for (const mov of movimentosFiltrados) {
+      if (mov.status === 'CONCILIADO' || mov.status === 'PREVISTO') {
+        if (mov.natureza === 'RECEITA') receitas += mov.valor;
+        else if (mov.natureza === 'DESPESA') despesas += mov.valor;
+        else if (mov.natureza === 'TRANSFERENCIA_PROPRIA') transferencias += mov.valor;
+        else if (mov.natureza === 'APORTE_PATRIMONIAL') aportes += mov.valor;
+      }
+    }
+    return {
+      totalItens: movimentosFiltrados.length,
+      totalReceitas: receitas,
+      totalDespesas: despesas,
+      totalTransferencias: transferencias,
+      totalAportes: aportes,
+      saldoLiquido: receitas - despesas,
+    };
+  }, [movimentosFiltrados]);
+
+  // Agrupamento multidimensional para investigação (DATA, INSTITUICAO, FORMA_PAGAMENTO, CATEGORIA)
+  const gruposInvestigacao = useMemo(() => {
+    const grupos: { [chave: string]: { rotulo: string; subtitulo?: string; itens: MovimentoItem[] } } = {};
+
+    for (const mov of movimentosFiltrados) {
+      let chave = '';
+      let rotulo = '';
+      let subtitulo: string | undefined = undefined;
+
+      if (modoAgrupamento === 'DATA') {
+        chave = mov.dataMovimento;
+        rotulo = mov.dataMovimento;
+      } else if (modoAgrupamento === 'INSTITUICAO') {
+        const inst = inferirInstituicao(mov);
+        chave = inst;
+        rotulo = inst;
+        subtitulo = `${mov.conta?.tipo === 'CARTAO_CREDITO' ? 'Cartão' : 'Conta'} • ${mov.conta?.nome || 'Padrão'}`;
+      } else if (modoAgrupamento === 'FORMA_PAGAMENTO') {
+        const fp = inferirFormaPagamento(mov);
+        chave = fp;
+        rotulo = fp;
+      } else if (modoAgrupamento === 'CATEGORIA') {
+        const catNome = mov.categoria?.nome || 'Sem Categoria';
+        chave = catNome;
+        rotulo = catNome;
+      }
+
+      if (!grupos[chave]) {
+        grupos[chave] = { rotulo, subtitulo, itens: [] };
+      }
+      grupos[chave].itens.push(mov);
     }
     return grupos;
-  }, [movimentos]);
+  }, [movimentosFiltrados, modoAgrupamento]);
 
-  const datasOrdenadas = Object.keys(movimentosAgrupados).sort((a, b) => b.localeCompare(a));
+  // Ordenação das chaves de grupo
+  const chavesGruposOrdenadas = useMemo(() => {
+    if (modoAgrupamento === 'DATA') {
+      return Object.keys(gruposInvestigacao).sort((a, b) => b.localeCompare(a));
+    }
+    // Para outros agrupamentos, ordena pelo maior volume de despesa / movimentação
+    return Object.keys(gruposInvestigacao).sort((a, b) => {
+      const somaA = gruposInvestigacao[a].itens.reduce((acc, it) => acc + it.valor, 0);
+      const somaB = gruposInvestigacao[b].itens.reduce((acc, it) => acc + it.valor, 0);
+      return somaB - somaA;
+    });
+  }, [gruposInvestigacao, modoAgrupamento]);
 
   // Formatar moeda BRL com sinal explícito
   const formatarValor = (valor: number) => {
@@ -391,11 +623,25 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
     if (dataInicio || dataFim) count += 1;
     if (filtroContaId) count += 1;
     if (filtroCategoriaId) count += 1;
+    if (filtroSubcategoriaId) count += 1;
+    if (filtroInstituicao !== 'TODAS') count += 1;
+    if (filtroFormaPagamento !== 'TODAS') count += 1;
     if (filtroNatureza !== 'TODOS') count += 1;
     if (filtroStatus !== 'TODOS') count += 1;
     if (busca.trim()) count += 1;
     return count;
-  }, [dataInicio, dataFim, filtroContaId, filtroCategoriaId, filtroNatureza, filtroStatus, busca]);
+  }, [
+    dataInicio,
+    dataFim,
+    filtroContaId,
+    filtroCategoriaId,
+    filtroSubcategoriaId,
+    filtroInstituicao,
+    filtroFormaPagamento,
+    filtroNatureza,
+    filtroStatus,
+    busca,
+  ]);
 
   const limparFiltros = () => {
     setDataInicio('');
@@ -403,6 +649,9 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
     setBusca('');
     setFiltroContaId('');
     setFiltroCategoriaId('');
+    setFiltroSubcategoriaId('');
+    setFiltroInstituicao('TODAS');
+    setFiltroFormaPagamento('TODAS');
     setFiltroNatureza('TODOS');
     setFiltroStatus('TODOS');
   };
@@ -630,7 +879,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
       >
         <div>
           <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-            Saldo Operacional Líquido (Receitas - Despesas)
+            {filtrosAtivosCount > 0 ? 'Saldo da Investigação (Filtros Ativos)' : 'Saldo Operacional Líquido (Receitas - Despesas)'}
           </span>
           <div
             style={{
@@ -638,32 +887,69 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
               fontWeight: 800,
               fontSize: '1.15rem',
               color:
-                resumo.saldoOperacionalConsumo >= 0
+                (filtrosAtivosCount > 0 ? totalizadorInvestigacao.saldoLiquido : resumo.saldoOperacionalConsumo) >= 0
                   ? 'var(--status-green)'
                   : 'var(--status-red)',
             }}
           >
-            {resumo.saldoOperacionalConsumo >= 0 ? '+' : '-'} R${' '}
-            {formatarValor(Math.abs(resumo.saldoOperacionalConsumo))}
+            {(filtrosAtivosCount > 0 ? totalizadorInvestigacao.saldoLiquido : resumo.saldoOperacionalConsumo) >= 0 ? '+' : '-'} R${' '}
+            {formatarValor(Math.abs(filtrosAtivosCount > 0 ? totalizadorInvestigacao.saldoLiquido : resumo.saldoOperacionalConsumo))}
           </div>
-        </div>
-        {resumo.totalTransferenciasProprias > 0 && (
-          <div style={{ textAlign: 'right' }}>
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-              Transferências/Faturas
+          {filtrosAtivosCount > 0 && (
+            <span style={{ fontSize: '0.70rem', color: 'var(--brand-primary)', fontWeight: 600 }}>
+              {totalizadorInvestigacao.totalItens} transações selecionadas
             </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+          {(filtrosAtivosCount > 0 ? totalizadorInvestigacao.totalAportes : resumo.totalAportesPatrimoniais) > 0 && (
             <div
               style={{
-                fontFamily: 'var(--font-mono)',
-                fontSize: '0.85rem',
-                color: 'var(--brand-secondary)',
-                fontWeight: 600,
+                textAlign: 'right',
+                cursor: onNavigateTab ? 'pointer' : 'default',
+                padding: '2px 6px',
+                borderRadius: '4px',
+                transition: 'background 0.2s ease',
               }}
+              onClick={() => onNavigateTab?.('investimentos')}
+              title={onNavigateTab ? 'Abrir Tela de Investimentos & Aportes' : undefined}
             >
-              R$ {formatarValor(resumo.totalTransferenciasProprias)}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '3px' }}>
+                <span style={{ fontSize: '0.7rem', color: 'var(--brand-primary)', fontWeight: 600 }}>
+                  Investimentos / Aportes
+                </span>
+                {onNavigateTab && <ArrowUpRight size={12} color="var(--brand-primary)" />}
+              </div>
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.85rem',
+                  color: 'var(--brand-primary)',
+                  fontWeight: 700,
+                }}
+              >
+                R$ {formatarValor(filtrosAtivosCount > 0 ? totalizadorInvestigacao.totalAportes : resumo.totalAportesPatrimoniais)}
+              </div>
             </div>
-          </div>
-        )}
+          )}
+          {(filtrosAtivosCount > 0 ? totalizadorInvestigacao.totalTransferencias : resumo.totalTransferenciasProprias) > 0 && (
+            <div style={{ textAlign: 'right' }}>
+              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                Transferências/Faturas
+              </span>
+              <div
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.85rem',
+                  color: 'var(--brand-secondary)',
+                  fontWeight: 600,
+                }}
+              >
+                R$ {formatarValor(filtrosAtivosCount > 0 ? totalizadorInvestigacao.totalTransferencias : resumo.totalTransferenciasProprias)}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 4. Barra de Pesquisa Rápida e Botão de Filtros Avançados */}
@@ -815,6 +1101,47 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
             </div>
           </div>
 
+          {/* Filtro por Instituição e Forma de Pagamento (Investigação Avançada) */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label" style={{ fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <Building2 size={12} color="var(--brand-primary)" /> Instituição Financeira
+              </label>
+              <select
+                value={filtroInstituicao}
+                onChange={(e) => setFiltroInstituicao(e.target.value)}
+                className="form-select"
+                style={{ padding: '8px 10px', fontSize: '0.85rem', minHeight: '38px' }}
+              >
+                <option value="TODAS">Todas as Instituições</option>
+                {instituicoesDisponiveis.map((inst) => (
+                  <option key={inst} value={inst}>
+                    {inst}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label" style={{ fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <CreditCard size={12} color="var(--brand-primary)" /> Forma de Pagamento
+              </label>
+              <select
+                value={filtroFormaPagamento}
+                onChange={(e) => setFiltroFormaPagamento(e.target.value)}
+                className="form-select"
+                style={{ padding: '8px 10px', fontSize: '0.85rem', minHeight: '38px' }}
+              >
+                <option value="TODAS">Todas as Formas</option>
+                {formasPagamentoDisponiveis.map((fp) => (
+                  <option key={fp} value={fp}>
+                    {fp}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           {/* Filtro por Conta e Categoria */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
             <div className="form-group" style={{ marginBottom: 0 }}>
@@ -838,7 +1165,10 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
               <label className="form-label" style={{ fontSize: '0.75rem' }}>Categoria</label>
               <select
                 value={filtroCategoriaId}
-                onChange={(e) => setFiltroCategoriaId(e.target.value)}
+                onChange={(e) => {
+                  setFiltroCategoriaId(e.target.value);
+                  setFiltroSubcategoriaId(''); // limpa subcategoria caso mude categoria
+                }}
                 className="form-select"
                 style={{ padding: '8px 10px', fontSize: '0.85rem', minHeight: '38px' }}
               >
@@ -850,6 +1180,27 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                 ))}
               </select>
             </div>
+          </div>
+
+          {/* Filtro por Subcategoria */}
+          <div className="form-group" style={{ marginBottom: 0 }}>
+            <label className="form-label" style={{ fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <Layers size={12} color="var(--brand-primary)" /> Subcategoria
+              {filtroCategoriaId && <span style={{ color: 'var(--brand-primary)' }}> (filtrado pela categoria)</span>}
+            </label>
+            <select
+              value={filtroSubcategoriaId}
+              onChange={(e) => setFiltroSubcategoriaId(e.target.value)}
+              className="form-select"
+              style={{ padding: '8px 10px', fontSize: '0.85rem', minHeight: '38px' }}
+            >
+              <option value="">Todas as Subcategorias</option>
+              {subcategoriasDisponiveis.map((sub: any) => (
+                <option key={sub.id} value={sub.id}>
+                  {sub.nome} {sub.categoriaPaiNome ? `(${sub.categoriaPaiNome})` : ''}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Filtro por Natureza e Status */}
@@ -885,6 +1236,144 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
               </select>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 6. Barra de Seleção de Modo de Agrupamento para Investigação */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          background: 'rgba(15, 23, 42, 0.45)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: 'var(--radius-sm)',
+          padding: '6px 10px',
+          gap: '8px',
+          flexWrap: 'wrap',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <Sliders size={13} color="var(--brand-primary)" />
+          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+            Investigar por:
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: '4px', overflowX: 'auto' }}>
+          {[
+            { modo: 'DATA', rotulo: 'Data', icone: CalendarDays },
+            { modo: 'INSTITUICAO', rotulo: 'Instituição', icone: Building2 },
+            { modo: 'FORMA_PAGAMENTO', rotulo: 'Forma de Pagto', icone: CreditCard },
+            { modo: 'CATEGORIA', rotulo: 'Categoria / Subcat', icone: Layers },
+          ].map((item) => {
+            const ativo = modoAgrupamento === item.modo;
+            const Icone = item.icone;
+            return (
+              <button
+                key={item.modo}
+                type="button"
+                onClick={() => setModoAgrupamento(item.modo as any)}
+                style={{
+                  background: ativo ? 'rgba(56, 189, 248, 0.18)' : 'transparent',
+                  border: `1px solid ${ativo ? 'var(--brand-primary)' : 'transparent'}`,
+                  color: ativo ? 'var(--brand-primary)' : 'var(--text-muted)',
+                  borderRadius: 'var(--radius-xs)',
+                  padding: '4px 8px',
+                  fontSize: '0.74rem',
+                  fontWeight: ativo ? 700 : 500,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  transition: 'all 0.15s ease',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <Icone size={12} />
+                {item.rotulo}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Badges de Filtros Investigativos Ativos */}
+      {filtrosAtivosCount > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+            Filtros Ativos ({movimentosFiltrados.length} lançamentos):
+          </span>
+          {filtroInstituicao !== 'TODAS' && (
+            <span
+              style={{
+                background: 'rgba(56, 189, 248, 0.12)',
+                color: 'var(--brand-primary)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                padding: '2px 8px',
+                borderRadius: 'var(--radius-full)',
+                fontSize: '0.70rem',
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              🏛️ {filtroInstituicao}
+              <X size={10} style={{ cursor: 'pointer' }} onClick={() => setFiltroInstituicao('TODAS')} />
+            </span>
+          )}
+          {filtroFormaPagamento !== 'TODAS' && (
+            <span
+              style={{
+                background: 'rgba(56, 189, 248, 0.12)',
+                color: 'var(--brand-primary)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                padding: '2px 8px',
+                borderRadius: 'var(--radius-full)',
+                fontSize: '0.70rem',
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              💳 {filtroFormaPagamento}
+              <X size={10} style={{ cursor: 'pointer' }} onClick={() => setFiltroFormaPagamento('TODAS')} />
+            </span>
+          )}
+          {filtroSubcategoriaId && (
+            <span
+              style={{
+                background: 'rgba(56, 189, 248, 0.12)',
+                color: 'var(--brand-primary)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                padding: '2px 8px',
+                borderRadius: 'var(--radius-full)',
+                fontSize: '0.70rem',
+                fontWeight: 600,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+            >
+              🏷️ {subcategoriasDisponiveis.find((s: any) => s.id === filtroSubcategoriaId)?.nome || 'Subcategoria'}
+              <X size={10} style={{ cursor: 'pointer' }} onClick={() => setFiltroSubcategoriaId('')} />
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={limparFiltros}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'var(--text-muted)',
+              fontSize: '0.70rem',
+              cursor: 'pointer',
+              textDecoration: 'underline',
+            }}
+          >
+            Limpar todos
+          </button>
         </div>
       )}
 
@@ -929,13 +1418,13 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
         })}
       </div>
 
-      {/* 7. Lista de Movimentos Agrupados por Dia */}
+      {/* 7. Lista de Movimentos Agrupados Multidimensionalmente (Data, Instituição, Forma de Pagamento ou Categoria) */}
       {carregando ? (
         <div style={{ textAlign: 'center', padding: '36px 0', color: 'var(--text-muted)' }}>
           <Clock className="animate-spin" size={24} style={{ margin: '0 auto 8px auto' }} />
           Carregando lançamentos...
         </div>
-      ) : movimentos.length === 0 ? (
+      ) : movimentosFiltrados.length === 0 ? (
         <div
           style={{
             textAlign: 'center',
@@ -955,78 +1444,128 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
               Nenhum lançamento encontrado
             </div>
             <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-              Não há transações para os filtros ou período selecionado.
+              Não há transações para os filtros ou parâmetros de investigação selecionados.
             </div>
           </div>
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={onOpenNovoLancamento}
-            style={{ padding: '8px 16px', fontSize: '0.85rem' }}
-          >
-            <Plus size={16} /> Criar Primeiro Lançamento
-          </button>
+          {filtrosAtivosCount > 0 ? (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={limparFiltros}
+              style={{ padding: '8px 16px', fontSize: '0.85rem' }}
+            >
+              <RotateCcw size={14} /> Limpar Todos os Filtros
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={onOpenNovoLancamento}
+              style={{ padding: '8px 16px', fontSize: '0.85rem' }}
+            >
+              <Plus size={16} /> Criar Primeiro Lançamento
+            </button>
+          )}
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {datasOrdenadas.map((dataChave) => {
-            const itensDoDia = movimentosAgrupados[dataChave];
-            const infoData = formatarDataCabecalho(dataChave);
+          {chavesGruposOrdenadas.map((chaveGrupo) => {
+            const grupo = gruposInvestigacao[chaveGrupo];
+            const itensDoGrupo = grupo.itens;
 
-            // Subtotal do dia para conveniência do usuário
-            const subtotalDia = itensDoDia.reduce((acc, it) => {
+            // Subtotal e volume do grupo investigado
+            const subtotalGrupo = itensDoGrupo.reduce((acc, it) => {
               if (it.natureza === 'RECEITA') return acc + it.valor;
               if (it.natureza === 'DESPESA') return acc - it.valor;
               return acc;
             }, 0);
 
+            const totalMovimentado = itensDoGrupo.reduce((acc, it) => acc + it.valor, 0);
+
+            // Cabeçalho adaptativo conforme o modo de agrupamento
+            let tituloCabecalho = grupo.rotulo;
+            let subTituloCabecalho = `${itensDoGrupo.length} ${itensDoGrupo.length === 1 ? 'lançamento' : 'lançamentos'}`;
+            let IconeGrupo = CalendarDays;
+
+            if (modoAgrupamento === 'DATA') {
+              const infoData = formatarDataCabecalho(chaveGrupo);
+              tituloCabecalho = `${infoData.diaMes} • ${infoData.diaSemana}`;
+              subTituloCabecalho = `${infoData.ano} (${itensDoGrupo.length} itens)`;
+              IconeGrupo = CalendarDays;
+            } else if (modoAgrupamento === 'INSTITUICAO') {
+              IconeGrupo = Building2;
+              subTituloCabecalho = grupo.subtitulo ? `${grupo.subtitulo} • ${itensDoGrupo.length} itens` : `${itensDoGrupo.length} itens`;
+            } else if (modoAgrupamento === 'FORMA_PAGAMENTO') {
+              IconeGrupo = CreditCard;
+              subTituloCabecalho = `${itensDoGrupo.length} transações`;
+            } else if (modoAgrupamento === 'CATEGORIA') {
+              IconeGrupo = Layers;
+              subTituloCabecalho = `${itensDoGrupo.length} transações categorizadas`;
+            }
+
             return (
-              <div key={dataChave} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {/* Separador de Data com Dia da Semana e Subtotal */}
+              <div key={chaveGrupo} style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {/* Separador de Grupo com Totais e Identificação Clara */}
                 <div
                   style={{
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
-                    padding: '4px 6px',
-                    borderBottom: '1px solid var(--border-subtle)',
+                    padding: '6px 8px',
+                    background: 'rgba(30, 41, 59, 0.4)',
+                    borderRadius: 'var(--radius-sm)',
+                    borderLeft: '3px solid var(--brand-primary)',
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <CalendarDays size={14} color="var(--brand-primary)" />
-                    <span style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                      {infoData.diaMes}
-                    </span>
-                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-                      • {infoData.diaSemana}
-                    </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <IconeGrupo size={15} color="var(--brand-primary)" />
+                    <div>
+                      <span style={{ fontSize: '0.84rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                        {tituloCabecalho}
+                      </span>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: '8px', fontWeight: 500 }}>
+                        {subTituloCabecalho}
+                      </span>
+                    </div>
                   </div>
-                  <span
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      color: subtotalDia >= 0 ? 'var(--status-green)' : 'var(--status-red)',
-                    }}
-                  >
-                    {subtotalDia >= 0 ? '+' : '-'} R$ {formatarValor(Math.abs(subtotalDia))}
-                  </span>
+                  <div style={{ textAlign: 'right' }}>
+                    <div
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.78rem',
+                        fontWeight: 800,
+                        color: subtotalGrupo >= 0 ? 'var(--status-green)' : 'var(--status-red)',
+                      }}
+                    >
+                      {subtotalGrupo >= 0 ? '+' : '-'} R$ {formatarValor(Math.abs(subtotalGrupo))}
+                    </div>
+                    {modoAgrupamento !== 'DATA' && (
+                      <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                        Vol: R$ {formatarValor(totalMovimentado)}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                {/* Itens do Dia */}
+                {/* Itens do Grupo */}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  {itensDoDia.map((item) => {
+                  {itensDoGrupo.map((item) => {
                     const isReceita = item.natureza === 'RECEITA';
                     const isDespesa = item.natureza === 'DESPESA';
                     const isTransf = item.natureza === 'TRANSFERENCIA_PROPRIA';
+                    const isAporte = item.natureza === 'APORTE_PATRIMONIAL';
 
                     const corValor = isReceita
                       ? 'var(--status-green)'
                       : isDespesa
                       ? 'var(--status-red)'
+                      : isAporte
+                      ? '#38bdf8'
                       : 'var(--brand-secondary)';
 
                     const sinal = isReceita ? '+ ' : isDespesa ? '- ' : '';
+                    const instItem = inferirInstituicao(item);
+                    const fpItem = inferirFormaPagamento(item);
 
                     return (
                       <div
@@ -1044,7 +1583,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                           transition: 'transform 0.15s ease, background-color 0.15s ease',
                         }}
                       >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', minWidth: 0, flex: 1 }}>
                           {/* Ícone de Natureza */}
                           <div
                             style={{
@@ -1055,6 +1594,8 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                                 ? 'var(--status-green-bg)'
                                 : isDespesa
                                 ? 'var(--status-red-bg)'
+                                : isAporte
+                                ? 'rgba(56, 189, 248, 0.15)'
                                 : 'rgba(129, 140, 248, 0.12)',
                               display: 'flex',
                               alignItems: 'center',
@@ -1065,11 +1606,21 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                             {isReceita && <ArrowDownLeft size={20} color="var(--status-green)" />}
                             {isDespesa && <ArrowUpRight size={20} color="var(--status-red)" />}
                             {isTransf && <ArrowLeftRight size={20} color="var(--brand-secondary)" />}
+                            {isAporte && <PiggyBank size={20} color="#38bdf8" />}
                           </div>
 
-                          {/* Textos: Descrição, Conta e Categoria */}
-                          <div>
-                            <div style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                          {/* Textos: Descrição, Metadados Analíticos (Data, Instituição, Forma de Pagto, Categoria, Subcategoria) */}
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div
+                              style={{
+                                fontWeight: 700,
+                                fontSize: '0.92rem',
+                                color: 'var(--text-primary)',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
                               {item.descricao}
                             </div>
                             <div
@@ -1077,19 +1628,73 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                                 display: 'flex',
                                 alignItems: 'center',
                                 gap: '6px',
-                                fontSize: '0.74rem',
+                                fontSize: '0.73rem',
                                 color: 'var(--text-muted)',
-                                marginTop: '2px',
+                                marginTop: '3px',
                                 flexWrap: 'wrap',
                               }}
                             >
-                              <span>{item.conta?.nome || 'Conta Padrão'}</span>
-                              {item.categoria?.nome && (
-                                <>
-                                  <span>•</span>
-                                  <span style={{ color: 'var(--brand-primary)' }}>{item.categoria.nome}</span>
-                                </>
+                              {/* Data (sempre visível ou destacada se não agrupado por data) */}
+                              {modoAgrupamento !== 'DATA' && (
+                                <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
+                                  📅 {item.dataMovimento}
+                                </span>
                               )}
+
+                              {/* Instituição & Conta */}
+                              <span
+                                style={{
+                                  background: 'rgba(255, 255, 255, 0.04)',
+                                  padding: '1px 5px',
+                                  borderRadius: '3px',
+                                  color: 'var(--text-secondary)',
+                                }}
+                              >
+                                🏛️ {instItem} ({item.conta?.nome || 'Conta'})
+                              </span>
+
+                              {/* Forma de Pagamento */}
+                              <span
+                                style={{
+                                  background: 'rgba(56, 189, 248, 0.08)',
+                                  color: 'var(--brand-primary)',
+                                  padding: '1px 5px',
+                                  borderRadius: '3px',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                💳 {fpItem}
+                              </span>
+
+                              {isAporte && (
+                                <span
+                                  style={{
+                                    background: 'rgba(56, 189, 248, 0.15)',
+                                    color: '#38bdf8',
+                                    padding: '1px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '0.68rem',
+                                    fontWeight: 700,
+                                  }}
+                                >
+                                  Investimento / Aporte
+                                </span>
+                              )}
+
+                              {item.categoria?.nome && (
+                                <span
+                                  style={{
+                                    background: 'rgba(168, 85, 247, 0.10)',
+                                    color: '#c084fc',
+                                    padding: '1px 6px',
+                                    borderRadius: '3px',
+                                    fontWeight: 600,
+                                  }}
+                                >
+                                  🏷️ {item.categoria.nome}
+                                </span>
+                              )}
+
                               {item.rateios && item.rateios.length > 0 && (
                                 <span
                                   style={{
@@ -1108,6 +1713,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                                   <Split size={10} /> {item.rateios.length} fatias
                                 </span>
                               )}
+
                               {item.status === 'PREVISTO' && (
                                 <span
                                   style={{
@@ -1122,12 +1728,38 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                                   Previsto
                                 </span>
                               )}
+
+                              {(() => {
+                                const matchParc = item.descricao.match(/(?:[\-_–—]|\()\s*(?:parcela\s+)?(\d+)\s*(?:\/|\s+de\s+)\s*(\d+)\s*\)?/i);
+                                if (matchParc) {
+                                  return (
+                                    <span
+                                      style={{
+                                        background: 'rgba(56, 189, 248, 0.12)',
+                                        color: 'var(--brand-primary)',
+                                        border: '1px solid rgba(56, 189, 248, 0.25)',
+                                        padding: '1px 6px',
+                                        borderRadius: '4px',
+                                        fontSize: '0.68rem',
+                                        fontWeight: 600,
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '3px',
+                                      }}
+                                      title={`Compra parcelada (${matchParc[1]}/${matchParc[2]}) realizada em ${item.dataMovimento}`}
+                                    >
+                                      📦 Parcela {matchParc[1]}/{matchParc[2]} • Compra: {item.dataMovimento}
+                                    </span>
+                                  );
+                                }
+                                return null;
+                              })()}
                             </div>
                           </div>
                         </div>
 
                         {/* Valor Formatado com Padrão de Mercado */}
-                        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                        <div style={{ textAlign: 'right', flexShrink: 0, paddingLeft: '8px' }}>
                           <div
                             style={{
                               fontFamily: 'var(--font-mono)',
@@ -1192,6 +1824,8 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                   ? 'RECEITA'
                   : itemSelecionado.natureza === 'DESPESA'
                   ? 'DESPESA DE CONSUMO'
+                  : itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
+                  ? 'INVESTIMENTO / APORTE PATRIMONIAL'
                   : 'TRANSFERÊNCIA PRÓPRIA'}
               </span>
               <div
@@ -1204,6 +1838,8 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                       ? 'var(--status-green)'
                       : itemSelecionado.natureza === 'DESPESA'
                       ? 'var(--status-red)'
+                      : itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
+                      ? '#38bdf8'
                       : 'var(--brand-secondary)',
                 }}
               >
@@ -1217,12 +1853,42 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.85rem' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Data:</span>
-                <span style={{ fontWeight: 600 }}>{itemSelecionado.dataMovimento}</span>
+                <span style={{ color: 'var(--text-muted)' }}>Data da Transação / Compra:</span>
+                <span style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  {itemSelecionado.dataMovimento}
+                  {itemSelecionado.descricao.match(/(?:[\-_–—]|\()\s*(?:parcela\s+)?(\d+)\s*(?:\/|\s+de\s+)\s*(\d+)\s*\)?/i) && (
+                    <span
+                      style={{
+                        background: 'rgba(56, 189, 248, 0.15)',
+                        color: 'var(--brand-primary)',
+                        padding: '1px 6px',
+                        borderRadius: '4px',
+                        fontSize: '0.70rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      Data da Compra Parcelada
+                    </span>
+                  )}
+                </span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Conta:</span>
                 <span style={{ fontWeight: 600 }}>{itemSelecionado.conta?.nome || 'Conta Padrão'}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                <span style={{ color: 'var(--text-muted)' }}>Instituição Financeira:</span>
+                <span style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                  <Building2 size={13} color="var(--brand-primary)" />
+                  {inferirInstituicao(itemSelecionado)}
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+                <span style={{ color: 'var(--text-muted)' }}>Forma de Pagamento:</span>
+                <span style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '4px', color: 'var(--brand-primary)' }}>
+                  <CreditCard size={13} />
+                  {inferirFormaPagamento(itemSelecionado)}
+                </span>
               </div>
               {/* Campo Categoria com Ajuste Direto e Propagação por Vendedor (TASK-42) */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '10px', background: 'rgba(56, 189, 248, 0.05)', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(56, 189, 248, 0.2)' }}>
@@ -1274,9 +1940,14 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                   >
                     <option value="">Sem categoria definida</option>
                     {categorias.map((cat) => (
-                      <option key={cat.id} value={cat.id}>
-                        {cat.nome}
-                      </option>
+                      <optgroup key={cat.id} label={cat.nome}>
+                        <option value={cat.id}>{cat.nome} (Geral)</option>
+                        {cat.subcategorias?.map((sub) => (
+                          <option key={sub.id} value={sub.id}>
+                            └─ {sub.nome}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
 
@@ -1303,32 +1974,49 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
 
                 {/* Opção de Propagação para Lançamentos Similares do mesmo Vendedor */}
                 {similaresInfo && similaresInfo.totalSimilares > 0 && (
-                  <label
+                  <div
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      cursor: 'pointer',
-                      fontSize: '0.78rem',
-                      color: 'var(--text-secondary)',
-                      marginTop: '4px',
-                      padding: '4px 6px',
-                      background: 'rgba(255, 255, 255, 0.03)',
+                      marginTop: '6px',
+                      padding: '8px 10px',
+                      background: 'rgba(255, 255, 255, 0.02)',
+                      border: '1px solid var(--border-subtle)',
                       borderRadius: 'var(--radius-xs)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '4px',
                     }}
                   >
-                    <input
-                      type="checkbox"
-                      checked={propagarVendedor}
-                      onChange={(e) => setPropagarVendedor(e.target.checked)}
-                      style={{ cursor: 'pointer', accentColor: 'var(--brand-primary)' }}
-                    />
-                    <span>
-                      Aplicar também a todas as compras de{' '}
-                      <strong style={{ color: 'var(--brand-primary)' }}>"{similaresInfo.termoVendedor}"</strong>{' '}
-                      ({similaresInfo.totalSimilares} outro{similaresInfo.totalSimilares > 1 ? 's' : ''} lançamento{similaresInfo.totalSimilares > 1 ? 's' : ''})
-                    </span>
-                  </label>
+                    <label
+                      style={{
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '8px',
+                        cursor: 'pointer',
+                        fontSize: '0.78rem',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={propagarVendedor}
+                        onChange={(e) => setPropagarVendedor(e.target.checked)}
+                        style={{ cursor: 'pointer', accentColor: 'var(--brand-primary)', marginTop: '2px' }}
+                      />
+                      <span style={{ lineHeight: 1.4 }}>
+                        Aplicar também a todas as compras de{' '}
+                        <strong style={{ color: 'var(--brand-primary)' }}>"{similaresInfo.termoVendedor}"</strong>{' '}
+                        ({similaresInfo.totalSimilares} outro{similaresInfo.totalSimilares > 1 ? 's' : ''} lançamento{similaresInfo.totalSimilares > 1 ? 's' : ''})
+                      </span>
+                    </label>
+                    {!propagarVendedor && (
+                      <span style={{ fontSize: '0.72rem', color: 'var(--status-green)', paddingLeft: '22px' }}>
+                        ✓ Apenas esta compra
+                        {itemSelecionado.descricao.match(/(?:[\-_–—]|\()\s*parcela\s+(\d+)\s*(?:\/|\s+de\s+)\s*(\d+)\s*\)?/i)
+                          ? ' (e suas respectivas parcelas desta compra)'
+                          : ''} será atualizada.
+                      </span>
+                    )}
+                  </div>
                 )}
 
                 {feedbackCategoria && (
@@ -1382,6 +2070,124 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                   </div>
                 </div>
               )}
+              {/* Opção de Catalogação como Pagamento de Fatura / Transferência Própria (Anti-Dupla Contagem) */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                  padding: '10px',
+                  background: itemSelecionado.natureza === 'TRANSFERENCIA_PROPRIA'
+                    ? 'rgba(129, 140, 248, 0.08)'
+                    : 'rgba(255, 255, 255, 0.02)',
+                  borderRadius: 'var(--radius-sm)',
+                  border: `1px solid ${
+                    itemSelecionado.natureza === 'TRANSFERENCIA_PROPRIA'
+                      ? 'rgba(129, 140, 248, 0.3)'
+                      : 'var(--border-subtle)'
+                  }`,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <ArrowLeftRight size={14} color="var(--brand-secondary)" />
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 700, fontSize: '0.8rem' }}>
+                      Pagamento de Fatura / Transferência Própria:
+                    </span>
+                  </div>
+                  {itemSelecionado.natureza === 'TRANSFERENCIA_PROPRIA' && (
+                    <span
+                      style={{
+                        background: 'rgba(129, 140, 248, 0.18)',
+                        color: 'var(--brand-secondary)',
+                        padding: '1px 7px',
+                        borderRadius: 'var(--radius-full)',
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      Anti-Dupla Contagem Ativo
+                    </span>
+                  )}
+                </div>
+
+                <p style={{ margin: 0, fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                  {itemSelecionado.natureza === 'TRANSFERENCIA_PROPRIA'
+                    ? 'Este lançamento está catalogado como transferência interna (pagamento de fatura própria). O valor não duplica nas despesas de consumo.'
+                    : 'Classifique como pagamento de fatura ou transferência própria para que este débito não duplique seus gastos nos relatórios mensais.'}
+                </p>
+
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                  {itemSelecionado.natureza !== 'TRANSFERENCIA_PROPRIA' ? (
+                    <button
+                      type="button"
+                      disabled={salvandoNatureza}
+                      onClick={() => handleAlternarPagamentoFaturaTransferencia('TRANSFERENCIA_PROPRIA')}
+                      style={{
+                        flex: 1,
+                        background: 'rgba(129, 140, 248, 0.15)',
+                        border: '1px solid rgba(129, 140, 248, 0.4)',
+                        color: 'var(--brand-secondary)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '8px 12px',
+                        fontWeight: 700,
+                        fontSize: '0.80rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        cursor: salvandoNatureza ? 'not-allowed' : 'pointer',
+                        opacity: salvandoNatureza ? 0.6 : 1,
+                      }}
+                    >
+                      <ArrowLeftRight size={14} />
+                      {salvandoNatureza ? 'Atualizando...' : 'Catalogar como Pagamento de Fatura'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={salvandoNatureza}
+                      onClick={() => handleAlternarPagamentoFaturaTransferencia('DESPESA')}
+                      style={{
+                        flex: 1,
+                        background: 'rgba(239, 68, 68, 0.1)',
+                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                        color: 'var(--status-red)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '8px 12px',
+                        fontWeight: 700,
+                        fontSize: '0.80rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        cursor: salvandoNatureza ? 'not-allowed' : 'pointer',
+                        opacity: salvandoNatureza ? 0.6 : 1,
+                      }}
+                    >
+                      <RotateCcw size={14} />
+                      {salvandoNatureza ? 'Atualizando...' : 'Reverter para Despesa Comum'}
+                    </button>
+                  )}
+                </div>
+
+                {feedbackNatureza && (
+                  <div
+                    style={{
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      padding: '6px 8px',
+                      borderRadius: 'var(--radius-xs)',
+                      background: feedbackNatureza.tipo === 'sucesso' ? 'var(--status-green-bg)' : 'var(--status-red-bg)',
+                      color: feedbackNatureza.tipo === 'sucesso' ? 'var(--status-green)' : 'var(--status-red)',
+                      border: `1px solid ${feedbackNatureza.tipo === 'sucesso' ? 'var(--status-green-border)' : 'var(--status-red-border)'}`,
+                      marginTop: '4px',
+                    }}
+                  >
+                    {feedbackNatureza.texto}
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Ações: Desdobrar e Excluir Lançamento */}
@@ -1410,6 +2216,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                   ? 'Editar Rateio / Desdobramento'
                   : 'Desdobrar / Ratear Categorias'}
               </button>
+
 
               <button
                 type="button"

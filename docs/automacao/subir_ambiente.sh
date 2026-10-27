@@ -321,7 +321,8 @@ trap cleanup_processes SIGINT SIGTERM
 
 if [ "${JA_RODANDO_BACKEND}" = false ]; then
   echo -e "Iniciando Backend API Fastify (npm run dev)..."
-  npm run dev &
+  # Executa o backend com prefixo [evolvi-backend] em todas as saídas
+  (npm run dev 2>&1 | sed -u 's/^/[evolvi-backend] /') &
   BACKEND_PID=$!
   echo -e "  ✔ Backend iniciado (PID: ${BACKEND_PID})"
 else
@@ -330,7 +331,8 @@ fi
 
 if [ "${JA_RODANDO_FRONTEND}" = false ]; then
   echo -e "Iniciando Frontend React Vite (npm run dev:web)..."
-  npm run dev:web &
+  # Executa o frontend com prefixo [evolvi-web] em todas as saídas
+  (npm run dev:web 2>&1 | sed -u 's/^/[evolvi-web] /') &
   FRONTEND_PID=$!
   echo -e "  ✔ Frontend iniciado (PID: ${FRONTEND_PID})"
 else

@@ -1,7 +1,13 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { env } from '../../config/env.js';
 import { prisma } from '../../infrastructure/database/prisma.js';
 import { importacaoEventBus } from '../../infrastructure/events/importacao-event-bus.js';
+import {
+  ImportacaoTentativasService,
+  AlertaDuplicidadeArquivo,
+  OrigemLote,
+} from './importacao-tentativas.service.js';
 
 export interface SalvarArquivoInput {
   nomeOriginal: string;
@@ -14,32 +20,52 @@ export interface RecepcionarLoteInput {
   arquivos: SalvarArquivoInput[];
   provedorIa?: string;
   modeloIa?: string;
+  /** TASK-50: força o reprocessamento mesmo quando o arquivo é apontado como duplicado. */
+  forcarReprocessamento?: boolean;
+  /** TASK-50: origem do lote (upload avulso ou pasta inteira). Inferida quando ausente. */
+  origem?: OrigemLote;
+}
+
+export interface ArquivoRecepcionadoResponse {
+  id: string;
+  nomeArquivo: string;
+  tamanhoBytes: number;
+  mimeType: string | null;
+  status: string;
+  hashConteudo?: string | null;
+  totalTentativas?: number;
+  jaImportadoAnteriormente?: boolean;
+  arquivoOriginalId?: string | null;
+  statusFinal?: string | null;
 }
 
 export interface LoteCriadoResponse {
   loteId: string;
   status: string;
+  origem: OrigemLote;
+  iaSelecionada: string | null;
   caminhoDiretorio: string;
   totalArquivos: number;
-  arquivos: {
-    id: string;
-    nomeArquivo: string;
-    tamanhoBytes: number;
-    mimeType: string | null;
-    status: string;
-  }[];
+  totalSucesso: number;
+  totalFalha: number;
+  totalDuplicados: number;
+  totalLancamentos: number;
+  arquivos: ArquivoRecepcionadoResponse[];
+  /** TASK-50: alertas de duplicidade que exigem confirmação explícita do usuário. */
+  alertasDuplicidade: AlertaDuplicidadeArquivo[];
+  requerConfirmacaoReprocessamento: boolean;
 }
 
 export class ImportacaoStorageService {
   private baseUploadDir: string;
 
-  constructor(baseUploadDir: string = 'uploads') {
+  constructor(baseUploadDir: string = env.UPLOADS_DIR) {
     this.baseUploadDir = baseUploadDir;
   }
 
   /**
-   * Gera o padrão estrito de diretório temporário:
-   * uploads/yyyy-mm-dd-hh-mm-ss-{usuarioId}/
+   * Gera o padrão estrito de diretório temporário (uma subpasta por usuário):
+   * {UPLOADS_DIR}/{usuarioId}/yyyy-mm-dd-hh-mm-ss-{usuarioId}/
    */
   public gerarCaminhoDiretorioLote(usuarioId: string, dataReferencia: Date = new Date()): string {
     const pad = (n: number) => n.toString().padStart(2, '0');
@@ -50,8 +76,19 @@ export class ImportacaoStorageService {
     const min = pad(dataReferencia.getMinutes());
     const ss = pad(dataReferencia.getSeconds());
 
-    const folderName = `${yyyy}-${mm}-${dd}-${hh}-${min}-${ss}-${usuarioId}`;
-    return path.join(this.baseUploadDir, folderName);
+    // Garante que o usuarioId seja um único segmento de path (sem barras nem '..')
+    const usuarioSegmento = this.sanitizarSegmentoPath(usuarioId);
+    const folderName = `${yyyy}-${mm}-${dd}-${hh}-${min}-${ss}-${usuarioSegmento}`;
+    return path.join(this.baseUploadDir, usuarioSegmento, folderName);
+  }
+
+  /**
+   * Reduz um valor a um único segmento seguro de path, removendo separadores,
+   * referências a '..' e caracteres não alfanuméricos (usado para o usuarioId vindo do JWT).
+   */
+  private sanitizarSegmentoPath(valor: string): string {
+    const limpo = (valor || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    return limpo === '' ? 'sem-usuario' : limpo;
   }
 
   /**
@@ -72,12 +109,25 @@ export class ImportacaoStorageService {
     return partes.join(path.sep);
   }
 
+  /** TASK-50: infere a origem do lote pela presença de caminhos de subpasta nos nomes. */
+  public inferirOrigem(arquivos: SalvarArquivoInput[]): OrigemLote {
+    const temSubpasta = arquivos.some((a) => {
+      const nome = (a.nomeOriginal || '').replace(/\\/g, '/');
+      return nome.includes('/');
+    });
+    return temSubpasta ? 'PASTA' : 'UPLOAD';
+  }
+
   /**
    * Recepciona lote de arquivos, grava em disco no diretório temporário
    * e persiste registros de lote e arquivos no PostgreSQL.
+   *
+   * TASK-50: calcula SHA-256 de cada arquivo e detecta duplicidade por
+   * (usuarioId + nome) ou (usuarioId + hash), registrando a tentativa DUPLICADO.
    */
   public async recepcionarLote(input: RecepcionarLoteInput): Promise<LoteCriadoResponse> {
     const { usuarioId, arquivos } = input;
+    const forcar = Boolean(input.forcarReprocessamento);
 
     if (!arquivos || arquivos.length === 0) {
       throw new Error('Nenhum arquivo enviado para importação.');
@@ -96,6 +146,7 @@ export class ImportacaoStorageService {
       caminhoRelativo: string;
       tamanhoBytes: number;
       mimeType: string | null;
+      hashConteudo: string;
     }[] = [];
 
     for (const arq of arquivos) {
@@ -114,8 +165,12 @@ export class ImportacaoStorageService {
         caminhoRelativo,
         tamanhoBytes: arq.buffer.length,
         mimeType: arq.mimeType || 'application/octet-stream',
+        hashConteudo: ImportacaoTentativasService.calcularHashConteudo(arq.buffer),
       });
     }
+
+    const origem: OrigemLote = input.origem || this.inferirOrigem(arquivos);
+    const iaSelecionada = input.modeloIa || input.provedorIa || null;
 
     // Persiste Lote e Arquivos atômica e transacionalmente no PostgreSQL
     const lote = await prisma.$transaction(async (tx) => {
@@ -123,30 +178,95 @@ export class ImportacaoStorageService {
         data: {
           usuarioId,
           caminhoDiretorio,
+          origem,
+          iaSelecionada,
           totalArquivos: arquivosSalvos.length,
           arquivosProcessados: 0,
           status: 'RECEPCIONADO',
+          iniciadoEm: agora,
         },
       });
 
-      const arquivosCriados = [];
+      const arquivosCriados: any[] = [];
+      const alertasDuplicidade: AlertaDuplicidadeArquivo[] = [];
+
       for (const arq of arquivosSalvos) {
+        // Detecção de duplicidade restrita ao mesmo usuarioId (multi-tenant).
+        // Arquivos reenvios nunca servem de referência, evitando cadeias.
+        const { duplicado, motivos, ocorrencias } =
+          await ImportacaoTentativasService.detectarDuplicidade({
+            usuarioId,
+            nomeArquivo: arq.nomeArquivo,
+            hashConteudo: arq.hashConteudo,
+            db: tx,
+          });
+
+        const arquivoOriginalId = duplicado ? ocorrencias[0].id : null;
+
         const arqCriado = await tx.arquivoImportacao.create({
           data: {
             loteId: novoLote.id,
+            usuarioId,
             nomeArquivo: arq.nomeArquivo,
             caminhoRelativo: arq.caminhoRelativo,
             tamanhoBytes: BigInt(arq.tamanhoBytes),
             mimeType: arq.mimeType,
             status: 'RECEPCIONADO',
+            hashConteudo: arq.hashConteudo,
+            // Com forçar reprocessamento o arquivo segue para o pipeline normal
+            jaImportadoAnteriormente: duplicado && !forcar,
+            arquivoOriginalId,
+            statusFinal: duplicado && !forcar ? 'DUPLICADO' : null,
+            // A tentativa DUPLICADO é registrada logo abaixo com numeroTentativa 1
+            totalTentativas: duplicado ? 1 : 0,
+            ultimoProvedor: null,
           },
         });
+
+        if (duplicado) {
+          const detalheMotivos = motivos
+            .map((m) => (m === 'MESMO_NOME' ? 'mesmo nome de arquivo' : 'mesmo conteúdo (SHA-256)'))
+            .join(' e ');
+
+          await tx.tentativaArquivoImportacao.create({
+            data: {
+              usuarioId,
+              arquivoId: arqCriado.id,
+              numeroTentativa: 1,
+              provedor: 'DETECCAO_DUPLICIDADE',
+              modelo: 'sha256',
+              status: 'DUPLICADO',
+              mensagemErro: `Arquivo já importado anteriormente pelo usuário: ${detalheMotivos}.${
+                forcar ? ' Reprocessamento confirmado pelo usuário.' : ''
+              }`,
+              totalTransacoesExtraidas: 0,
+              duracaoMs: 0,
+            },
+          });
+
+          alertasDuplicidade.push({
+            arquivoId: arqCriado.id,
+            nomeArquivo: arq.nomeArquivo,
+            jaImportadoAnteriormente: duplicado && !forcar,
+            motivos,
+            arquivoOriginalId,
+            ocorrencias,
+          });
+        }
+
         arquivosCriados.push(arqCriado);
       }
 
+      const contadores = await ImportacaoTentativasService.recalcularContadoresLote(
+        novoLote.id,
+        tx as any
+      );
+
       return {
         ...novoLote,
+        ...contadores,
         arquivos: arquivosCriados,
+        alertasDuplicidade,
       };
     });
 
@@ -164,15 +284,34 @@ export class ImportacaoStorageService {
     return {
       loteId: lote.id,
       status: lote.status,
+      origem: lote.origem as OrigemLote,
+      iaSelecionada: lote.iaSelecionada,
       caminhoDiretorio: lote.caminhoDiretorio,
       totalArquivos: lote.totalArquivos,
-      arquivos: lote.arquivos.map((a) => ({
-        id: a.id,
-        nomeArquivo: a.nomeArquivo,
-        tamanhoBytes: Number(a.tamanhoBytes),
-        mimeType: a.mimeType,
-        status: a.status,
-      })),
+      totalSucesso: lote.totalSucesso,
+      totalFalha: lote.totalFalha,
+      totalDuplicados: lote.totalDuplicados,
+      totalLancamentos: lote.totalLancamentos,
+      arquivos: lote.arquivos.map((a: any) => this.formatarArquivoRecepcionado(a)),
+      alertasDuplicidade: lote.alertasDuplicidade,
+      requerConfirmacaoReprocessamento: lote.alertasDuplicidade.some(
+        (a: AlertaDuplicidadeArquivo) => a.jaImportadoAnteriormente
+      ),
+    };
+  }
+
+  private formatarArquivoRecepcionado(a: any): ArquivoRecepcionadoResponse {
+    return {
+      id: a.id,
+      nomeArquivo: a.nomeArquivo,
+      tamanhoBytes: Number(a.tamanhoBytes),
+      mimeType: a.mimeType,
+      status: a.status,
+      hashConteudo: a.hashConteudo,
+      totalTentativas: a.totalTentativas,
+      jaImportadoAnteriormente: a.jaImportadoAnteriormente,
+      arquivoOriginalId: a.arquivoOriginalId,
+      statusFinal: a.statusFinal,
     };
   }
 
@@ -187,7 +326,7 @@ export class ImportacaoStorageService {
       },
       include: {
         arquivos: {
-          orderBy: { criadoEm: 'asc' },
+          orderBy: [{ criadoEm: 'asc' }, { id: 'asc' }],
         },
       },
     });
@@ -230,6 +369,9 @@ export class ImportacaoStorageService {
       statsMap.set(stat.arquivoId, current);
     }
 
+    // TASK-50: total consolidado de tentativas do lote (soma de arquivos.totalTentativas)
+    const totalTentativasLote = lote.arquivos.reduce((acc, a) => acc + (a.totalTentativas ?? 0), 0);
+
     const arquivosFormatados = lote.arquivos.map((a) => {
       const stats = statsMap.get(a.id) || {
         totalLinhas: 0,
@@ -247,6 +389,12 @@ export class ImportacaoStorageService {
         mimeType: a.mimeType,
         status: a.status,
         mensagemErro: a.mensagemErro,
+        hashConteudo: a.hashConteudo,
+        totalTentativas: a.totalTentativas,
+        statusFinal: a.statusFinal,
+        jaImportadoAnteriormente: a.jaImportadoAnteriormente,
+        arquivoOriginalId: a.arquivoOriginalId,
+        ultimoProvedor: a.ultimoProvedor,
         criadoEm: a.criadoEm,
         atualizadoEm: a.atualizadoEm,
         stagingStats: stats,
@@ -278,11 +426,20 @@ export class ImportacaoStorageService {
       id: lote.id,
       usuarioId: lote.usuarioId,
       caminhoDiretorio: lote.caminhoDiretorio,
+      origem: lote.origem,
+      iaSelecionada: lote.iaSelecionada,
       totalArquivos: lote.totalArquivos,
+      totalSucesso: lote.totalSucesso,
+      totalFalha: lote.totalFalha,
+      totalDuplicados: lote.totalDuplicados,
+      totalLancamentos: lote.totalLancamentos,
       arquivosProcessados: lote.arquivosProcessados,
       status: lote.status,
+      iniciadoEm: lote.iniciadoEm,
+      finalizadoEm: lote.finalizadoEm,
       criadoEm: lote.criadoEm,
       atualizadoEm: lote.atualizadoEm,
+      totalTentativas: totalTentativasLote,
       metricasProgresso: {
         upload: {
           concluido: totalArquivos,
@@ -330,11 +487,14 @@ export class ImportacaoStorageService {
       take: options?.limite ?? 20,
       include: {
         arquivos: {
+          orderBy: [{ criadoEm: 'asc' }, { id: 'asc' }],
           select: {
             id: true,
             nomeArquivo: true,
             status: true,
             tamanhoBytes: true,
+            totalTentativas: true,
+            jaImportadoAnteriormente: true,
           },
         },
       },
@@ -343,9 +503,17 @@ export class ImportacaoStorageService {
     return lotes.map((lote) => ({
       id: lote.id,
       caminhoDiretorio: lote.caminhoDiretorio,
+      origem: lote.origem,
+      iaSelecionada: lote.iaSelecionada,
       totalArquivos: lote.totalArquivos,
+      totalSucesso: lote.totalSucesso,
+      totalFalha: lote.totalFalha,
+      totalDuplicados: lote.totalDuplicados,
+      totalLancamentos: lote.totalLancamentos,
       arquivosProcessados: lote.arquivosProcessados,
       status: lote.status,
+      iniciadoEm: lote.iniciadoEm,
+      finalizadoEm: lote.finalizadoEm,
       criadoEm: lote.criadoEm,
       atualizadoEm: lote.atualizadoEm,
       arquivos: lote.arquivos.map((a) => ({
@@ -353,6 +521,8 @@ export class ImportacaoStorageService {
         nomeArquivo: a.nomeArquivo,
         status: a.status,
         tamanhoBytes: Number(a.tamanhoBytes),
+        totalTentativas: a.totalTentativas,
+        jaImportadoAnteriormente: a.jaImportadoAnteriormente,
       })),
     }));
   }
@@ -407,12 +577,17 @@ export class ImportacaoStorageService {
         where: { arquivoId },
       });
 
-      // 2.2 Remove o registro do arquivo de importação
+      // 2.2 Remove o histórico de tentativas do arquivo (TASK-50)
+      await tx.tentativaArquivoImportacao.deleteMany({
+        where: { arquivoId },
+      });
+
+      // 2.3 Remove o registro do arquivo de importação
       await tx.arquivoImportacao.delete({
         where: { id: arquivoId },
       });
 
-      // 2.3 Recalcula totais do lote
+      // 2.4 Recalcula totais do lote
       const totalRestante = await tx.arquivoImportacao.count({
         where: { loteId },
       });
@@ -448,6 +623,8 @@ export class ImportacaoStorageService {
           status: novoStatusLote,
         },
       });
+
+      await ImportacaoTentativasService.recalcularContadoresLote(loteId, tx as any);
     });
 
     return {

@@ -42,7 +42,7 @@ export class NubankBankConnectorProvider implements IBankConnectorProvider {
 
     // 1. Anti-Dupla Contagem: Pagamentos de fatura feitos com a NuConta ou recebimento de pagamento de fatura
     if (
-      /pag(amento|to)?\s*(de|da)?\s*fat(ura)?|fatura\s*cart[aã]o|pagamento\s*recebido|deb\s*aut\s*fatura\s*nu|pagto\s*fatura\s*nubank/i.test(
+      /pag(amento|to)?\s*(efetuado|de|da)?\s*fat(ura)?|fatura\s*cart[aã]o|pagamento\s*recebido|deb\s*aut\s*fatura\s*nu|pagto\s*fatura\s*nubank|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
         desc
       ) ||
       tagsUpper.includes('PAGAMENTO_FATURA')

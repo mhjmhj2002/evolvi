@@ -16,6 +16,9 @@ import {
   apiService,
   ContaItem,
   CategoriaTreeItem,
+  ProvedorIa,
+  modeloPadraoDoProvedor,
+  nomeAmigavelDoProvedor,
 } from '../api.ts';
 
 export type ModoIa = 'CREDITOS' | 'API_PROPRIA' | 'EXTERNO';
@@ -55,8 +58,8 @@ export const ModalRegistroIa: React.FC<ModalRegistroIaProps> = ({
   const [modoAtivo, setModoAtivo] = useState<ModoIa>('CREDITOS');
 
   // Configurações de API Própria (BYOK) salvas em localStorage
-  const [provedor, setProvedor] = useState<'GEMINI' | 'OPENAI' | 'ANTHROPIC'>('GEMINI');
-  const [modelo, setModelo] = useState('gemini-3.8-flash');
+  const [provedor, setProvedor] = useState<ProvedorIa>('GEMINI');
+  const [modelo, setModelo] = useState(modeloPadraoDoProvedor('GEMINI'));
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('evolvi_ia_byok_key') || '');
   const [testandoChave, setTestandoChave] = useState(false);
   const [msgChave, setMsgChave] = useState<{ sucesso: boolean; texto: string } | null>(null);
@@ -339,11 +342,19 @@ export const ModalRegistroIa: React.FC<ModalRegistroIaProps> = ({
               <select
                 className="form-select"
                 value={provedor}
-                onChange={(e) => setProvedor(e.target.value as any)}
+                onChange={e => {
+                  const novo = e.target.value as ProvedorIa;
+                  setProvedor(novo);
+                  setModelo(modeloPadraoDoProvedor(novo));
+                }}
               >
-                <option value="GEMINI">Google Gemini</option>
-                <option value="OPENAI">OpenAI</option>
-                <option value="ANTHROPIC">Anthropic Claude</option>
+                {(['GEMINI', 'DEEPSEEK', 'OPENAI', 'ANTHROPIC', 'OPENROUTER'] as ProvedorIa[]).map(
+                  id => (
+                    <option key={id} value={id}>
+                      {nomeAmigavelDoProvedor(id)}
+                    </option>
+                  )
+                )}
               </select>
             </div>
             <div className="form-group">
@@ -352,8 +363,12 @@ export const ModalRegistroIa: React.FC<ModalRegistroIaProps> = ({
                 type="text"
                 className="form-input"
                 value={modelo}
-                onChange={(e) => setModelo(e.target.value)}
-                placeholder="Ex: gemini-3.8-flash"
+                onChange={e => setModelo(e.target.value)}
+                placeholder={
+                  provedor === 'OPENROUTER'
+                    ? 'Ex: deepseek/deepseek-chat'
+                    : `Ex: ${modeloPadraoDoProvedor(provedor)}`
+                }
               />
             </div>
           </div>
@@ -384,7 +399,17 @@ export const ModalRegistroIa: React.FC<ModalRegistroIaProps> = ({
             <input
               type="password"
               className="form-input"
-              placeholder="Cole sua chave de API aqui"
+              placeholder={
+                provedor === 'OPENROUTER'
+                  ? 'sk-or-v1-...'
+                  : provedor === 'GEMINI'
+                    ? 'AIzaSy...'
+                    : provedor === 'DEEPSEEK'
+                      ? 'sk-...'
+                      : provedor === 'OPENAI'
+                        ? 'sk-proj-...'
+                        : 'sk-ant-...'
+              }
               value={apiKey}
               onChange={(e) => handleSalvarChave(e.target.value)}
             />

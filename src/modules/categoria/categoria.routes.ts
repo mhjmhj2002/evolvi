@@ -145,4 +145,69 @@ export const categoriaRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       },
     });
   });
+
+  // GET /api/categorias/regras-vendedor
+  // Retorna todas as regras cadastradas pelo usuário associando vendedores a categorias
+  app.get('/regras-vendedor', async (request, reply) => {
+    const usuarioId = request.user.sub;
+
+    const regras = await prisma.regraVendedorCategoria.findMany({
+      where: { usuarioId },
+      include: {
+        categoria: {
+          select: {
+            id: true,
+            nome: true,
+            categoriaPaiId: true,
+            categoriaPai: {
+              select: { id: true, nome: true },
+            },
+          },
+        },
+      },
+      orderBy: [{ totalAplicacoes: 'desc' }, { atualizadoEm: 'desc' }],
+    });
+
+    return reply.status(200).send({
+      regras: regras.map((r) => ({
+        id: r.id,
+        termoVendedor: r.termoVendedor,
+        categoriaId: r.categoriaId,
+        categoriaNome: r.categoria.nome,
+        categoriaPaiNome: r.categoria.categoriaPai?.nome || null,
+        totalAplicacoes: r.totalAplicacoes,
+        criadoEm: r.criadoEm,
+        atualizadoEm: r.atualizadoEm,
+      })),
+    });
+  });
+
+  // DELETE /api/categorias/regras-vendedor/:id
+  // Exclui uma regra de vendedor específica
+  app.delete('/regras-vendedor/:id', async (request, reply) => {
+    const usuarioId = request.user.sub;
+    const { id } = request.params as { id: string };
+
+    const regra = await prisma.regraVendedorCategoria.findFirst({
+      where: { id, usuarioId },
+    });
+
+    if (!regra) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'Regra de vendedor não encontrada.',
+      });
+    }
+
+    await prisma.regraVendedorCategoria.delete({
+      where: { id },
+    });
+
+    return reply.status(200).send({
+      sucesso: true,
+      message: 'Regra de categorização por vendedor removida com sucesso.',
+    });
+  });
 };
+

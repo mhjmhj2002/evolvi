@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Limpar Histórico de Importação Evolvi
+Comment=Limpa lançamentos, lotes, arquivos de importação e alertas preservando credenciais de IA
+Exec=bash /home/mhj/git/evolvi/docs/automacao/limpar_historico_importacao.sh
+Path=/home/mhj/git/evolvi
+Icon=edit-clear
+Terminal=true
+Categories=Development;
+StartupNotify=true

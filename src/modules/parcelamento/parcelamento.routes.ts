@@ -7,6 +7,7 @@ import {
   queryParcelamentoSchema,
 } from './parcelamento.schema.js';
 import { addMesesCompetencia, formatarParcelamento } from './parcelamento.util.js';
+import { ParcelamentoSincronizacaoService } from './parcelamento-sincronizacao.service.js';
 
 export const parcelamentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   app.addHook('preHandler', ensureAuthenticated);
@@ -15,6 +16,14 @@ export const parcelamentoRoutes: FastifyPluginAsync = async (app: FastifyInstanc
   app.get('/', async (request, reply) => {
     const usuarioId = request.user.sub;
     const query = queryParcelamentoSchema.safeParse(request.query);
+
+    // Auto-sincronização de segurança sob demanda (quitação temporal e deduplicação)
+    try {
+      await ParcelamentoSincronizacaoService.sincronizarParaUsuario(usuarioId);
+    } catch (syncErr) {
+      // Falha não-bloqueante na sincronização sob demanda
+      console.error(`[ParcelamentoRoutes] Erro na auto-sincronização de parcelamentos [${usuarioId}]:`, syncErr);
+    }
 
     const where: any = { usuarioId };
     if (query.success) {

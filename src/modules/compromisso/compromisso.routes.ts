@@ -127,6 +127,8 @@ export const compromissoRoutes: FastifyPluginAsync = async (app: FastifyInstance
         const parcelasAposMes = Math.max(0, totalParcelas - parcelaNoMes);
         const saldoAposMes = Number((parcelasAposMes * valor).toFixed(2));
 
+        const dataCompraFormatada = parc.primeiroVencimento;
+
         itens.push({
           tipo: 'PARCELAMENTO',
           origemId: parc.id,
@@ -134,6 +136,7 @@ export const compromissoRoutes: FastifyPluginAsync = async (app: FastifyInstance
           valor,
           diaVencimento: dia,
           dataVencimentoPrevista,
+          dataCompra: dataCompraFormatada,
           categoria: parc.categoria,
           conta: parc.conta
             ? {
@@ -146,6 +149,8 @@ export const compromissoRoutes: FastifyPluginAsync = async (app: FastifyInstance
             parcelaAtualNoMes: parcelaNoMes,
             totalParcelas,
             saldoDevedorRestanteAposMes: saldoAposMes,
+            primeiroVencimento: parc.primeiroVencimento,
+            dataCompra: dataCompraFormatada,
           },
         });
       }

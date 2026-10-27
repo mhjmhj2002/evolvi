@@ -36,6 +36,7 @@ export const updateMovimentoSchema = z.object({
   observacao: z.string().optional().nullable(),
   origemDocumento: z.string().max(255).optional().nullable(),
   propagarMesmoVendedor: z.boolean().optional(),
+  memorizarRegraVendedor: z.boolean().optional(),
 });
 
 export const queryMovimentosSchema = z.object({
@@ -80,9 +81,28 @@ export const splitMovimentoSchema = z.object({
   splits: z.array(splitItemSchema).min(2, { message: 'Um desdobramento requer no mínimo 2 categorias/fatias' }),
 });
 
+export const vereditoSuspeitaSchema = z.object({
+  acao: z.enum([
+    'CONFIRMAR_DUPLICATA_DESCARTAR',
+    'CONFIRMAR_DISTINTOS_PRESERVAR',
+    'CONVERTER_APORTE_PATRIMONIAL',
+    'CONVERTER_TRANSFERENCIA_PROPRIA',
+    'CONFIRMAR_DESPESA_REGULAR',
+    'DEFINIR_CATEGORIA',
+  ], {
+    message: 'Ação de veredito inválida',
+  }),
+  duplicataId: z.string().uuid().optional().nullable(),
+  categoriaId: z.string().uuid().optional().nullable(),
+  observacao: z.string().max(500).optional().nullable(),
+  propagarMesmoVendedor: z.boolean().optional(),
+  memorizarRegraVendedor: z.boolean().optional(),
+});
+
 export type CreateMovimentoInput = z.infer<typeof createMovimentoSchema>;
 export type UpdateMovimentoInput = z.infer<typeof updateMovimentoSchema>;
 export type QueryMovimentosInput = z.infer<typeof queryMovimentosSchema>;
 export type ImportarMovimentosInput = z.infer<typeof importarMovimentosSchema>;
 export type SplitItemInput = z.infer<typeof splitItemSchema>;
 export type SplitMovimentoInput = z.infer<typeof splitMovimentoSchema>;
+export type VereditoSuspeitaInput = z.infer<typeof vereditoSuspeitaSchema>;

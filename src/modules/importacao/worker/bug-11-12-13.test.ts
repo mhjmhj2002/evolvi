@@ -100,16 +100,18 @@ Data Lançamento;Histórico;Descrição;Valor;Saldo
       });
 
       expect(transacoes.length).toBe(3);
-      // Compra de 28 de maio deve preservar 2026-05-28 e NUNCA assumir 10/07/2026
+      // Compra à vista de 28 de maio deve preservar a data exata da transação 2026-05-28 (e não o vencimento da fatura)
       expect(transacoes[0].dataMovimento).toBe('2026-05-28');
       expect(transacoes[0].descricao).toBe('RESTAURANTE SABOR VILA VELHA');
 
-      // Compra parcelada de 15 de junho deve registrar a transação com data de competência real
-      expect(transacoes[1].dataMovimento).toBe('2026-06-15');
+      // Compra parcelada: a exigibilidade da parcela pertence à competência da fatura em cobrança (2026-07-10)
+      // com a data de compra original registrada na observação para auditoria
+      expect(transacoes[1].dataMovimento).toBe('2026-07-10');
       expect(transacoes[1].parcelaAtual).toBe(1);
       expect(transacoes[1].totalParcelas).toBe(3);
+      expect(transacoes[1].observacao).toContain('Compra original parcelada em 15/06/2026');
 
-      // Compra de 02 de julho deve preservar 2026-07-02
+      // Compra à vista de 02 de julho deve preservar 2026-07-02
       expect(transacoes[2].dataMovimento).toBe('2026-07-02');
     });
   });

@@ -12,6 +12,8 @@ import {
   CreditCard,
   Receipt,
   Sparkles,
+  ShieldAlert,
+  PiggyBank,
 } from 'lucide-react';
 import {
   UsuarioPerfil,
@@ -19,6 +21,7 @@ import {
   SemaforoResponse,
   CronogramaVencimentosResponse,
 } from '../api.ts';
+import { NavTab } from '../components/types.ts';
 
 interface TelaDashboardProps {
   perfil: UsuarioPerfil;
@@ -26,7 +29,8 @@ interface TelaDashboardProps {
   semaforo: SemaforoResponse;
   cronograma: CronogramaVencimentosResponse;
   totalGastoMes: number;
-  onNavigateTab: (tab: 'dashboard' | 'lancamentos' | 'importacao' | 'semaforo' | 'compromissos' | 'cadastros' | 'fases') => void;
+  totalSuspeitasPendentes?: number;
+  onNavigateTab: (tab: NavTab) => void;
   onOpenNovaTransacao: () => void;
 }
 
@@ -36,6 +40,7 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
   semaforo,
   cronograma,
   totalGastoMes,
+  totalSuspeitasPendentes = 0,
   onNavigateTab,
   onOpenNovaTransacao,
 }) => {
@@ -73,6 +78,52 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
           label={situacaoGeral === 'EQUILIBRADO' ? 'Zero a Zero Atingido' : 'Gap a Eliminar'}
         />
       </div>
+
+      {/* Banner de Alerta de Divergências / Central de Validação */}
+      {totalSuspeitasPendentes > 0 && (
+        <div
+          onClick={() => onNavigateTab('suspeitas')}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '12px 16px',
+            borderRadius: 'var(--radius-md)',
+            background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(245, 158, 11, 0.12) 100%)',
+            border: '1px solid rgba(239, 68, 68, 0.4)',
+            cursor: 'pointer',
+            boxShadow: '0 4px 14px rgba(0, 0, 0, 0.25)',
+            transition: 'transform 0.15s ease',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div
+              style={{
+                width: '36px',
+                height: '36px',
+                borderRadius: 'var(--radius-sm)',
+                backgroundColor: 'rgba(239, 68, 68, 0.25)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--status-red)',
+                flexShrink: 0,
+              }}
+            >
+              <ShieldAlert size={20} />
+            </div>
+            <div>
+              <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                {totalSuspeitasPendentes} divergência(s) aguardando sua validação
+              </div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                Suspeitas de duplicatas ou aportes detectadas pela malha fina. Clique para arbitrar.
+              </div>
+            </div>
+          </div>
+          <ArrowUpRight size={18} color="var(--status-red)" />
+        </div>
+      )}
 
       {/* 2. Card do Termômetro de Renda Consumida no Mês */}
       <div className="card" style={{ padding: '18px' }}>
@@ -197,8 +248,22 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
                   )}
                   <div>
                     <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{item.descricao}</div>
-                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
-                      Vencimento: Dia {item.diaVencimento} • {item.categoria?.nome || 'Geral'}
+                    <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px' }}>
+                      <span>Vencimento: Dia {item.diaVencimento} • {item.categoria?.nome || 'Geral'}</span>
+                      {item.tipo === 'PARCELAMENTO' && (
+                        <span
+                          style={{
+                            background: 'rgba(56, 189, 248, 0.12)',
+                            color: 'var(--brand-primary)',
+                            padding: '1px 5px',
+                            borderRadius: '3px',
+                            fontSize: '0.68rem',
+                            fontWeight: 600,
+                          }}
+                        >
+                          Compra: {item.dataCompra || item.parcelamentoInfo?.dataCompra || item.parcelamentoInfo?.primeiroVencimento || item.dataVencimentoPrevista}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -290,6 +355,29 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
           }}
         >
           <Sparkles size={18} color="var(--brand-primary)" /> Importar Faturas e Pastas com IA
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onNavigateTab('investimentos')}
+          style={{
+            width: '100%',
+            background: 'linear-gradient(135deg, rgba(2, 132, 199, 0.18) 0%, rgba(56, 189, 248, 0.12) 100%)',
+            border: '1px solid rgba(56, 189, 248, 0.35)',
+            color: 'var(--brand-primary)',
+            borderRadius: 'var(--radius-sm)',
+            minHeight: '44px',
+            fontSize: '0.9rem',
+            fontWeight: 700,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            transition: 'all 0.2s ease',
+          }}
+        >
+          <PiggyBank size={18} /> Ver Investimentos & Aportes (Fase 1 Light)
         </button>
 
         <button

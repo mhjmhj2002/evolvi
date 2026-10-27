@@ -40,7 +40,7 @@ export class InterBankConnectorProvider implements IBankConnectorProvider {
 
     // 1. Anti-Dupla Contagem: Pagamentos de fatura de cartão Inter debitadas em conta corrente
     if (
-      /pag(amento|to)?\s*(de)?\s*fat(ura)?|fatura\s*cart[aã]o|deb\s*aut\s*cartao\s*inter|pagto\s*fatura\s*inter|inter\s*mastercard\s*deb/i.test(
+      /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|fatura\s*cart[aã]o|deb\s*aut\s*cartao\s*inter|pagto\s*fatura\s*inter|inter\s*mastercard\s*deb|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
         desc
       )
     ) {

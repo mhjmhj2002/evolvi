@@ -30,6 +30,8 @@ export class OpenFinanceWorkerService {
   private pipeline = new NormalizationPipelineService();
   private isListeningEvents: boolean = false;
 
+  private boundListener?: (event: OpenFinanceRawIngestedEvent) => void;
+
   constructor() {
     this.setupEventListener();
   }
@@ -42,14 +44,26 @@ export class OpenFinanceWorkerService {
       return;
     }
 
-    openFinanceEventBus.onRawIngested((event: OpenFinanceRawIngestedEvent) => {
+    console.log('[evolvi-worker:open-finance] Inicializando ouvinte de eventos Open Finance...');
+
+    this.boundListener = (event: OpenFinanceRawIngestedEvent) => {
+      console.log(`[evolvi-worker:open-finance] Recebido lote ${event.loteId} para usuário [${event.usuarioId}]. Processando...`);
       // Execução assíncrona desacoplada sem travar o emissor
       this.processarLoteIngestado(event).catch((err) => {
-        console.error(`[OpenFinanceWorker] Erro ao processar lote ${event.loteId} via evento:`, err);
+        console.error(`[evolvi-worker:open-finance] Erro ao processar lote ${event.loteId} via evento:`, err);
       });
-    });
+    };
 
+    openFinanceEventBus.onRawIngested(this.boundListener);
     this.isListeningEvents = true;
+  }
+
+  public removeEventListener(): void {
+    if (this.boundListener) {
+      openFinanceEventBus.removeListener('openfinance:raw_ingested', this.boundListener);
+      this.boundListener = undefined;
+    }
+    this.isListeningEvents = false;
   }
 
   /**
@@ -61,9 +75,11 @@ export class OpenFinanceWorkerService {
     }
     this.maxRetries = maxRetries;
 
+    console.log(`[evolvi-worker:open-finance] Iniciando sweep periódico a cada ${intervalSweepMs}ms`);
+
     this.timerSweep = setInterval(() => {
       this.executarSweepSeguranca().catch((err) => {
-        console.error('[OpenFinanceWorker] Erro no sweep de segurança periódico:', err);
+        console.error('[evolvi-worker:open-finance] Erro no sweep de segurança periódico:', err);
       });
     }, intervalSweepMs);
 
@@ -80,6 +96,7 @@ export class OpenFinanceWorkerService {
       clearInterval(this.timerSweep);
       this.timerSweep = null;
     }
+    this.removeEventListener();
   }
 
   /**

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   TopBar,
   BottomNav,
@@ -17,6 +17,8 @@ import {
   TelaCadastros,
   TelaFasesEducativas,
   TelaImportacaoIa,
+  TelaValidacaoSuspeitas,
+  TelaInvestimentos,
 } from './screens/index.ts';
 import {
   apiService,
@@ -66,6 +68,7 @@ export const App: React.FC = () => {
   const [previsao6M, setPrevisao6M] = useState<PrevisaoSeisMesesResponse>(emptyPrevisaoSeisMeses);
   const [decomposicao6M, setDecomposicao6M] = useState<DecomposicaoCategoriasResponse>(emptyDecomposicaoCategorias);
   const [totalGastoMes, setTotalGastoMes] = useState<number>(0.0);
+  const [totalSuspeitasPendentes, setTotalSuspeitasPendentes] = useState<number>(0);
 
   // Sincroniza perfil se authUser for atualizado
   useEffect(() => {
@@ -73,6 +76,18 @@ export const App: React.FC = () => {
       setPerfil(authUser);
     }
   }, [authUser]);
+
+  // Função auxiliar para atualizar o contador de suspeitas pendentes
+  const atualizarContadorSuspeitas = async () => {
+    try {
+      const resSuspeitas = await apiService.getSuspeitas();
+      if (resSuspeitas) {
+        setTotalSuspeitasPendentes(resSuspeitas.totalPendentes);
+      }
+    } catch (e) {
+      console.warn('Erro ao verificar suspeitas pendentes:', e);
+    }
+  };
 
   // Estado do formulário de novo lançamento
   const [formDescricao, setFormDescricao] = useState('');
@@ -83,83 +98,114 @@ export const App: React.FC = () => {
   const [formIsPagamentoFatura, setFormIsPagamentoFatura] = useState(false);
   const [formMensagemSucesso, setFormMensagemSucesso] = useState<string | null>(null);
 
+  const ultimoRecarregamentoRef = useRef<number>(0);
+
+  // Função centralizada para sincronizar todos os módulos (Semáforo, Metas, Vencimentos, Parcelamentos, Contas, Movimentos, etc.)
+  const recarregarDadosCompletos = useCallback(async (competenciaRef: string = '2026-10') => {
+    if (!isAuthenticated || !authUser) return;
+    ultimoRecarregamentoRef.current = Date.now();
+
+    try {
+      const [
+        resPerfil,
+        resBaseline,
+        resSemaforo,
+        resMetas,
+        resCronograma,
+        resParcelamentos,
+        resContas,
+        resCategorias,
+        resMovimentos,
+        resHistResumo,
+        resHistCategorias,
+        resPrevisao,
+        resDecomposicao,
+        resSuspeitas,
+      ] = await Promise.all([
+        apiService.getPerfil(),
+        apiService.getBaseline(),
+        apiService.getSemaforo(),
+        apiService.getPlanoMetas(),
+        apiService.getVencimentos(competenciaRef),
+        apiService.getParcelamentos(),
+        apiService.getContas(),
+        apiService.getCategorias(),
+        apiService.getMovimentos(competenciaRef),
+        apiService.getHistoricoResumo(),
+        apiService.getHistoricoCategorias(),
+        apiService.getPrevisaoSeisMeses(),
+        apiService.getDecomposicaoCategorias(competenciaRef),
+        apiService.getSuspeitas().catch(() => null),
+      ]);
+
+      if (resPerfil) setPerfil(resPerfil);
+      if (resBaseline) setBaseline(resBaseline);
+      if (resSemaforo) setSemaforo(resSemaforo);
+      if (resMetas) setPlanoMetas(resMetas);
+      if (resCronograma) setCronograma(resCronograma);
+      if (resParcelamentos) setParcelamentos(resParcelamentos);
+      if (resHistResumo) setHistoricoResumo(resHistResumo);
+      if (resHistCategorias) setHistoricoCategorias(resHistCategorias);
+      if (resPrevisao) setPrevisao6M(resPrevisao);
+      if (resDecomposicao) setDecomposicao6M(resDecomposicao);
+      if (resSuspeitas) setTotalSuspeitasPendentes(resSuspeitas.totalPendentes);
+      if (resContas && resContas.length > 0) {
+        setContas(resContas);
+        setFormContaId((prev) => prev || resContas[0].id);
+      } else {
+        setContas([]);
+        setFormContaId('');
+      }
+      if (resCategorias && resCategorias.length > 0) {
+        setCategorias(resCategorias);
+        setFormCategoriaId((prev) => prev || resCategorias[0].id);
+      } else {
+        setCategorias([]);
+        setFormCategoriaId('');
+      }
+      if (resMovimentos && resMovimentos.resumo) {
+        setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
+      } else {
+        setTotalGastoMes(0);
+      }
+    } catch (err) {
+      console.warn('Erro ao sincronizar dados com o backend, utilizando estado local.', err);
+    }
+  }, [isAuthenticated, authUser]);
+
   // Carregar dados ao montar o componente ou quando o usuário autenticado mudar
   useEffect(() => {
     if (!isAuthenticated || !authUser) {
       setCategorias([]);
       setFormContaId('');
       setFormCategoriaId('');
+      setTotalSuspeitasPendentes(0);
       return;
     }
 
-    async function loadData() {
-      try {
-        const [
-          resPerfil,
-          resBaseline,
-          resSemaforo,
-          resMetas,
-          resCronograma,
-          resParcelamentos,
-          resContas,
-          resCategorias,
-          resMovimentos,
-          resHistResumo,
-          resHistCategorias,
-          resPrevisao,
-          resDecomposicao,
-        ] = await Promise.all([
-          apiService.getPerfil(),
-          apiService.getBaseline(),
-          apiService.getSemaforo(),
-          apiService.getPlanoMetas(),
-          apiService.getVencimentos('2026-10'),
-          apiService.getParcelamentos(),
-          apiService.getContas(),
-          apiService.getCategorias(),
-          apiService.getMovimentos('2026-10'),
-          apiService.getHistoricoResumo(),
-          apiService.getHistoricoCategorias(),
-          apiService.getPrevisaoSeisMeses(),
-          apiService.getDecomposicaoCategorias('2026-10'),
-        ]);
+    // 1. Carga imediata
+    recarregarDadosCompletos();
 
-        if (resPerfil) setPerfil(resPerfil);
-        if (resBaseline) setBaseline(resBaseline);
-        if (resSemaforo) setSemaforo(resSemaforo);
-        if (resMetas) setPlanoMetas(resMetas);
-        if (resCronograma) setCronograma(resCronograma);
-        if (resParcelamentos) setParcelamentos(resParcelamentos);
-        if (resHistResumo) setHistoricoResumo(resHistResumo);
-        if (resHistCategorias) setHistoricoCategorias(resHistCategorias);
-        if (resPrevisao) setPrevisao6M(resPrevisao);
-        if (resDecomposicao) setDecomposicao6M(resDecomposicao);
-        if (resContas && resContas.length > 0) {
-          setContas(resContas);
-          setFormContaId(resContas[0].id);
-        } else {
-          setContas([]);
-          setFormContaId('');
-        }
-        if (resCategorias && resCategorias.length > 0) {
-          setCategorias(resCategorias);
-          setFormCategoriaId(resCategorias[0].id);
-        } else {
-          setCategorias([]);
-          setFormCategoriaId('');
-        }
-        if (resMovimentos && resMovimentos.resumo) {
-          setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
-        } else {
-          setTotalGastoMes(0);
-        }
-      } catch (err) {
-        console.warn('Erro ao sincronizar dados com o backend, utilizando estado local.', err);
+    // 2. Segunda passada atrasada para convergir com o fim de workers de saneamento assíncronos no login
+    const timerLoginWorker = setTimeout(() => {
+      recarregarDadosCompletos();
+    }, 1800);
+
+    // 3. Revalidação ao retomar o foco da janela com throttle de 15 segundos
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && Date.now() - ultimoRecarregamentoRef.current > 15000) {
+        recarregarDadosCompletos();
       }
-    }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleVisibilityChange);
 
-    loadData();
-  }, [isAuthenticated, authUser?.id]);
+    return () => {
+      clearTimeout(timerLoginWorker);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleVisibilityChange);
+    };
+  }, [isAuthenticated, authUser, recarregarDadosCompletos]);
 
   const [isIaModalOpen, setIsIaModalOpen] = useState(false);
   const [formAvisoIa, setFormAvisoIa] = useState<string | null>(null);
@@ -214,7 +260,7 @@ export const App: React.FC = () => {
   return (
     <ProtectedRoute>
       <div className="app-container">
-        {/* 1. Barra Superior com Seletor de Fases */}
+        {/* 1. Barra Superior com Seletor de Fases e Notificação de Suspeitas */}
         <TopBar
           faseAtiva={faseAtiva}
           onSelectFase={(fase) => {
@@ -223,6 +269,9 @@ export const App: React.FC = () => {
               setActiveTab('fases');
             }
           }}
+          totalSuspeitasPendentes={totalSuspeitasPendentes}
+          onOpenSuspeitas={() => setActiveTab('suspeitas')}
+          onOpenInvestimentos={() => setActiveTab('investimentos')}
         />
 
       {/* 2. Conteúdo Central Dinâmico de acordo com a aba */}
@@ -234,8 +283,49 @@ export const App: React.FC = () => {
             semaforo={semaforo}
             cronograma={cronograma}
             totalGastoMes={totalGastoMes}
+            totalSuspeitasPendentes={totalSuspeitasPendentes}
             onNavigateTab={(tab) => setActiveTab(tab)}
             onOpenNovaTransacao={() => setIsSheetOpen(true)}
+          />
+        )}
+
+        {activeTab === 'investimentos' && (
+          <TelaInvestimentos
+            usuarioId={authUser?.id}
+            contas={contas}
+            onNavigateTab={(tab) => setActiveTab(tab)}
+            onAporteCriado={async () => {
+              try {
+                const [resMovimentos] = await Promise.all([
+                  apiService.getMovimentos('2026-10'),
+                  atualizarContadorSuspeitas(),
+                ]);
+                if (resMovimentos?.resumo) {
+                  setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
+                }
+              } catch (e) {
+                console.warn('Erro ao atualizar dados pós-aporte:', e);
+              }
+            }}
+          />
+        )}
+
+        {activeTab === 'suspeitas' && (
+          <TelaValidacaoSuspeitas
+            usuarioId={authUser?.id}
+            categorias={categorias}
+            onNavigateTab={(tab) => setActiveTab(tab)}
+            onVereditoAplicado={async () => {
+              await Promise.all([
+                atualizarContadorSuspeitas(),
+                (async () => {
+                  const resMovimentos = await apiService.getMovimentos('2026-10');
+                  if (resMovimentos?.resumo) {
+                    setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
+                  }
+                })(),
+              ]);
+            }}
           />
         )}
 
@@ -245,9 +335,13 @@ export const App: React.FC = () => {
             contas={contas}
             categorias={categorias}
             onOpenNovoLancamento={() => setIsSheetOpen(true)}
+            onNavigateTab={(tab) => setActiveTab(tab)}
             onMovimentoModificado={async () => {
               try {
-                const resMovimentos = await apiService.getMovimentos('2026-10');
+                const [resMovimentos] = await Promise.all([
+                  apiService.getMovimentos('2026-10'),
+                  atualizarContadorSuspeitas(),
+                ]);
                 if (resMovimentos?.resumo) {
                   setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
                 }
@@ -264,14 +358,11 @@ export const App: React.FC = () => {
             onNavigateTab={(tab) => setActiveTab(tab)}
             onNovasContasOuMovimentos={async () => {
               try {
-                const [resMovimentos, resContas] = await Promise.all([
-                  apiService.getMovimentos('2026-10'),
-                  apiService.getContas(),
-                ]);
-                if (resContas) setContas(resContas);
-                if (resMovimentos?.resumo) {
-                  setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
-                }
+                await recarregarDadosCompletos();
+                // Pequeno retry após 2 segundos para sincronizar o fim de workers de consolidação/fatura
+                setTimeout(() => {
+                  recarregarDadosCompletos();
+                }, 2000);
               } catch (e) {
                 console.warn('Erro ao atualizar dados pós-importação:', e);
               }
@@ -298,6 +389,7 @@ export const App: React.FC = () => {
             decomposicao={decomposicao6M}
             onRegistrarPagamento={handleRegistrarPagamentoCronograma}
             onNovoCompromisso={() => setIsSheetOpen(true)}
+            onAtualizarDados={recarregarDadosCompletos}
             onAtualizarPrevisao={async () => {
               const [resPrev, resDec] = await Promise.all([
                 apiService.getPrevisaoSeisMeses(),
@@ -314,6 +406,16 @@ export const App: React.FC = () => {
             perfil={perfil}
             contas={contas}
             categorias={categorias}
+            onContasAtualizadas={async () => {
+              try {
+                const resContas = await apiService.getContas();
+                if (resContas) {
+                  setContas(resContas);
+                }
+              } catch (err) {
+                console.warn('Erro ao atualizar lista de contas:', err);
+              }
+            }}
             onRendaAtualizada={async (novaRenda) => {
               setPerfil((prev) => ({ ...prev, rendaBaseMensal: novaRenda }));
               try {

@@ -1,9 +1,15 @@
 import React from 'react';
-import { Layers, ShieldAlert, Sparkles, LogOut, ShieldCheck, UserCheck, User, Eye } from 'lucide-react';
+import { Layers, ShieldAlert, Sparkles, LogOut, ShieldCheck, UserCheck, User, Eye, PiggyBank } from 'lucide-react';
 import type { TopBarProps } from './types.ts';
 import { useAuth } from '../context/AuthContext.tsx';
 
-export const TopBar: React.FC<TopBarProps> = ({ faseAtiva, onSelectFase }) => {
+export const TopBar: React.FC<TopBarProps> = ({
+  faseAtiva,
+  onSelectFase,
+  totalSuspeitasPendentes,
+  onOpenSuspeitas,
+  onOpenInvestimentos,
+}) => {
   const { usuario, role, logout } = useAuth();
 
   const getRoleIcon = () => {
@@ -68,6 +74,97 @@ export const TopBar: React.FC<TopBarProps> = ({ faseAtiva, onSelectFase }) => {
 
       {usuario && (
         <div className="top-bar-user-area">
+          {onOpenInvestimentos && (
+            <button
+              type="button"
+              className="btn-investimentos-header"
+              onClick={onOpenInvestimentos}
+              title="Aplicações & Registro de Aportes (Fase 1 Light)"
+              aria-label="Investimentos"
+              style={{
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'rgba(56, 189, 248, 0.12)',
+                border: '1px solid rgba(56, 189, 248, 0.35)',
+                color: 'var(--brand-primary)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '6px 10px',
+                cursor: 'pointer',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                gap: '6px',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <PiggyBank size={16} />
+              <span className="suspeitas-text" style={{ fontSize: '0.78rem' }}>
+                Aportes
+              </span>
+            </button>
+          )}
+
+          {onOpenSuspeitas && (
+            <button
+              type="button"
+              className="btn-suspeitas-badge"
+              onClick={onOpenSuspeitas}
+              title={
+                totalSuspeitasPendentes && totalSuspeitasPendentes > 0
+                  ? `${totalSuspeitasPendentes} divergência(s) pendente(s) na Central de Validação`
+                  : 'Central de Validação de Suspeitas (Malha Fina)'
+              }
+              aria-label="Central de Validação"
+              style={{
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background:
+                  totalSuspeitasPendentes && totalSuspeitasPendentes > 0
+                    ? 'rgba(239, 68, 68, 0.15)'
+                    : 'rgba(51, 65, 85, 0.4)',
+                border:
+                  totalSuspeitasPendentes && totalSuspeitasPendentes > 0
+                    ? '1px solid rgba(239, 68, 68, 0.4)'
+                    : '1px solid var(--border-subtle)',
+                color:
+                  totalSuspeitasPendentes && totalSuspeitasPendentes > 0
+                    ? 'var(--status-red)'
+                    : 'var(--text-secondary)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '6px 10px',
+                cursor: 'pointer',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                gap: '6px',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <ShieldAlert size={16} />
+              <span className="suspeitas-text" style={{ fontSize: '0.78rem' }}>
+                Validação
+              </span>
+              {totalSuspeitasPendentes !== undefined && totalSuspeitasPendentes > 0 && (
+                <span
+                  style={{
+                    backgroundColor: 'var(--status-red)',
+                    color: '#fff',
+                    borderRadius: '999px',
+                    padding: '1px 6px',
+                    fontSize: '0.7rem',
+                    fontWeight: 800,
+                    minWidth: '18px',
+                    textAlign: 'center',
+                  }}
+                >
+                  {totalSuspeitasPendentes}
+                </span>
+              )}
+            </button>
+          )}
+
           <div className="top-bar-user-info" title={`Logado como ${usuario.nome} (${usuario.email})`}>
             <span className="user-name">{usuario.nome}</span>
             <div className="user-role-badge" title={`Perfil: ${role}`}>

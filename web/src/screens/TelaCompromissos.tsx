@@ -13,6 +13,7 @@ import {
   Circle,
   PlusCircle,
   TrendingUp,
+  RefreshCw,
 } from 'lucide-react';
 
 interface TelaCompromissosProps {
@@ -23,6 +24,7 @@ interface TelaCompromissosProps {
   onRegistrarPagamento?: (item: ItemCronogramaVencimento) => void;
   onNovoCompromisso?: () => void;
   onAtualizarPrevisao?: () => void;
+  onAtualizarDados?: () => Promise<void> | void;
 }
 
 export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
@@ -33,10 +35,22 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
   onRegistrarPagamento,
   onNovoCompromisso,
   onAtualizarPrevisao,
+  onAtualizarDados,
 }) => {
   // Controle local de checkboxes de contas já quitadas no mês
   const [pagos, setPagos] = useState<{ [id: string]: boolean }>({});
   const [tabInterna, setTabInterna] = useState<'vencimentos' | 'dividas' | 'projecao'>('vencimentos');
+  const [atualizando, setAtualizando] = useState(false);
+
+  const handleAtualizar = async () => {
+    if (!onAtualizarDados || atualizando) return;
+    setAtualizando(true);
+    try {
+      await onAtualizarDados();
+    } finally {
+      setTimeout(() => setAtualizando(false), 500);
+    }
+  };
 
   const togglePago = (id: string, item: ItemCronogramaVencimento) => {
     const novoStatus = !pagos[id];
@@ -55,13 +69,40 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       {/* 1. Header */}
-      <div>
-        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-          Planejamento de Caixa & Dívidas
-        </span>
-        <h1 style={{ fontSize: '1.45rem', fontWeight: 800, letterSpacing: '-0.02em', marginTop: '2px' }}>
-          Vencimentos & Parcelamentos
-        </h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+            Planejamento de Caixa & Dívidas
+          </span>
+          <h1 style={{ fontSize: '1.45rem', fontWeight: 800, letterSpacing: '-0.02em', marginTop: '2px' }}>
+            Vencimentos & Parcelamentos
+          </h1>
+        </div>
+        {onAtualizarDados && (
+          <button
+            type="button"
+            onClick={handleAtualizar}
+            disabled={atualizando}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 12px',
+              borderRadius: 'var(--radius-md)',
+              border: '1px solid var(--border-subtle)',
+              background: 'rgba(30, 41, 59, 0.4)',
+              color: 'var(--text-secondary)',
+              cursor: atualizando ? 'not-allowed' : 'pointer',
+              fontSize: '0.8rem',
+              fontWeight: 600,
+              transition: 'all 0.2s ease',
+            }}
+            title="Atualizar dados de vencimentos e parcelamentos"
+          >
+            <RefreshCw size={14} className={atualizando ? 'spin' : ''} />
+            <span>{atualizando ? 'Atualizando...' : 'Atualizar'}</span>
+          </button>
+        )}
       </div>
 
       {/* 2. Switcher entre Vencimentos, Dívidas e Projeção 6M */}
@@ -247,10 +288,28 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
                       >
                         {item.descricao}
                       </div>
-                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        Dia {item.diaVencimento} • {item.categoria?.nome || 'Geral'}
-                        {item.conta && ` • ${item.conta.nome}`}
-                        {item.essencial && ' • Essencial'}
+                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px' }}>
+                        <span>Dia {item.diaVencimento} • {item.categoria?.nome || 'Geral'}</span>
+                        {item.conta && <span>• {item.conta.nome}</span>}
+                        {item.essencial && <span>• Essencial</span>}
+                        {item.tipo === 'PARCELAMENTO' && (
+                          <span
+                            style={{
+                              background: 'rgba(56, 189, 248, 0.12)',
+                              color: 'var(--brand-primary)',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              fontSize: '0.70rem',
+                              fontWeight: 600,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '3px',
+                            }}
+                            title={`Compra parcelada com início/primeiro vencimento em ${item.dataCompra || item.parcelamentoInfo?.dataCompra || item.parcelamentoInfo?.primeiroVencimento || item.dataVencimentoPrevista}`}
+                          >
+                            📅 Compra: {item.dataCompra || item.parcelamentoInfo?.dataCompra || item.parcelamentoInfo?.primeiroVencimento || item.dataVencimentoPrevista}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -287,7 +346,9 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {parcelamentos.parcelamentos.map((parc) => {
+            {parcelamentos.parcelamentos
+              .filter((parc) => parc.status === 'ATIVO')
+              .map((parc) => {
               const progressoPct = Math.round((parc.parcelaAtual / parc.totalParcelas) * 100);
 
               return (
@@ -311,13 +372,19 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
 
                   {/* Barra de Progresso de Amortização */}
                   <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '4px', flexWrap: 'wrap', gap: '4px' }}>
                       <span style={{ color: 'var(--text-secondary)' }}>
                         Parcela {parc.parcelaAtual} de {parc.totalParcelas} ({progressoPct}% amortizado)
                       </span>
-                      <span style={{ color: 'var(--text-muted)' }}>
-                        Final: {parc.ultimoVencimento}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-muted)' }}>
+                        <span style={{ color: 'var(--brand-primary)', fontWeight: 600 }}>
+                          Compra: {parc.dataCompra || parc.primeiroVencimento}
+                        </span>
+                        <span>•</span>
+                        <span>
+                          Final: {parc.ultimoVencimento}
+                        </span>
+                      </div>
                     </div>
                     <div className="termometro-track" style={{ height: '8px' }}>
                       <div

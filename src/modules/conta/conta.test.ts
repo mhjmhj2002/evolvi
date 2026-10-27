@@ -281,5 +281,113 @@ describe('Gestão de Contas (E2E / Integração)', () => {
       });
       expect(retryDelete.statusCode).toBe(200);
     });
+
+    it('deve consultar dependências e permitir migrar movimentos para outra conta antes da exclusão', async () => {
+      // 1. Criar conta Origem e conta Destino
+      const respOrigem = await app.inject({
+        method: 'POST',
+        url: '/api/contas',
+        headers: { authorization: `Bearer ${tokenUserA}` },
+        payload: { nome: 'Cartão Antigo', tipo: 'CARTAO_CREDITO', diaFechamento: 1, diaVencimento: 10 },
+      });
+      const idOrigem = JSON.parse(respOrigem.body).conta.id;
+
+      const respDestino = await app.inject({
+        method: 'POST',
+        url: '/api/contas',
+        headers: { authorization: `Bearer ${tokenUserA}` },
+        payload: { nome: 'Cartão Novo', tipo: 'CARTAO_CREDITO', diaFechamento: 5, diaVencimento: 15 },
+      });
+      const idDestino = JSON.parse(respDestino.body).conta.id;
+
+      // 2. Inserir movimento na conta de origem
+      await prisma.movimento.create({
+        data: {
+          usuarioId: idUserA,
+          contaId: idOrigem,
+          dataMovimento: new Date(),
+          competencia: '2026-10',
+          descricao: 'Compra Mercado Livre',
+          valor: 150.0,
+          natureza: 'DESPESA',
+        },
+      });
+
+      // 3. Consultar dependências
+      const depResp = await app.inject({
+        method: 'GET',
+        url: `/api/contas/${idOrigem}/dependencias`,
+        headers: { authorization: `Bearer ${tokenUserA}` },
+      });
+      expect(depResp.statusCode).toBe(200);
+      const depBody = JSON.parse(depResp.body);
+      expect(depBody.totalMovimentos).toBe(1);
+      expect(depBody.podeExcluirDiretamente).toBe(false);
+      expect(depBody.movimentos.length).toBe(1);
+
+      // 4. Migrar movimentos para a conta de destino
+      const migrarResp = await app.inject({
+        method: 'POST',
+        url: `/api/contas/${idOrigem}/migrar-movimentos`,
+        headers: { authorization: `Bearer ${tokenUserA}` },
+        payload: { contaDestinoId: idDestino },
+      });
+      expect(migrarResp.statusCode).toBe(200);
+      const migrarBody = JSON.parse(migrarResp.body);
+      expect(migrarBody.movimentosMigrados).toBe(1);
+
+      // 5. Agora a conta de origem não tem dependências e pode ser excluída
+      const delOrigemResp = await app.inject({
+        method: 'DELETE',
+        url: `/api/contas/${idOrigem}`,
+        headers: { authorization: `Bearer ${tokenUserA}` },
+      });
+      expect(delOrigemResp.statusCode).toBe(200);
+
+      // Limpar
+      await prisma.movimento.deleteMany({ where: { contaId: idDestino } });
+      await prisma.conta.delete({ where: { id: idDestino } });
+    });
+
+    it('deve permitir excluir lançamentos da conta em lote para viabilizar a exclusão', async () => {
+      // 1. Criar conta
+      const resp = await app.inject({
+        method: 'POST',
+        url: '/api/contas',
+        headers: { authorization: `Bearer ${tokenUserA}` },
+        payload: { nome: 'Conta Temporária Importação', tipo: 'CONTA_CORRENTE' },
+      });
+      const idConta = JSON.parse(resp.body).conta.id;
+
+      // 2. Inserir movimento
+      await prisma.movimento.create({
+        data: {
+          usuarioId: idUserA,
+          contaId: idConta,
+          dataMovimento: new Date(),
+          competencia: '2026-10',
+          descricao: 'Lançamento com erro na importação',
+          valor: 99.0,
+          natureza: 'DESPESA',
+        },
+      });
+
+      // 3. Excluir lançamentos da conta
+      const delMovsResp = await app.inject({
+        method: 'DELETE',
+        url: `/api/contas/${idConta}/movimentos`,
+        headers: { authorization: `Bearer ${tokenUserA}` },
+      });
+      expect(delMovsResp.statusCode).toBe(200);
+      expect(JSON.parse(delMovsResp.body).movimentosExcluidos).toBe(1);
+
+      // 4. Agora excluir a conta
+      const delContaResp = await app.inject({
+        method: 'DELETE',
+        url: `/api/contas/${idConta}`,
+        headers: { authorization: `Bearer ${tokenUserA}` },
+      });
+      expect(delContaResp.statusCode).toBe(200);
+    });
   });
 });

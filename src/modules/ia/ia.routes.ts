@@ -7,7 +7,9 @@ import {
   iaParseRequestSchema,
   testarApiKeySchema,
   salvarConfiguracaoIaSchema,
+  queryConsumoIaSchema,
 } from './ia.schema.js';
+import { VERSAO_TABELA_PRECOS_IA } from '../../config/tabela-precos-ia.js';
 import {
   buildIaSystemPrompt,
   parseLocalDeterministic,
@@ -16,6 +18,20 @@ import {
   callOpenRouterApi,
   ContextoUsuarioIA,
 } from './ia.service.js';
+import { UsoIaService, tokensDeUsageGemini } from './uso-ia.service.js';
+import { obterCapacidadeMedia } from './capacidades-media.js';
+import { IaMediasConsolidadasService } from './ia-medias-consolidadas.service.js';
+import {
+  MODELO_OPENROUTER_PADRAO,
+  ModeloIaInvalidoError,
+  mensagemProvedorNaoSuportado,
+  modeloPadraoPorProvedor,
+  montarHeadersOpenRouter,
+  montarUrlOpenRouter,
+  normalizarModeloOpenRouter,
+  provedorSuportadoNoFluxo,
+  validarModeloIa,
+} from './openrouter.config.js';
 
 export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   app.addHook('preHandler', ensureAuthenticated);
@@ -59,17 +75,50 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     }
 
     const hasEnvGemini = Boolean(env.GEMINI_API_KEY && env.GEMINI_API_KEY.trim().length > 0);
+    const hasEnvOpenRouter = Boolean(
+      env.OPENROUTER_API_KEY && env.OPENROUTER_API_KEY.trim().length > 0
+    );
     const hasUserKey = configuracoes.length > 0;
-    const chaveConfigurada = hasUserKey || hasEnvGemini;
+    const chaveConfigurada = hasUserKey || hasEnvGemini || hasEnvOpenRouter;
 
     // Provedor ativo preferencial (primeiro configurado ou Gemini do env)
     const provedorAtivo = hasUserKey ? configuracoes[0].provedor : (hasEnvGemini ? 'GEMINI' : null);
-    const modeloAtivo = hasUserKey ? configuracoes[0].modelo : 'gemini-3.8-flash';
+    const modeloAtivo = hasUserKey
+      ? configuracoes[0].modelo || modeloPadraoPorProvedor(configuracoes[0].provedor)
+      : modeloPadraoPorProvedor(provedorAtivo);
     const chaveMascarada = hasUserKey ? configuracoes[0].chaveMascarada : null;
+
+    // Capacidades de mídia derivadas da fonte única (IA_CAPACIDADES_MEDIA)
+    const capacidades = (provedor: string) => {
+      const cap = obterCapacidadeMedia(provedor);
+      return {
+        suportaImagens: cap?.suportaImagens ?? false,
+        suportaPdfsNaoEstruturados: cap?.suportaPdfsNaoEstruturados ?? false,
+        descricaoMidia: cap?.descricao ?? null,
+      };
+    };
+
+    const modelosGemini = [
+      'gemini-3.8-flash',
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
+    ];
+    const modelosDeepSeek = ['deepseek-chat', 'deepseek-reasoner'];
+    const modelosOpenAi = ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'];
+    const modelosAnthropic = ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'];
+    const modelosOpenRouter = [
+      MODELO_OPENROUTER_PADRAO,
+      'anthropic/claude-3.5-sonnet',
+      'openai/gpt-4o',
+      'meta-llama/llama-3.3-70b-instruct',
+    ];
 
     return reply.status(200).send({
       configurada: chaveConfigurada,
       hasEnvKey: hasEnvGemini,
+      hasEnvKeyOpenRouter: hasEnvOpenRouter,
       hasUserKey,
       totalConfiguradas: configuracoes.length,
       configuracoes,
@@ -80,47 +129,57 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
         {
           id: 'GEMINI',
           nome: 'Google Gemini',
-          modelos: ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
+          modelos: modelosGemini,
+          modeloPadrao: modelosGemini[0],
+          ...capacidades('GEMINI'),
           ajudaUrl: 'https://aistudio.google.com/app/apikey',
           temChaveServidor: hasEnvGemini,
           configurado: configuracoes.some((c) => c.provedor === 'GEMINI'),
+          suportadoNoFluxo: provedorSuportadoNoFluxo('GEMINI'),
         },
         {
           id: 'DEEPSEEK',
           nome: 'DeepSeek',
-          modelos: ['deepseek-chat', 'deepseek-reasoner'],
+          modelos: modelosDeepSeek,
+          modeloPadrao: modelosDeepSeek[0],
+          ...capacidades('DEEPSEEK'),
           ajudaUrl: 'https://platform.deepseek.com/api_keys',
           temChaveServidor: false,
           configurado: configuracoes.some((c) => c.provedor === 'DEEPSEEK'),
+          suportadoNoFluxo: provedorSuportadoNoFluxo('DEEPSEEK'),
         },
         {
           id: 'OPENAI',
           nome: 'OpenAI (ChatGPT)',
-          modelos: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
+          modelos: modelosOpenAi,
+          modeloPadrao: modeloPadraoPorProvedor('OPENAI'),
+          ...capacidades('OPENAI'),
           ajudaUrl: 'https://platform.openai.com/api-keys',
           temChaveServidor: false,
           configurado: configuracoes.some((c) => c.provedor === 'OPENAI'),
+          suportadoNoFluxo: provedorSuportadoNoFluxo('OPENAI'),
         },
         {
           id: 'ANTHROPIC',
           nome: 'Anthropic (Claude)',
-          modelos: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
+          modelos: modelosAnthropic,
+          modeloPadrao: modelosAnthropic[0],
+          ...capacidades('ANTHROPIC'),
           ajudaUrl: 'https://console.anthropic.com/settings/keys',
           temChaveServidor: false,
           configurado: configuracoes.some((c) => c.provedor === 'ANTHROPIC'),
+          suportadoNoFluxo: provedorSuportadoNoFluxo('ANTHROPIC'),
         },
         {
           id: 'OPENROUTER',
           nome: 'OpenRouter',
-          modelos: [
-            'deepseek/deepseek-chat',
-            'anthropic/claude-3.5-sonnet',
-            'openai/gpt-4o',
-            'meta-llama/llama-3.3-70b-instruct',
-          ],
+          modelos: modelosOpenRouter,
+          modeloPadrao: MODELO_OPENROUTER_PADRAO,
+          ...capacidades('OPENROUTER'),
           ajudaUrl: 'https://openrouter.ai/keys',
-          temChaveServidor: false,
+          temChaveServidor: hasEnvOpenRouter,
           configurado: configuracoes.some((c) => c.provedor === 'OPENROUTER'),
+          suportadoNoFluxo: provedorSuportadoNoFluxo('OPENROUTER'),
         },
       ],
     });
@@ -140,7 +199,25 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       });
     }
 
-    const { provedor, apiKey, modelo } = parseResult.data;
+    const { provedor, apiKey } = parseResult.data;
+
+    // Modelo efetivamente persistido: normaliza `vendor/model` no OpenRouter,
+    // valida tamanho máximo (400 sem truncar) e nunca devolve o default do Gemini
+    // quando o provedor é outro.
+    let modeloPersistido: string;
+    try {
+      modeloPersistido =
+        validarModeloIa(provedor, parseResult.data.modelo) || modeloPadraoPorProvedor(provedor);
+    } catch (err) {
+      if (err instanceof ModeloIaInvalidoError) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: err.message,
+        });
+      }
+      throw err;
+    }
 
     // Criptografia de grau bancário/militar AES-256-GCM
     const enc = CryptoService.encrypt(apiKey.trim());
@@ -155,13 +232,13 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       create: {
         usuarioId,
         provedor,
-        modelo: modelo || (provedor === 'DEEPSEEK' ? 'deepseek-chat' : provedor === 'OPENROUTER' ? 'deepseek/deepseek-chat' : provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-3.8-flash'),
+        modelo: modeloPersistido,
         apiKeyCifrada: enc.ciphertext,
         ivHex: enc.iv,
         tagHex: enc.tag,
       },
       update: {
-        modelo: modelo || (provedor === 'DEEPSEEK' ? 'deepseek-chat' : provedor === 'OPENROUTER' ? 'deepseek/deepseek-chat' : provedor === 'OPENAI' ? 'gpt-4o-mini' : provedor === 'ANTHROPIC' ? 'claude-3-5-sonnet-20241022' : 'gemini-3.8-flash'),
+        modelo: modeloPersistido,
         apiKeyCifrada: enc.ciphertext,
         ivHex: enc.iv,
         tagHex: enc.tag,
@@ -174,7 +251,7 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       message: `Configuração de IA (${provedor}) salva e criptografada com sucesso com AES-256-GCM!`,
       chaveMascarada: CryptoService.mascararApiKey(apiKey),
       provedor,
-      modelo: modelo || 'gemini-3.8-flash',
+      modelo: modeloPersistido,
     });
   });
 
@@ -329,34 +406,67 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     }
 
     if (modo === 'API_PROPRIA' && efetivaApiKey) {
+      // Provedores ainda não implementados neste fluxo NÃO caem silenciosamente no Gemini.
+      const provedorParaFluxo = (efetivoProvedor || 'GEMINI').trim().toUpperCase();
+      if (!provedorSuportadoNoFluxo(provedorParaFluxo)) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: mensagemProvedorNaoSuportado(provedorParaFluxo),
+        });
+      }
+
+      // Modelo inválido (ex.: acima de 60 caracteres) retorna 400 claro, sem truncamento.
+      let modeloParaFluxo: string;
+      try {
+        modeloParaFluxo =
+          validarModeloIa(provedorParaFluxo, efetivoModelo) ||
+          modeloPadraoPorProvedor(provedorParaFluxo);
+      } catch (err) {
+        if (err instanceof ModeloIaInvalidoError) {
+          return reply.status(400).send({
+            statusCode: 400,
+            error: 'Bad Request',
+            message: err.message,
+          });
+        }
+        throw err;
+      }
+
       try {
         const prompt = buildIaSystemPrompt(contexto);
         let parsed: any;
-        if (efetivoProvedor === 'DEEPSEEK') {
+        // TASK-49: telemetria de consumo — 1 registro por chamada de IA
+        const opcoesTelemetria = { usuarioId, funcionalidade: 'CATEGORIZACAO' as const };
+
+        if (provedorParaFluxo === 'DEEPSEEK') {
           parsed = await callDeepSeekApi(
             efetivaApiKey,
-            efetivoModelo || 'deepseek-chat',
+            modeloParaFluxo,
             prompt,
-            texto
+            texto,
+            opcoesTelemetria
           );
-        } else if (efetivoProvedor === 'OPENROUTER') {
+        } else if (provedorParaFluxo === 'OPENROUTER') {
           parsed = await callOpenRouterApi(
             efetivaApiKey,
-            efetivoModelo || 'deepseek/deepseek-chat',
+            modeloParaFluxo,
             prompt,
-            texto
+            texto,
+            opcoesTelemetria
           );
         } else {
           parsed = await callGeminiApi(
             efetivaApiKey,
-            efetivoModelo || 'gemini-3.8-flash',
+            modeloParaFluxo,
             prompt,
-            texto
+            texto,
+            opcoesTelemetria
           );
         }
         return reply.status(200).send({
           modo,
-          provedor: efetivoProvedor || 'GEMINI',
+          provedor: provedorParaFluxo,
           lancamento: parsed,
         });
       } catch (err: any) {
@@ -384,6 +494,8 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
 
   // 4. POST /api/ia/testar-conexao (valida se a chave informada pelo usuário responde)
   app.post('/testar-conexao', async (request, reply) => {
+    const usuarioId = request.user.sub;
+
     const parseResult = testarApiKeySchema.safeParse(request.body);
     if (!parseResult.success) {
       return reply.status(400).send({
@@ -401,6 +513,9 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
         const mod = modelo || 'gemini-3.8-flash';
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${mod}:generateContent?key=${apiKey}`;
         let res!: Response;
+        let tokensValidacao = { tokensPrompt: 0, tokensResposta: 0, tokensTotal: 0 };
+        const inicioValidacao = Date.now();
+
         for (let tentativa = 0; tentativa < 3; tentativa++) {
           res = await fetch(url, {
             method: 'POST',
@@ -412,6 +527,29 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
           if (res.status !== 503 && res.status !== 429) break;
           await new Promise((r) => setTimeout(r, 1000 * (tentativa + 1)));
         }
+
+        // TASK-49: a validação de chave é uma chamada real de IA e consome tokens;
+        // registramos exatamente 1 linha em uso_ia_logs (sucesso, sobrecarga ou falha).
+        try {
+          const payload: any = await res.clone().json();
+          tokensValidacao = tokensDeUsageGemini(payload?.usageMetadata);
+        } catch {
+          // Sem usage disponível na validação: registra 0 tokens
+        }
+
+        const sobrecarga = res.status === 503 || res.status === 429;
+        await UsoIaService.registrar({
+          usuarioId,
+          funcionalidade: 'OUTROS',
+          provedor: 'GEMINI',
+          modelo: mod,
+          tokensPrompt: tokensValidacao.tokensPrompt,
+          tokensResposta: tokensValidacao.tokensResposta,
+          tokensTotal: tokensValidacao.tokensTotal,
+          duracaoMs: Date.now() - inicioValidacao,
+          status: res.ok || sobrecarga ? 'SUCESSO' : 'FALHA',
+          mensagemErro: res.ok || sobrecarga ? null : `Validação de chave Gemini falhou (HTTP ${res.status})`,
+        });
 
         // 503/429: a chave foi aceita, apenas o modelo está sobrecarregado/limitado.
         if (res.status === 503 || res.status === 429) {
@@ -531,26 +669,46 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
     }
 
     if (provedor === 'OPENROUTER') {
+      // Modelo normalizado (formato `vendor/model`); acima de 60 caracteres ⇒ 400 claro.
+      let modeloOpenRouter: string;
       try {
-        const res = await fetch('https://openrouter.ai/api/v1/auth/key', {
+        modeloOpenRouter = normalizarModeloOpenRouter(
+          modelo || modeloPadraoPorProvedor('OPENROUTER')
+        );
+      } catch (err) {
+        if (err instanceof ModeloIaInvalidoError) {
+          return reply.status(400).send({
+            statusCode: 400,
+            error: 'Bad Request',
+            message: err.message,
+          });
+        }
+        throw err;
+      }
+
+      try {
+        const res = await fetch(montarUrlOpenRouter('/auth/key'), {
           method: 'GET',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'HTTP-Referer': 'https://evolvi.app',
-            'X-Title': 'Evolvi Financeiro',
-          },
+          headers: montarHeadersOpenRouter(apiKey),
         });
 
         if (!res.ok) {
           const errBody = await res.text();
-          return reply.status(400).send({
+          return reply.status(401).send({
             sucesso: false,
-            message: `Erro na validação da chave OpenRouter (${res.status}): ${errBody}`,
+            provedor,
+            modelo: modeloOpenRouter,
+            message:
+              res.status === 401 || res.status === 403
+                ? `Chave de API do OpenRouter inválida ou sem permissão (HTTP ${res.status}). Verifique sua chave em https://openrouter.ai/keys.`
+                : `Erro na validação da chave OpenRouter (${res.status}): ${errBody}`,
           });
         }
 
         return reply.status(200).send({
           sucesso: true,
+          provedor,
+          modelo: modeloOpenRouter,
           message: 'Chave de API do OpenRouter validada com sucesso!',
         });
       } catch (err: any) {
@@ -566,4 +724,139 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       message: `Chave configurada com sucesso para o provedor ${provedor}.`,
     });
   });
+
+  // TASK-49: GET /api/ia/consumo — auditoria de gastos de IA (SEMPRE isolado por usuarioId)
+  app.get('/consumo', async (request, reply) => {
+    const usuarioId = request.user.sub;
+
+    const queryParse = queryConsumoIaSchema.safeParse(request.query);
+    if (!queryParse.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Parâmetros de consulta inválidos.',
+        issues: queryParse.error.issues,
+      });
+    }
+
+    const { dataInicio, dataFim, funcionalidade, provedor, page, limit } = queryParse.data;
+
+    const filtroData: { gte?: Date; lte?: Date } = {};
+    if (dataInicio) {
+      filtroData.gte = new Date(`${dataInicio}T00:00:00.000Z`);
+    }
+    if (dataFim) {
+      filtroData.lte = new Date(`${dataFim}T23:59:59.999Z`);
+    }
+
+    // Isolamento multi-tenant inviolável: usuarioId sempre presente no where
+    const where: any = {
+      usuarioId,
+      ...(Object.keys(filtroData).length > 0 && { criadoEm: filtroData }),
+      ...(funcionalidade && { funcionalidade }),
+      ...(provedor && { provedor: provedor.trim().toUpperCase() }),
+    };
+
+    const [totais, porFuncionalidade, porProvedor, totalChamadas, chamadas] = await Promise.all([
+      prisma.usoIaLog.aggregate({
+        where,
+        _count: { _all: true },
+        _sum: { tokensPrompt: true, tokensResposta: true, tokensTotal: true, custoUsd: true, custoBrl: true },
+        _avg: { duracaoMs: true },
+      }),
+      prisma.usoIaLog.groupBy({
+        by: ['funcionalidade'],
+        where,
+        _count: { _all: true },
+        _sum: { tokensTotal: true, custoUsd: true, custoBrl: true },
+      }),
+      prisma.usoIaLog.groupBy({
+        by: ['provedor'],
+        where,
+        _count: { _all: true },
+        _sum: { tokensTotal: true, custoUsd: true, custoBrl: true },
+      }),
+      prisma.usoIaLog.count({ where }),
+      prisma.usoIaLog.findMany({
+        where,
+        orderBy: { criadoEm: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
+        select: {
+          id: true,
+          funcionalidade: true,
+          provedor: true,
+          modelo: true,
+          tokensPrompt: true,
+          tokensResposta: true,
+          tokensTotal: true,
+          custoUsd: true,
+          custoBrl: true,
+          cotacaoUsdBrl: true,
+          duracaoMs: true,
+          status: true,
+          mensagemErro: true,
+          loteId: true,
+          arquivoId: true,
+          criadoEm: true,
+        },
+      }),
+    ]);
+
+    const falhas = await prisma.usoIaLog.count({ where: { ...where, status: 'FALHA' } });
+
+    const numero = (valor: unknown) => (valor === null || valor === undefined ? 0 : Number(valor));
+
+    return reply.status(200).send({
+      versaoTabelaPrecos: VERSAO_TABELA_PRECOS_IA,
+      filtros: {
+        dataInicio: dataInicio || null,
+        dataFim: dataFim || null,
+        funcionalidade: funcionalidade || null,
+        provedor: provedor || null,
+      },
+      totais: {
+        chamadas: totais._count._all,
+        chamadasSucesso: totais._count._all - falhas,
+        chamadasFalha: falhas,
+        tokensPrompt: numero(totais._sum.tokensPrompt),
+        tokensResposta: numero(totais._sum.tokensResposta),
+        tokensTotal: numero(totais._sum.tokensTotal),
+        custoUsd: numero(totais._sum.custoUsd),
+        custoBrl: numero(totais._sum.custoBrl),
+        duracaoMediaMs: Math.round(numero(totais._avg.duracaoMs)),
+      },
+      porFuncionalidade: porFuncionalidade.map((g) => ({
+        funcionalidade: g.funcionalidade,
+        chamadas: g._count._all,
+        tokensTotal: numero(g._sum.tokensTotal),
+        custoUsd: numero(g._sum.custoUsd),
+        custoBrl: numero(g._sum.custoBrl),
+      })),
+      porProvedor: porProvedor.map((g) => ({
+        provedor: g.provedor,
+        chamadas: g._count._all,
+        tokensTotal: numero(g._sum.tokensTotal),
+        custoUsd: numero(g._sum.custoUsd),
+        custoBrl: numero(g._sum.custoBrl),
+      })),
+      chamadasRecentes: {
+        page,
+        limit,
+        total: totalChamadas,
+        totalPages: Math.max(1, Math.ceil(totalChamadas / limit)),
+        itens: chamadas,
+      },
+    });
+  });
+
+  // 7. GET /api/ia/medias-consolidadas (TASK-52 — médias consolidadas de custo e tempo por IA)
+  app.get('/medias-consolidadas', async (_request, reply) => {
+    const medias = await IaMediasConsolidadasService.listarMediasConsolidadas();
+    return reply.status(200).send({
+      itens: medias,
+      total: medias.length,
+    });
+  });
 };
+

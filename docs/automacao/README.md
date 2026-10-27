@@ -8,6 +8,8 @@ Este diretório contém os scripts de automação para subir todo o ecossistema 
 
 - **[`subir_ambiente.sh`](subir_ambiente.sh)**: Script principal Bash executável com permissão `+x`.
 - **[`Subir_Ambiente.desktop`](Subir_Ambiente.desktop)**: Atalho para desktop/gerenciador de arquivos Linux (GNOME Files/Nautilus, Dolphin, etc.) configurado com `Terminal=true`.
+- **[`limpar_historico_importacao.sh`](limpar_historico_importacao.sh)**: Script de limpeza atômica de histórico de lançamentos, lotes, arquivos, staging, tentativas de extração (`tentativas_arquivo_importacao`) e alertas do usuário para reimportação limpa, preservando estritamente as credenciais de IA cadastradas e o histórico de gastos de IA (`uso_ia_logs`).
+- **[`Limpar_Historico_Importacao.desktop`](Limpar_Historico_Importacao.desktop)**: Atalho de 2 cliques para executar a limpeza no terminal interativo.
 - **`logs/`**: Diretório onde são salvos os registros de cada inicialização no padrão de nomenclatura `yyyy-mm-dd-hh-mm-ss.txt`.
 
 ---
@@ -45,6 +47,20 @@ Este diretório contém os scripts de automação para subir todo o ecossistema 
 
 7. **Terminal Persistente (Não fecha sozinho):**
    - Independentemente de terminar com sucesso ou erro, o terminal solicita `Pressione qualquer tecla ou ENTER para fechar este terminal...`, garantindo que o usuário leia os logs e mensagens de erro.
+
+---
+
+## 🧹 Como Limpar o Histórico para Reimportação
+
+### Pelo terminal:
+```bash
+./docs/automacao/limpar_historico_importacao.sh
+```
+
+### Pelo atalho de 2 cliques:
+Dê um duplo clique em [`Limpar_Historico_Importacao.desktop`](Limpar_Historico_Importacao.desktop) e selecione **"Executar no Terminal"**.
+
+> **Pré-requisito de runtime:** o script de limpeza usa o `tsx` (devDependency) com o Node.js do projeto. Como atalhos `.desktop` **não herdam o `PATH` do shell**, o `.sh` resolve automaticamente o Node correto — primeiro via `nvm` (`~/.nvm`), depois em `~/.nvm/versions/node/*/bin/node` e, por fim, em `/usr/local/bin` e `/usr/bin`, exigindo **Node 20+**. Se nenhum Node compatível for encontrado, o script exibe a versão detectada e a instrução de correção (`nvm alias default 24`) em vez de falhar com `SyntaxError`.
 
 ---
 

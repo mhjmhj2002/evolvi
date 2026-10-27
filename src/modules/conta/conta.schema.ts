@@ -57,5 +57,10 @@ export const updateContaSchema = z.object({
   }
 });
 
+export const migrarMovimentosContaSchema = z.object({
+  contaDestinoId: z.string().uuid({ message: 'ID da conta de destino deve ser um UUID válido' }),
+});
+
 export type CreateContaDTO = z.infer<typeof createContaSchema>;
 export type UpdateContaDTO = z.infer<typeof updateContaSchema>;
+export type MigrarMovimentosContaDTO = z.infer<typeof migrarMovimentosContaSchema>;

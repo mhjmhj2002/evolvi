@@ -301,6 +301,9 @@ describe('Mapeamento de Dívidas e Compromissos Recorrentes (TASK-06)', () => {
       expect(geladeira.diaVencimento).toBe(15); // dia vencimento do cartão
       expect(geladeira.dataVencimentoPrevista).toBe('2026-10-15');
       // Em 2026-10, começou em 2026-08 (diff = 2) -> parcela 3/10
+      expect(geladeira.dataCompra).toBe('2026-08');
+      expect(geladeira.parcelamentoInfo.dataCompra).toBe('2026-08');
+      expect(geladeira.parcelamentoInfo.primeiroVencimento).toBe('2026-08');
       expect(geladeira.parcelamentoInfo.parcelaAtualNoMes).toBe(3);
       expect(geladeira.parcelamentoInfo.totalParcelas).toBe(10);
       // Restam 7 parcelas após o mês atual pago -> 7 * 300 = 2100

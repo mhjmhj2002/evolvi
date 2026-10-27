@@ -55,7 +55,7 @@ export class SantanderBankConnectorProvider implements IBankConnectorProvider {
 
     // 1. Anti-Dupla Contagem: Pagamentos de fatura de cartão Santander debitadas em conta corrente
     if (
-      /pag(amento|to)?\s*(de)?\s*fat(ura)?|santander\s*way|way\s*cart[aã]o|fatura\s*cart[aã]o|deb\s*aut\s*cartao\s*santander|pagto\s*tit\s*bco\s*santander/i.test(
+      /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|santander\s*way|way\s*cart[aã]o|fatura\s*cart[aã]o|deb\s*aut\s*cartao\s*santander|pagto\s*tit\s*bco\s*santander|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
         desc
       )
     ) {

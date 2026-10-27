@@ -1,6 +1,6 @@
 import { prisma } from '../../../infrastructure/database/prisma.js';
 import { BankTransactionRaw } from '../types/bank-connector.interface.js';
-import { gerarChaveDedupe } from '../../movimento/movimento.util.js';
+import { gerarChaveDedupe, extrairRaizComerciante } from '../../movimento/movimento.util.js';
 
 export interface IngestItemParams {
   contaId: string;
@@ -83,19 +83,52 @@ export class NormalizationPipelineService {
           continue;
         }
 
-        // Regra anti-dupla contagem
+        // Regra anti-dupla contagem e aportes patrimoniais
         let naturezaFinal = tx.natureza;
         if (
           tx.isPagamentoFatura ||
-          /pag(amento)?\s*(de)?\s*fat(ura)?|fatura\s*cart[aã]o/i.test(tx.descricao)
+          /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|fatura\s*cart[aã]o|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
+            tx.descricao
+          ) ||
+          (/pag\s*boleto|pagamento\s*boleto|pagto\s*boleto/i.test(tx.descricao) &&
+            /nu\s*pagamentos|nubank|c6\s*bank|banco\s*c6|bradescard|itaucard|cart[aã]o|credicard|santander\s*cart[oõ]es/i.test(tx.descricao))
         ) {
           naturezaFinal = 'TRANSFERENCIA_PROPRIA';
           result.pagamentosFaturaConvertidos++;
+        } else if (
+          /aplica[cç][aã]o\s*(de)?\s*(cdb|rdb|lci|lca|tesouro|fundo|investimento|financeira)?|(?:\b|^)(cdb|rdb|lci|lca)(?:\b|$)|tesouro\s*direto|dep[oó]sito\s*poupan[cç]a|compra\s*a[cç][oõ]es|(?:\b|^)investimento(?:\b|$)/i.test(
+            tx.descricao
+          )
+        ) {
+          naturezaFinal = 'APORTE_PATRIMONIAL';
         }
 
-        // Resolução de Categoria POF sugerida pelo conector
+        // Resolução de Categoria POF (Prioridade: Regra do Usuário por Vendedor > Categoria sugerida pelo conector)
         let categoriaId: string | null = null;
-        if (tx.categoriaSugerida) {
+        let categoriaFixadaAutomaticamente = false;
+
+        const raizComerciante = extrairRaizComerciante(tx.descricao);
+        if (raizComerciante && raizComerciante.length >= 3) {
+          const regraVendedor = await prisma.regraVendedorCategoria.findFirst({
+            where: {
+              usuarioId,
+              termoVendedor: { equals: raizComerciante, mode: 'insensitive' },
+            },
+          });
+          if (regraVendedor) {
+            categoriaId = regraVendedor.categoriaId;
+            categoriaFixadaAutomaticamente = true;
+            await prisma.regraVendedorCategoria.update({
+              where: { id: regraVendedor.id },
+              data: {
+                totalAplicacoes: { increment: 1 },
+                atualizadoEm: new Date(),
+              },
+            }).catch(() => {});
+          }
+        }
+
+        if (!categoriaId && tx.categoriaSugerida) {
           const cat = await prisma.categoria.findFirst({
             where: {
               OR: [
@@ -115,6 +148,8 @@ export class NormalizationPipelineService {
               usuarioId,
               contaId,
               categoriaId,
+              categoriaFixadaPeloUsuario: categoriaFixadaAutomaticamente,
+              validadoDedupe: categoriaFixadaAutomaticamente ? 'S' : 'N',
               dataMovimento: dataMovimentoDate,
               competencia,
               descricao: tx.descricao,

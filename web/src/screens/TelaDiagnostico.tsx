@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   CardSemaforo,
   StatusBadge,
@@ -44,6 +44,8 @@ export const TelaDiagnostico: React.FC<TelaDiagnosticoProps> = ({
   const [filtroStatus, setFiltroStatus] = useState<string>('TODOS');
   const [busca, setBusca] = useState<string>('');
 
+  const foiEditadoManualmente = useRef(false);
+
   // Estado editável para Plano de Metas
   const [metasEditadas, setMetasEditadas] = useState<{ [catId: string]: number }>(() => {
     const map: { [id: string]: number } = {};
@@ -52,6 +54,17 @@ export const TelaDiagnostico: React.FC<TelaDiagnosticoProps> = ({
     });
     return map;
   });
+
+  // Atualizar metasEditadas se planoMetas for recarregado do backend e o usuário não tiver edição dirty
+  useEffect(() => {
+    if (!foiEditadoManualmente.current) {
+      const map: { [id: string]: number } = {};
+      planoMetas.metas.forEach((m) => {
+        map[m.categoria_id] = m.meta_proposta;
+      });
+      setMetasEditadas(map);
+    }
+  }, [planoMetas]);
 
   const [salvando, setSalvando] = useState<boolean>(false);
   const [mensagemFeedback, setMensagemFeedback] = useState<string | null>(null);
@@ -89,6 +102,7 @@ export const TelaDiagnostico: React.FC<TelaDiagnosticoProps> = ({
       if (onMetasAtualizadas) {
         onMetasAtualizadas(res);
       }
+      foiEditadoManualmente.current = false;
       setMensagemFeedback('Metas salvas com sucesso no plano do Zero a Zero!');
     } catch {
       setMensagemFeedback('Erro ao persistir metas. Verifique a validação.');
@@ -377,6 +391,7 @@ export const TelaDiagnostico: React.FC<TelaDiagnosticoProps> = ({
                         value={valorProposto}
                         onChange={(e) => {
                           const val = parseFloat(e.target.value) || 0;
+                          foiEditadoManualmente.current = true;
                           setMetasEditadas((prev) => ({ ...prev, [item.categoria_id]: val }));
                         }}
                         className="form-input"

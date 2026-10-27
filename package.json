@@ -11,6 +11,7 @@
     "build:web": "tsc -p tsconfig.web.json && vite build",
     "start": "node dist/server.js",
     "test": "vitest run",
+    "test:run": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",

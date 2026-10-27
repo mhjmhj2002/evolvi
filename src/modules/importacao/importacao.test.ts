@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { buildApp } from '../../app.js';
 import { prisma } from '../../infrastructure/database/prisma.js';
+import { env } from '../../config/env.js';
 import { ImportacaoStorageService } from './importacao-storage.service.js';
 import {
   importacaoEventBus,
@@ -83,11 +84,21 @@ describe('TASK-32: Modelagem e Armazenamento Temporário de Upload em Lote (IMP-
   });
 
   describe('1. Regras de Naming e Sanitização de Diretórios', () => {
-    it('deve gerar o caminho do diretório temporário no padrão estrito uploads/yyyy-mm-dd-hh-mm-ss-{usuarioId}/', () => {
+    it('deve gerar o caminho do diretório temporário no padrão estrito {UPLOADS_DIR}/{usuarioId}/yyyy-mm-dd-hh-mm-ss-{usuarioId}/', () => {
       const dataRef = new Date(2026, 9, 13, 15, 30, 45); // Mês 9 = Outubro (0-indexed)
       const caminho = storageService.gerarCaminhoDiretorioLote('uuid-teste-1234', dataRef);
 
-      expect(caminho).toBe(path.join('uploads', '2026-10-13-15-30-45-uuid-teste-1234'));
+      expect(caminho).toBe(
+        path.join(env.UPLOADS_DIR, 'uuid-teste-1234', '2026-10-13-15-30-45-uuid-teste-1234')
+      );
+    });
+
+    it('deve sanitizar o usuarioId para um único segmento de path (sem barras nem "..")', () => {
+      const dataRef = new Date(2026, 9, 13, 15, 30, 45);
+      const caminho = storageService.gerarCaminhoDiretorioLote('../../etc/passwd', dataRef);
+
+      expect(caminho).toBe(path.join(env.UPLOADS_DIR, 'etcpasswd', '2026-10-13-15-30-45-etcpasswd'));
+      expect(caminho).not.toContain('..');
     });
 
     it('deve sanitizar caminhos relativos e prevenir path traversal (ex: ../ e caminhos absolutos)', () => {
@@ -135,7 +146,7 @@ describe('TASK-32: Modelagem e Armazenamento Temporário de Upload em Lote (IMP-
       expect(resultado.status).toBe('RECEPCIONADO');
       expect(resultado.totalArquivos).toBe(2);
       expect(resultado.arquivos).toHaveLength(2);
-      expect(resultado.caminhoDiretorio).toContain(`uploads/`);
+      expect(resultado.caminhoDiretorio).toContain(`uploads/${usuario1Id}/`);
       expect(resultado.caminhoDiretorio).toContain(usuario1Id);
 
       // Validação física no disco
@@ -326,6 +337,35 @@ describe('TASK-32: Modelagem e Armazenamento Temporário de Upload em Lote (IMP-
       expect(response.headers['content-type']).toContain('text/event-stream');
       expect(response.body).toContain('event: connected');
       expect(response.body).toContain(usuario1Id);
+    });
+
+    it('deve retornar lançamentos e consolidado do arquivo com autenticação (GET /api/importacao/arquivos/:id/lancamentos)', async () => {
+      const lote = await prisma.loteImportacao.findUnique({
+        where: { id: loteUser1Id },
+        include: { arquivos: true },
+      });
+      const arquivoId = lote!.arquivos[0].id;
+
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/importacao/arquivos/${arquivoId}/lancamentos`,
+        headers: { authorization: `Bearer ${token1}` },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.arquivo.id).toBe(arquivoId);
+      expect(body.resumo).toBeDefined();
+      expect(Array.isArray(body.movimentos)).toBe(true);
+      expect(Array.isArray(body.stagingItens)).toBe(true);
+
+      // Usuário 2 não tem acesso ao arquivo do Usuário 1
+      const responseUser2 = await app.inject({
+        method: 'GET',
+        url: `/api/importacao/arquivos/${arquivoId}/lancamentos`,
+        headers: { authorization: `Bearer ${token2}` },
+      });
+      expect(responseUser2.statusCode).toBe(404);
     });
   });
 });

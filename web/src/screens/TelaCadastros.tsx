@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext.tsx';
-import { UsuarioPerfil, ContaItem, CategoriaTreeItem, apiService } from '../api.ts';
+import { UsuarioPerfil, ContaItem, CategoriaTreeItem, RegraVendedorItem, apiService } from '../api.ts';
 import {
   DollarSign,
   Save,
@@ -20,6 +20,14 @@ import {
   Calendar,
   Settings2,
   Sparkles,
+  Store,
+  Trash2,
+  Plus,
+  Edit2,
+  ArrowRightLeft,
+  X,
+  Check,
+  CreditCard,
 } from 'lucide-react';
 import { GerenciadorConectoresBancarios } from '../components/GerenciadorConectoresBancarios.tsx';
 import { ConfiguracaoIaCard } from '../components/ConfiguracaoIaCard.tsx';
@@ -28,6 +36,7 @@ interface TelaCadastrosProps {
   perfil: UsuarioPerfil;
   contas: ContaItem[];
   categorias: CategoriaTreeItem[];
+  onContasAtualizadas?: () => void;
   onRendaAtualizada?: (novaRenda: number) => void;
   onExtratoImportado?: () => void;
   subAbaInicial?: 'renda' | 'contas' | 'categorias' | 'bancos' | 'ia' | 'configuracoes';
@@ -37,6 +46,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
   perfil,
   contas,
   categorias,
+  onContasAtualizadas,
   onRendaAtualizada,
   onExtratoImportado,
   subAbaInicial = 'renda',
@@ -45,6 +55,27 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
 
   // Sub-abas do menu de cadastros
   const [subAba, setSubAba] = useState<'renda' | 'contas' | 'categorias' | 'bancos' | 'ia' | 'configuracoes'>(subAbaInicial);
+
+  // Estados para CRUD de Contas e Resolução de Dependências
+  const [modalContaAberto, setModalContaAberto] = useState(false);
+  const [contaEmEdicao, setContaEmEdicao] = useState<ContaItem | null>(null);
+  const [formNomeConta, setFormNomeConta] = useState('');
+  const [formTipoConta, setFormTipoConta] = useState<'CONTA_CORRENTE' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO'>('CONTA_CORRENTE');
+  const [formSaldoInicial, setFormSaldoInicial] = useState('0.00');
+  const [formDiaFechamento, setFormDiaFechamento] = useState<string>('1');
+  const [formDiaVencimento, setFormDiaVencimento] = useState<string>('10');
+  const [salvandoConta, setSalvandoConta] = useState(false);
+  const [erroConta, setErroConta] = useState<string | null>(null);
+
+  // Modal de Exclusão / Resolução de Dependências
+  const [modalExclusaoContaAberto, setModalExclusaoContaAberto] = useState(false);
+  const [contaParaExcluir, setContaParaExcluir] = useState<ContaItem | null>(null);
+  const [carregandoDependencias, setCarregandoDependencias] = useState(false);
+  const [dependenciasConta, setDependenciasConta] = useState<any | null>(null);
+  const [contaDestinoMigracao, setContaDestinoMigracao] = useState<string>('');
+  const [processandoAcaoConta, setProcessandoAcaoConta] = useState(false);
+  const [erroAcaoConta, setErroAcaoConta] = useState<string | null>(null);
+  const [sucessoAcaoConta, setSucessoAcaoConta] = useState<string | null>(null);
 
   // Estado do formulário de renda base com Média N-Meses e Complemento Editável (TASK-26 e TASK-27)
   const [loadingMedia, setLoadingMedia] = useState(false);
@@ -63,6 +94,205 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
   const [salvandoConfig, setSalvandoConfig] = useState(false);
   const [configSucesso, setConfigSucesso] = useState<string | null>(null);
   const [configErro, setConfigErro] = useState<string | null>(null);
+
+  // Estado do Catálogo de Regras de Lojas / Vendedor
+  const [regrasVendedor, setRegrasVendedor] = useState<RegraVendedorItem[]>([]);
+  const [loadingRegrasVendedor, setLoadingRegrasVendedor] = useState(false);
+  const [excluindoRegraId, setExcluindoRegraId] = useState<string | null>(null);
+
+  const carregarRegrasVendedor = async () => {
+    try {
+      setLoadingRegrasVendedor(true);
+      const res = await apiService.getRegrasVendedor();
+      setRegrasVendedor(res.regras || []);
+    } catch (err) {
+      console.warn('Erro ao carregar regras de vendedor:', err);
+    } finally {
+      setLoadingRegrasVendedor(false);
+    }
+  };
+
+  // Funções de manipulação do CRUD de Contas
+  const abrirNovaConta = () => {
+    setContaEmEdicao(null);
+    setFormNomeConta('');
+    setFormTipoConta('CONTA_CORRENTE');
+    setFormSaldoInicial('0.00');
+    setFormDiaFechamento('1');
+    setFormDiaVencimento('10');
+    setErroConta(null);
+    setModalContaAberto(true);
+  };
+
+  const abrirEditarConta = (c: ContaItem) => {
+    setContaEmEdicao(c);
+    setFormNomeConta(c.nome);
+    setFormTipoConta((c.tipo as any) || 'CONTA_CORRENTE');
+    setFormSaldoInicial(Number(c.saldoInicial || 0).toFixed(2));
+    setFormDiaFechamento(c.diaFechamento ? String(c.diaFechamento) : '1');
+    setFormDiaVencimento(c.diaVencimento ? String(c.diaVencimento) : '10');
+    setErroConta(null);
+    setModalContaAberto(true);
+  };
+
+  const handleSalvarConta = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErroConta(null);
+
+    const nomeTrim = formNomeConta.trim();
+    if (!nomeTrim) {
+      setErroConta('O nome da conta é obrigatório.');
+      return;
+    }
+
+    const saldoNum = parseFloat(formSaldoInicial.replace(',', '.')) || 0;
+    const isCartao = formTipoConta === 'CARTAO_CREDITO';
+    const diaF = isCartao ? parseInt(formDiaFechamento, 10) : undefined;
+    const diaV = isCartao ? parseInt(formDiaVencimento, 10) : undefined;
+
+    if (isCartao && (!diaF || !diaV)) {
+      setErroConta('Dia de fechamento e vencimento são obrigatórios para cartão de crédito.');
+      return;
+    }
+
+    try {
+      setSalvandoConta(true);
+      if (contaEmEdicao) {
+        await apiService.atualizarConta(contaEmEdicao.id, {
+          nome: nomeTrim,
+          tipo: formTipoConta,
+          saldoInicial: saldoNum,
+          diaFechamento: diaF ?? null,
+          diaVencimento: diaV ?? null,
+        });
+      } else {
+        await apiService.criarConta({
+          nome: nomeTrim,
+          tipo: formTipoConta,
+          saldoInicial: saldoNum,
+          diaFechamento: diaF ?? null,
+          diaVencimento: diaV ?? null,
+        });
+      }
+
+      setModalContaAberto(false);
+      if (onContasAtualizadas) {
+        await onContasAtualizadas();
+      }
+    } catch (err: any) {
+      setErroConta(err.message || 'Erro ao salvar conta.');
+    } finally {
+      setSalvandoConta(false);
+    }
+  };
+
+  const abrirModalExclusao = async (c: ContaItem) => {
+    setContaParaExcluir(c);
+    setCarregandoDependencias(true);
+    setDependenciasConta(null);
+    setErroAcaoConta(null);
+    setSucessoAcaoConta(null);
+    // Filtrar outra conta qualquer como padrão de destino
+    const outra = contas.find((item) => item.id !== c.id);
+    setContaDestinoMigracao(outra ? outra.id : '');
+    setModalExclusaoContaAberto(true);
+
+    try {
+      const deps = await apiService.getDependenciasConta(c.id);
+      setDependenciasConta(deps);
+    } catch (err: any) {
+      setErroAcaoConta(err.message || 'Erro ao carregar dependências da conta.');
+    } finally {
+      setCarregandoDependencias(false);
+    }
+  };
+
+  const handleExcluirContaDireta = async () => {
+    if (!contaParaExcluir) return;
+    try {
+      setProcessandoAcaoConta(true);
+      setErroAcaoConta(null);
+      await apiService.excluirConta(contaParaExcluir.id);
+      setSucessoAcaoConta('Conta excluída com sucesso!');
+      if (onContasAtualizadas) {
+        await onContasAtualizadas();
+      }
+      setTimeout(() => {
+        setModalExclusaoContaAberto(false);
+      }, 700);
+    } catch (err: any) {
+      setErroAcaoConta(err.message || 'Não foi possível excluir a conta.');
+    } finally {
+      setProcessandoAcaoConta(false);
+    }
+  };
+
+  const handleMigrarMovimentos = async () => {
+    if (!contaParaExcluir) return;
+    if (!contaDestinoMigracao) {
+      setErroAcaoConta('Selecione uma conta de destino para transferir os lançamentos.');
+      return;
+    }
+
+    try {
+      setProcessandoAcaoConta(true);
+      setErroAcaoConta(null);
+      const res = await apiService.migrarMovimentosConta(contaParaExcluir.id, contaDestinoMigracao);
+      // Recarregar dependências
+      const deps = await apiService.getDependenciasConta(contaParaExcluir.id);
+      setDependenciasConta(deps);
+      setSucessoAcaoConta(res.message || 'Lançamentos migrados com sucesso!');
+      if (onContasAtualizadas) {
+        await onContasAtualizadas();
+      }
+    } catch (err: any) {
+      setErroAcaoConta(err.message || 'Erro ao migrar lançamentos.');
+    } finally {
+      setProcessandoAcaoConta(false);
+    }
+  };
+
+  const handleExcluirLançamentosDaConta = async () => {
+    if (!contaParaExcluir) return;
+    const confirmou = window.confirm(
+      `ATENÇÃO: Deseja realmente excluir TODOS os lançamentos vinculados à conta "${contaParaExcluir.nome}"? Esta ação removerá os registros para liberar a exclusão da conta.`
+    );
+    if (!confirmou) return;
+
+    try {
+      setProcessandoAcaoConta(true);
+      setErroAcaoConta(null);
+      const res = await apiService.excluirMovimentosConta(contaParaExcluir.id);
+      const deps = await apiService.getDependenciasConta(contaParaExcluir.id);
+      setDependenciasConta(deps);
+      setSucessoAcaoConta(res.message || 'Lançamentos excluídos com sucesso.');
+      if (onContasAtualizadas) {
+        await onContasAtualizadas();
+      }
+    } catch (err: any) {
+      setErroAcaoConta(err.message || 'Erro ao excluir lançamentos da conta.');
+    } finally {
+      setProcessandoAcaoConta(false);
+    }
+  };
+
+  const handleExcluirRegraVendedor = async (id: string) => {
+    try {
+      setExcluindoRegraId(id);
+      await apiService.excluirRegraVendedor(id);
+      setRegrasVendedor((prev) => prev.filter((r) => r.id !== id));
+    } catch (err: any) {
+      alert(err.message || 'Erro ao remover regra de loja');
+    } finally {
+      setExcluindoRegraId(null);
+    }
+  };
+
+  useEffect(() => {
+    if (subAba === 'categorias') {
+      carregarRegrasVendedor();
+    }
+  }, [subAba]);
 
   // Carregar configurações do usuário
   const carregarConfiguracao = async () => {
@@ -491,39 +721,572 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
 
       {/* 4. Conteúdo da Sub-aba: Contas */}
       {subAba === 'contas' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            Contas bancárias, carteiras e cartões configurados:
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+            <div>
+              <div style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                Contas Bancárias, Carteiras e Cartões ({contas.length})
+              </div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                Gerencie suas contas ativas. Para excluir uma conta, valide dependências e transfira ou exclua seus lançamentos.
+              </div>
+            </div>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={abrirNovaConta}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '8px 14px',
+                fontSize: '0.82rem',
+                borderRadius: 'var(--radius-sm)',
+                fontWeight: 600,
+              }}
+            >
+              <Plus size={16} />
+              <span>Nova Conta</span>
+            </button>
           </div>
+
           <div style={{ display: 'grid', gap: '10px' }}>
-            {contas.map((c) => (
+            {contas.length === 0 ? (
               <div
-                key={c.id}
                 style={{
-                  background: 'var(--bg-surface)',
-                  border: '1px solid var(--border-subtle)',
+                  padding: '30px',
+                  textAlign: 'center',
+                  color: 'var(--text-secondary)',
+                  border: '1px dashed var(--border-subtle)',
                   borderRadius: 'var(--radius-sm)',
-                  padding: '14px 16px',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
+                  fontSize: '0.85rem',
                 }}
               >
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{c.nome}</div>
-                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                    Tipo: {c.tipo} {c.diaFechamento ? `• Fecha dia ${c.diaFechamento} / Vence dia ${c.diaVencimento}` : ''}
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Saldo Inicial</div>
-                  <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text-primary)' }}>
-                    R$ {Number(c.saldoInicial).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                  </div>
-                </div>
+                Nenhuma conta cadastrada ainda. Clique no botão acima para adicionar sua primeira conta.
               </div>
-            ))}
+            ) : (
+              contas.map((c) => (
+                <div
+                  key={c.id}
+                  style={{
+                    background: 'var(--bg-surface)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '14px 16px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '12px',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <div
+                      style={{
+                        width: 38,
+                        height: 38,
+                        borderRadius: 'var(--radius-sm)',
+                        background: c.tipo === 'CARTAO_CREDITO' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(56, 189, 248, 0.12)',
+                        color: c.tipo === 'CARTAO_CREDITO' ? 'var(--status-red, #ef4444)' : 'var(--brand-primary, #38bdf8)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {c.tipo === 'CARTAO_CREDITO' ? <CreditCard size={18} /> : <Wallet size={18} />}
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>{c.nome}</div>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                        Tipo: <strong style={{ color: 'var(--text-secondary)' }}>{c.tipo}</strong>{' '}
+                        {c.diaFechamento ? `• Fecha dia ${c.diaFechamento} / Vence dia ${c.diaVencimento}` : ''}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginLeft: 'auto' }}>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Saldo Inicial</div>
+                      <div style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                        R$ {Number(c.saldoInicial).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <button
+                        type="button"
+                        onClick={() => abrirEditarConta(c)}
+                        title="Editar Conta"
+                        style={{
+                          background: 'rgba(255, 255, 255, 0.04)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: '6px',
+                          color: 'var(--text-secondary)',
+                          padding: '6px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          transition: 'all 0.15s',
+                        }}
+                      >
+                        <Edit2 size={15} />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => abrirModalExclusao(c)}
+                        title="Excluir Conta"
+                        style={{
+                          background: 'rgba(239, 68, 68, 0.08)',
+                          border: '1px solid rgba(239, 68, 68, 0.25)',
+                          borderRadius: '6px',
+                          color: 'var(--status-red, #ef4444)',
+                          padding: '6px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          transition: 'all 0.15s',
+                        }}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
           </div>
+
+          {/* Modal de Criação / Edição de Conta */}
+          {modalContaAberto && (
+            <div
+              className="bottom-sheet-backdrop"
+              onClick={() => setModalContaAberto(false)}
+              style={{ zIndex: 120 }}
+            >
+              <div
+                className="bottom-sheet"
+                onClick={(e) => e.stopPropagation()}
+                style={{ maxWidth: '480px', gap: '16px' }}
+              >
+                <div className="bottom-sheet-header">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Wallet size={18} color="var(--brand-primary)" />
+                    <span className="bottom-sheet-title">
+                      {contaEmEdicao ? 'Editar Conta' : 'Nova Conta'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="bottom-sheet-close"
+                    onClick={() => setModalContaAberto(false)}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                {erroConta && (
+                  <div className="login-error-alert" role="alert">
+                    <AlertCircle size={16} />
+                    <span>{erroConta}</span>
+                  </div>
+                )}
+
+                <form onSubmit={handleSalvarConta} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="input-conta-nome">
+                      Nome da Conta *
+                    </label>
+                    <input
+                      id="input-conta-nome"
+                      type="text"
+                      className="form-input"
+                      placeholder="Ex: Nubank, Cartão C6, Carteira"
+                      value={formNomeConta}
+                      onChange={(e) => setFormNomeConta(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="select-conta-tipo">
+                      Tipo de Conta *
+                    </label>
+                    <select
+                      id="select-conta-tipo"
+                      className="form-input"
+                      value={formTipoConta}
+                      onChange={(e) => setFormTipoConta(e.target.value as any)}
+                    >
+                      <option value="CONTA_CORRENTE">Conta Corrente</option>
+                      <option value="CARTAO_CREDITO">Cartão de Crédito</option>
+                      <option value="INVESTIMENTO">Investimento / Reserva</option>
+                      <option value="CARTEIRA_DINHEIRO">Carteira / Dinheiro Físico</option>
+                    </select>
+                  </div>
+
+                  {formTipoConta === 'CARTAO_CREDITO' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                      <div className="form-group">
+                        <label className="form-label" htmlFor="input-dia-fechamento">
+                          Dia Fechamento *
+                        </label>
+                        <input
+                          id="input-dia-fechamento"
+                          type="number"
+                          min="1"
+                          max="31"
+                          className="form-input"
+                          value={formDiaFechamento}
+                          onChange={(e) => setFormDiaFechamento(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label" htmlFor="input-dia-vencimento">
+                          Dia Vencimento *
+                        </label>
+                        <input
+                          id="input-dia-vencimento"
+                          type="number"
+                          min="1"
+                          max="31"
+                          className="form-input"
+                          value={formDiaVencimento}
+                          onChange={(e) => setFormDiaVencimento(e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="input-saldo-inicial">
+                      Saldo Inicial (R$)
+                    </label>
+                    <input
+                      id="input-saldo-inicial"
+                      type="number"
+                      step="0.01"
+                      className="form-input"
+                      placeholder="0.00"
+                      value={formSaldoInicial}
+                      onChange={(e) => setFormSaldoInicial(e.target.value)}
+                    />
+                    <span className="role-helper-text">
+                      Referência de partida para conferência do saldo.
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => setModalContaAberto(false)}
+                      style={{ flex: 1 }}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn-primary"
+                      disabled={salvandoConta}
+                      style={{ flex: 1 }}
+                    >
+                      {salvandoConta ? (
+                        <>
+                          <Loader2 size={16} className="spinner" />
+                          <span>Salvando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Save size={16} />
+                          <span>Salvar Conta</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Modal de Exclusão de Conta com Validação de Dependências e Opção de Migração */}
+          {modalExclusaoContaAberto && contaParaExcluir && (
+            <div
+              className="bottom-sheet-backdrop"
+              onClick={() => setModalExclusaoContaAberto(false)}
+              style={{ zIndex: 120 }}
+            >
+              <div
+                className="bottom-sheet"
+                onClick={(e) => e.stopPropagation()}
+                style={{ maxWidth: '540px', gap: '16px', maxHeight: '90vh', overflowY: 'auto' }}
+              >
+                <div className="bottom-sheet-header">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <AlertCircle size={20} color="var(--status-red, #ef4444)" />
+                    <span className="bottom-sheet-title" style={{ color: 'var(--status-red, #ef4444)' }}>
+                      Excluir Conta: {contaParaExcluir.nome}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="bottom-sheet-close"
+                    onClick={() => setModalExclusaoContaAberto(false)}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                {erroAcaoConta && (
+                  <div className="login-error-alert" role="alert">
+                    <AlertCircle size={16} />
+                    <span>{erroAcaoConta}</span>
+                  </div>
+                )}
+
+                {sucessoAcaoConta && (
+                  <div className="login-success-alert" role="status">
+                    <CheckCircle2 size={16} />
+                    <span>{sucessoAcaoConta}</span>
+                  </div>
+                )}
+
+                {carregandoDependencias ? (
+                  <div style={{ padding: '30px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    <Loader2 size={24} className="spinner" style={{ margin: '0 auto 8px auto' }} />
+                    Verificando dependências e lançamentos vinculados...
+                  </div>
+                ) : dependenciasConta ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    {dependenciasConta.podeExcluirDiretamente ? (
+                      <div
+                        style={{
+                          background: 'rgba(16, 185, 129, 0.08)',
+                          border: '1px solid rgba(16, 185, 129, 0.25)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '12px 14px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '6px',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--status-green)', fontWeight: 600 }}>
+                          <CheckCircle2 size={18} />
+                          Nenhum lançamento ou parcelamento vinculado
+                        </div>
+                        <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0 }}>
+                          Esta conta está sem registros ativos e pode ser removida com segurança sem afetar suas médias e históricos.
+                        </p>
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          background: 'rgba(239, 68, 68, 0.08)',
+                          border: '1px solid rgba(239, 68, 68, 0.25)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '12px 14px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '8px',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--status-red, #ef4444)', fontWeight: 700, fontSize: '0.9rem' }}>
+                          <AlertCircle size={18} />
+                          Existem registros vinculados a esta conta!
+                        </div>
+                        <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.45 }}>
+                          A conta possui <strong>{dependenciasConta.totalMovimentos} lançamento(s)</strong> e{' '}
+                          <strong>{dependenciasConta.totalParcelamentos} parcelamento(s)</strong>.
+                          O sistema protege a integridade dos seus dados e não permite a exclusão direta enquanto houver registros vinculados.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Resumo de Lançamentos Vinculados */}
+                    {dependenciasConta.totalMovimentos > 0 && (
+                      <div
+                        style={{
+                          background: 'var(--bg-primary)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '10px 12px',
+                          maxHeight: '160px',
+                          overflowY: 'auto',
+                          fontSize: '0.78rem',
+                        }}
+                      >
+                        <div style={{ fontWeight: 600, marginBottom: '6px', color: 'var(--text-secondary)' }}>
+                          Lançamentos Vinculados (mostrando até 100):
+                        </div>
+                        <div style={{ display: 'grid', gap: '6px' }}>
+                          {dependenciasConta.movimentos.map((m: any) => (
+                            <div
+                              key={m.id}
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+                                paddingBottom: '4px',
+                              }}
+                            >
+                              <span style={{ color: 'var(--text-primary)' }}>{m.descricao}</span>
+                              <span style={{ fontWeight: 600, color: m.natureza === 'RECEITA' ? 'var(--status-green)' : 'var(--text-primary)' }}>
+                                R$ {Number(m.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Opções de Resolução de Dependências se houver registros vinculados */}
+                    {!dependenciasConta.podeExcluirDiretamente && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '4px' }}>
+                        <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                          Opções para viabilizar a exclusão:
+                        </div>
+
+                        {/* Opção 1: Migrar Lançamentos para outra conta */}
+                        <div
+                          style={{
+                            background: 'rgba(56, 189, 248, 0.06)',
+                            border: '1px solid rgba(56, 189, 248, 0.25)',
+                            borderRadius: 'var(--radius-sm)',
+                            padding: '12px 14px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '10px',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--brand-primary)', fontWeight: 600, fontSize: '0.85rem' }}>
+                            <ArrowRightLeft size={16} />
+                            Opção A: Transferir lançamentos para outra conta
+                          </div>
+                          <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: 0 }}>
+                            Reatribui todos os lançamentos e parcelamentos para outra conta existente do seu perfil, liberando a exclusão desta conta sem perder o histórico financeiro.
+                          </p>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                            <select
+                              className="form-input"
+                              value={contaDestinoMigracao}
+                              onChange={(e) => setContaDestinoMigracao(e.target.value)}
+                              style={{ flex: 1, minWidth: '180px', padding: '6px 10px', fontSize: '0.82rem' }}
+                            >
+                              <option value="">Selecione a conta de destino...</option>
+                              {contas
+                                .filter((item) => item.id !== contaParaExcluir.id)
+                                .map((dest) => (
+                                  <option key={dest.id} value={dest.id}>
+                                    {dest.nome} ({dest.tipo})
+                                  </option>
+                                ))}
+                            </select>
+                            <button
+                              type="button"
+                              className="btn-primary"
+                              disabled={processandoAcaoConta || !contaDestinoMigracao}
+                              onClick={handleMigrarMovimentos}
+                              style={{
+                                padding: '6px 12px',
+                                fontSize: '0.8rem',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                              }}
+                            >
+                              {processandoAcaoConta ? <Loader2 size={14} className="spinner" /> : <Check size={14} />}
+                              <span>Transferir Lançamentos</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Opção 2: Excluir Lançamentos Vinculados */}
+                        <div
+                          style={{
+                            background: 'rgba(239, 68, 68, 0.05)',
+                            border: '1px solid rgba(239, 68, 68, 0.2)',
+                            borderRadius: 'var(--radius-sm)',
+                            padding: '12px 14px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '8px',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--status-red, #ef4444)', fontWeight: 600, fontSize: '0.85rem' }}>
+                            <Trash2 size={16} />
+                            Opção B: Excluir todos os lançamentos vinculados primeiro
+                          </div>
+                          <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: 0 }}>
+                            Caso a conta tenha sido cadastrada por engano ou contenha lançamentos errados de importação, você pode remover os lançamentos dela em lote.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={handleExcluirLançamentosDaConta}
+                            disabled={processandoAcaoConta}
+                            style={{
+                              alignSelf: 'flex-start',
+                              background: 'transparent',
+                              border: '1px solid rgba(239, 68, 68, 0.4)',
+                              color: 'var(--status-red, #ef4444)',
+                              padding: '6px 12px',
+                              borderRadius: 'var(--radius-sm)',
+                              fontSize: '0.78rem',
+                              fontWeight: 600,
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            {processandoAcaoConta ? <Loader2 size={14} className="spinner" /> : <Trash2 size={14} />}
+                            <span>Excluir {dependenciasConta.totalMovimentos} Lançamentos Vinculados</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Botão de Exclusão da Conta (habilitado somente se podeExcluirDiretamente) */}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '8px' }}>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => setModalExclusaoContaAberto(false)}
+                      >
+                        Fechar
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        disabled={!dependenciasConta.podeExcluirDiretamente || processandoAcaoConta}
+                        onClick={handleExcluirContaDireta}
+                        style={{
+                          background: dependenciasConta.podeExcluirDiretamente ? 'var(--status-red, #ef4444)' : undefined,
+                          borderColor: dependenciasConta.podeExcluirDiretamente ? 'var(--status-red, #ef4444)' : undefined,
+                        }}
+                      >
+                        {processandoAcaoConta ? (
+                          <>
+                            <Loader2 size={16} className="spinner" />
+                            <span>Excluindo Conta...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Trash2 size={16} />
+                            <span>Excluir Conta Definitivamente</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -580,6 +1343,165 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
                 )}
               </div>
             ))}
+          </div>
+
+          {/* Seção: Catálogo de Lojas & Regras Automáticas de Categorização */}
+          <div
+            style={{
+              marginTop: '16px',
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-md)',
+              padding: '18px 20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '14px',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: '8px',
+                    background: 'rgba(56, 189, 248, 0.12)',
+                    color: 'var(--brand-primary)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Store size={18} />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '0.98rem', fontWeight: 700, margin: 0 }}>
+                    Catálogo de Lojas & Vendedores
+                  </h3>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0 }}>
+                    Regras memorizadas para categorizar automaticamente lançamentos de nomes conhecidos (ex: importações, faturas e validações)
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={carregarRegrasVendedor}
+                disabled={loadingRegrasVendedor}
+                style={{
+                  background: 'none',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '6px 10px',
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '0.75rem',
+                }}
+              >
+                <RefreshCw size={12} className={loadingRegrasVendedor ? 'spin' : ''} />
+                Atualizar
+              </button>
+            </div>
+
+            {loadingRegrasVendedor ? (
+              <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                <Loader2 size={20} className="spin" style={{ margin: '0 auto 8px auto' }} />
+                Carregando catálogo de lojas...
+              </div>
+            ) : regrasVendedor.length === 0 ? (
+              <div
+                style={{
+                  padding: '24px',
+                  textAlign: 'center',
+                  color: 'var(--text-secondary)',
+                  border: '1px dashed var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  fontSize: '0.85rem',
+                }}
+              >
+                Nenhuma regra de loja salva ainda. Ao categorizar um lançamento na <strong>Central de Suspeitas</strong> ou ao editar um lançamento com a opção <em>"Cadastrar regra no catálogo"</em>, o nome do estabelecimento será salvo aqui automaticamente.
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '8px' }}>
+                {regrasVendedor.map((regra) => (
+                  <div
+                    key={regra.id}
+                    style={{
+                      background: 'var(--bg-primary)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 'var(--radius-sm)',
+                      padding: '10px 14px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <span
+                        style={{
+                          fontWeight: 700,
+                          fontSize: '0.88rem',
+                          color: 'var(--text-primary)',
+                          background: 'rgba(255, 255, 255, 0.05)',
+                          padding: '4px 8px',
+                          borderRadius: '4px',
+                          border: '1px solid var(--border-subtle)',
+                        }}
+                      >
+                        {regra.termoVendedor}
+                      </span>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        → aloca em{' '}
+                        <strong style={{ color: 'var(--brand-primary)' }}>
+                          {regra.categoriaPaiNome ? `${regra.categoriaPaiNome} > ` : ''}
+                          {regra.categoriaNome || 'Categoria Desconhecida'}
+                        </strong>
+                      </span>
+                      {regra.totalAplicacoes > 0 && (
+                        <span
+                          style={{
+                            fontSize: '0.72rem',
+                            color: 'var(--text-muted)',
+                            background: 'rgba(255, 255, 255, 0.03)',
+                            padding: '2px 6px',
+                            borderRadius: '10px',
+                          }}
+                        >
+                          Aplicada {regra.totalAplicacoes}x
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => handleExcluirRegraVendedor(regra.id)}
+                        disabled={excluindoRegraId === regra.id}
+                        title="Remover regra do catálogo (para exceções ou reclassificações futuras)"
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--color-danger, #ef4444)',
+                          cursor: 'pointer',
+                          padding: '6px',
+                          borderRadius: '4px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          opacity: excluindoRegraId === regra.id ? 0.5 : 0.8,
+                        }}
+                      >
+                        {excluindoRegraId === regra.id ? (
+                          <Loader2 size={16} className="spin" />
+                        ) : (
+                          <Trash2 size={16} />
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

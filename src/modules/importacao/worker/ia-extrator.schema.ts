@@ -15,6 +15,8 @@ export const lancamentoConsolidadoIaSchema = z.object({
   natureza: naturezaIaSchema,
   contaSugerida: z.string().optional().nullable(),
   tipoConta: tipoContaIaSchema.optional().nullable(),
+  numeroConta: z.string().optional().nullable(),
+  digitosCartao: z.string().optional().nullable(),
   categoriaSugerida: z.string().optional().nullable(),
   parcelaAtual: z.number().int().positive().optional().nullable(),
   totalParcelas: z.number().int().positive().optional().nullable(),
@@ -36,6 +38,9 @@ export const arquivoConsolidadoIaSchema = z.object({
       modelo: z.string(),
       tentativas: z.number().default(1),
       formatoDetectado: z.string().optional(),
+      eFaturaCartao: z.boolean().optional(),
+      faturaDataVencimento: z.string().optional().nullable(),
+      faturaValorTotal: z.number().optional().nullable(),
     })
     .optional(),
   transacoes: z.array(lancamentoConsolidadoIaSchema),

@@ -8,7 +8,10 @@ import {
   processarLoteIaBodySchema,
   arquivoIdParamSchema,
   reprocessarArquivoIaBodySchema,
+  uploadImportacaoQuerySchema,
+  queryTentativasArquivoSchema,
 } from './importacao.schema.js';
+import { ImportacaoTentativasService } from './importacao-tentativas.service.js';
 
 export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   const storageService = new ImportacaoStorageService();
@@ -28,7 +31,7 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
     /**
      * POST /api/importacao/upload
      * Recepciona 1 arquivo, múltiplos arquivos ou pastas completas (multipart).
-     * Salva no disco temporário com o padrão uploads/yyyy-mm-dd-hh-mm-ss-{usuarioId}/
+     * Salva no disco com o padrão {UPLOADS_DIR}/{usuarioId}/{yyyy-mm-dd-hh-mm-ss}-{usuarioId}/
      * e retorna HTTP 202 Accepted imediatamente com loteId.
      */
     authApp.post('/upload', async (request, reply) => {
@@ -42,9 +45,15 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
         });
       }
 
+      const queryParsed = uploadImportacaoQuerySchema.safeParse(request.query || {});
+      const queryUpload = queryParsed.success ? queryParsed.data : { forcarReprocessamento: false };
+
       const files: SalvarArquivoInput[] = [];
-      let provedorIa: string | undefined = (request.query as any)?.provedorIa;
-      let modeloIa: string | undefined = (request.query as any)?.modeloIa;
+      let provedorIa: string | undefined =
+        queryUpload.provedorIa || (request.query as any)?.provedorIa;
+      let modeloIa: string | undefined = queryUpload.modeloIa || (request.query as any)?.modeloIa;
+      let forcarReprocessamento = Boolean(queryUpload.forcarReprocessamento);
+      let origem: 'UPLOAD' | 'PASTA' | undefined = queryUpload.origem;
       const parts = request.parts();
 
       for await (const part of parts) {
@@ -62,6 +71,17 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
             provedorIa = part.value.trim();
           } else if (part.fieldname === 'modeloIa' && typeof part.value === 'string' && part.value.trim()) {
             modeloIa = part.value.trim();
+          } else if (part.fieldname === 'origem' && typeof part.value === 'string' && part.value.trim()) {
+            const valor = part.value.trim().toUpperCase();
+            if (valor === 'UPLOAD' || valor === 'PASTA') origem = valor;
+          } else if (
+            part.fieldname === 'forcarReprocessamento' &&
+            typeof part.value === 'string' &&
+            part.value.trim()
+          ) {
+            forcarReprocessamento = ['true', '1', 'sim', 's'].includes(
+              part.value.trim().toLowerCase()
+            );
           }
         }
       }
@@ -80,18 +100,52 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
           arquivos: files,
           provedorIa,
           modeloIa,
+          forcarReprocessamento,
+          origem,
         });
 
-        // HTTP 202 Accepted para resposta imediata assíncrona
-        return reply.status(202).send({
-          statusCode: 202,
-          message: 'Arquivos recepcionados com sucesso na pasta temporária do servidor.',
+        // Bloqueante apenas quando a duplicidade ainda exige confirmação explícita.
+        const temAlertaDuplicidade = resultado.requerConfirmacaoReprocessamento;
+
+        // HTTP 202 Accepted para resposta imediata assíncrona.
+        // TASK-50: quando há duplicidade não confirmada, retorna 409 Conflict com o
+        // alerta e o parâmetro `forcarReprocessamento` para reprocessamento explícito.
+        const mensagem = temAlertaDuplicidade
+          ? `Atenção: ${resultado.alertasDuplicidade.length} arquivo(s) já importado(s) anteriormente. Confirme o reprocessamento para prosseguir.`
+          : 'Arquivos recepcionados com sucesso na pasta temporária do servidor.';
+
+        const resposta = {
+          statusCode: temAlertaDuplicidade ? 409 : 202,
+          message: mensagem,
           loteId: resultado.loteId,
           status: resultado.status,
+          origem: resultado.origem,
+          iaSelecionada: resultado.iaSelecionada,
           totalArquivos: resultado.totalArquivos,
+          totalSucesso: resultado.totalSucesso,
+          totalFalha: resultado.totalFalha,
+          totalDuplicados: resultado.totalDuplicados,
+          totalLancamentos: resultado.totalLancamentos,
           caminhoDiretorio: resultado.caminhoDiretorio,
           arquivos: resultado.arquivos,
-        });
+          // TASK-50: alerta de duplicidade
+          requerConfirmacaoReprocessamento: resultado.requerConfirmacaoReprocessamento,
+          jaImportadoAnteriormente: resultado.requerConfirmacaoReprocessamento,
+          alertasDuplicidade: resultado.alertasDuplicidade,
+          duplicados: resultado.alertasDuplicidade.map((a) => ({
+            arquivoId: a.arquivoId,
+            nomeArquivo: a.nomeArquivo,
+            motivo: a.motivos.join(', '),
+            motivos: a.motivos,
+            arquivoOriginalId: a.arquivoOriginalId,
+            ocorrencias: a.ocorrencias,
+          })),
+          instrucoes: temAlertaDuplicidade
+            ? 'Reenvie a requisição com o campo `forcarReprocessamento=true` (query string ou multipart) para reprocessar os arquivos duplicados.'
+            : undefined,
+        };
+
+        return reply.status(temAlertaDuplicidade ? 409 : 202).send(resposta);
       } catch (err: any) {
         request.log.error(err, 'Erro ao recepcionar lote de arquivos para importação');
         return reply.status(500).send({
@@ -256,6 +310,126 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
           message: err.message || 'Erro ao reprocessar arquivo individual.',
         });
       }
+    });
+
+    /**
+     * GET /api/importacao/arquivos/:id/tentativas
+     * TASK-50: lista paginada do histórico de tentativas (execuções) de um arquivo,
+     * ordenado cronologicamente por número da tentativa. Filtrado por usuarioId.
+     *
+     * Query: ?pagina=1&limite=20&status=SUCESSO|FALHA|DUPLICADO
+     */
+    authApp.get('/arquivos/:id/tentativas', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const params = arquivoIdParamSchema.safeParse(request.params);
+
+      if (!params.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'ID do arquivo inválido.',
+          issues: params.error.issues,
+        });
+      }
+
+      const query = queryTentativasArquivoSchema.safeParse(request.query || {});
+      if (!query.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Parâmetros de consulta inválidos.',
+          issues: query.error.issues,
+        });
+      }
+
+      // Isolamento multi-tenant: valida que o arquivo pertence ao usuário autenticado
+      const { prisma } = await import('../../infrastructure/database/prisma.js');
+      const arquivo = await prisma.arquivoImportacao.findFirst({
+        where: { id: params.data.id, lote: { usuarioId } },
+        select: {
+          id: true,
+          nomeArquivo: true,
+          totalTentativas: true,
+          jaImportadoAnteriormente: true,
+          statusFinal: true,
+          ultimoProvedor: true,
+        },
+      });
+
+      if (!arquivo) {
+        return reply.status(404).send({
+          statusCode: 404,
+          error: 'Not Found',
+          message: 'Arquivo de importação não encontrado.',
+        });
+      }
+
+      const resultado = await ImportacaoTentativasService.listarTentativasArquivo({
+        usuarioId,
+        arquivoId: arquivo.id,
+        pagina: query.data.pagina,
+        limite: query.data.limite,
+        status: query.data.status,
+      });
+
+      return reply.status(200).send({
+        arquivo,
+        arquivoId: arquivo.id,
+        total: resultado.total,
+        pagina: resultado.pagina,
+        limite: resultado.limite,
+        totalPaginas: resultado.totalPaginas,
+        tentativas: resultado.tentativas,
+      });
+    });
+
+    /**
+     * POST /api/importacao/arquivos/:id/confirmar-reprocessamento
+     * TASK-50: confirma explicitamente o reprocessamento de um arquivo sinalizado como
+     * já importado anteriormente, liberando-o para o pipeline e registrando a nova tentativa
+     * ao executar a IA.
+     */
+    authApp.post('/arquivos/:id/confirmar-reprocessamento', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const params = arquivoIdParamSchema.safeParse(request.params);
+
+      if (!params.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'ID do arquivo inválido.',
+          issues: params.error.issues,
+        });
+      }
+
+      const { prisma } = await import('../../infrastructure/database/prisma.js');
+      const arquivo = await prisma.arquivoImportacao.findFirst({
+        where: { id: params.data.id, lote: { usuarioId } },
+        select: { id: true, nomeArquivo: true, loteId: true, jaImportadoAnteriormente: true },
+      });
+
+      if (!arquivo) {
+        return reply.status(404).send({
+          statusCode: 404,
+          error: 'Not Found',
+          message: 'Arquivo de importação não encontrado.',
+        });
+      }
+
+      const atualizado = await prisma.arquivoImportacao.update({
+        where: { id: arquivo.id },
+        data: { jaImportadoAnteriormente: false, statusFinal: null },
+        select: { id: true, nomeArquivo: true, jaImportadoAnteriormente: true, statusFinal: true },
+      });
+
+      await ImportacaoTentativasService.recalcularContadoresLote(arquivo.loteId);
+
+      return reply.status(200).send({
+        statusCode: 200,
+        message: `Reprocessamento confirmado para o arquivo "${arquivo.nomeArquivo}".`,
+        arquivo: atualizado,
+        loteId: arquivo.loteId,
+      });
     });
 
     /**
@@ -504,6 +678,40 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
 
       const historico = await conciliacaoService.listarHistoricoArquivos(usuarioId);
       return reply.status(200).send({ historico });
+    });
+
+    /**
+     * GET /api/importacao/arquivos/:id/lancamentos
+     * Retorna os detalhes consolidados, resumo analítico e a lista de lançamentos criados
+     * a partir de um arquivo importado específico pelo usuário.
+     */
+    authApp.get('/arquivos/:id/lancamentos', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const params = arquivoIdParamSchema.safeParse(request.params);
+
+      if (!params.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'ID do arquivo inválido.',
+          issues: params.error.issues,
+        });
+      }
+
+      const { conciliacaoService } = await import('./conciliacao.service.js');
+
+      try {
+        const dados = await conciliacaoService.obterLancamentosArquivo(params.data.id, usuarioId);
+        return reply.status(200).send(dados);
+      } catch (err: any) {
+        const isNotFound = err.message?.includes('não encontrado') || err.message?.includes('não autorizado');
+        const status = isNotFound ? 404 : 500;
+        return reply.status(status).send({
+          statusCode: status,
+          error: isNotFound ? 'Not Found' : 'Internal Server Error',
+          message: err.message || 'Erro ao carregar lançamentos do arquivo.',
+        });
+      }
     });
 
     /**

@@ -37,11 +37,13 @@ export class ItauBankConnectorProvider implements IBankConnectorProvider {
     const desc = (descricao || '').trim();
     const dUpper = desc.toUpperCase();
 
-    // 1. Anti-Dupla Contagem: Pagamentos de fatura de cartão Itaú debitadas em conta corrente
+    // 1. Anti-Dupla Contagem: Pagamentos de fatura de cartão Itaú / outros bancos debitadas em conta corrente
     if (
-      /pag(amento|to)?\s*(de)?\s*fat(ura)?|itau\s*card|itaucard|fatura\s*cart[aã]o|pagto\s*eletron\s*cobranca\s*itau/i.test(
+      /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|itau\s*card|itaucard|fatura\s*cart[aã]o|debito\s*automatico\s*fatura|pagto\s*eletron\s*cobranca\s*itau|pag\s*fatura/i.test(
         desc
-      )
+      ) ||
+      (/pag\s*boleto|pagamento\s*boleto|pagto\s*boleto/i.test(desc) &&
+        /nu\s*pagamentos|nubank|c6\s*bank|banco\s*c6|bradescard|itaucard|cart[aã]o|credicard|santander\s*cart[oõ]es/i.test(desc))
     ) {
       return {
         categoriaSugerida: 'Outras Despesas Correntes',
@@ -49,6 +51,7 @@ export class ItauBankConnectorProvider implements IBankConnectorProvider {
         isPagamentoFatura: true,
       };
     }
+
 
     // 2. Receitas operacionais e proventos
     if (/TED\s*RECEBIDA|PIX\s*RECEBIDO|SALARIO|CRED\s*TED|RENDIMENTO\s*APLIC/i.test(desc)) {

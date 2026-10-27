@@ -230,6 +230,7 @@ export interface ItemCronogramaVencimento {
   valor: number;
   diaVencimento: number;
   dataVencimentoPrevista: string;
+  dataCompra?: string;
   essencial?: boolean;
   categoria?: { id: string; nome: string } | null;
   conta?: { id: string; nome: string; tipo: string } | null;
@@ -237,6 +238,8 @@ export interface ItemCronogramaVencimento {
     parcelaAtualNoMes: number;
     totalParcelas: number;
     saldoDevedorRestanteAposMes: number;
+    primeiroVencimento?: string;
+    dataCompra?: string;
   };
 }
 
@@ -257,6 +260,7 @@ export interface ParcelamentoItem {
   totalParcelas: number;
   primeiroVencimento: string;
   ultimoVencimento: string;
+  dataCompra?: string;
   status: 'ATIVO' | 'QUITADO' | 'CANCELADO';
   saldoDevedorRestante: number;
   parcelasRestantes: number;
@@ -273,11 +277,40 @@ export interface ParcelamentosResponse {
 export interface ContaItem {
   id: string;
   nome: string;
-  tipo: 'CONTA_CORRENTE' | 'CARTAO_CREDITO' | 'DINHEIRO_FISICO' | 'INVESTIMENTO_RESERVA';
+  tipo: 'CONTA_CORRENTE' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO' | string;
   diaFechamento?: number | null;
   diaVencimento?: number | null;
   saldoInicial: number;
   ativo: boolean;
+}
+
+export interface DependenciasContaResponse {
+  conta: {
+    id: string;
+    nome: string;
+    tipo: string;
+  };
+  totalMovimentos: number;
+  totalParcelamentos: number;
+  podeExcluirDiretamente: boolean;
+  movimentos: Array<{
+    id: string;
+    dataMovimento: string;
+    competencia: string;
+    descricao: string;
+    valor: number;
+    natureza: string;
+    status: string;
+  }>;
+  parcelamentos: Array<{
+    id: string;
+    descricao: string;
+    valorTotal: number;
+    parcelaValor: number;
+    totalParcelas: number;
+    parcelaAtual: number;
+    status: string;
+  }>;
 }
 
 export interface CategoriaTreeItem {
@@ -315,9 +348,127 @@ export interface MovimentoItem {
   natureza: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
   status: 'PREVISTO' | 'PENDENTE' | 'CONCILIADO' | 'CANCELADO';
   chaveDedupe?: string;
+  idOrigem?: string | null;
   categoriaFixadaPeloUsuario?: boolean;
+  validadoDedupe?: string;
   observacao?: string | null;
   rateios?: MovimentoRateioItem[];
+}
+
+export interface SuspeitaDuplicataItem {
+  id: string;
+  tipo: 'SUSPEITA_DUPLICATA';
+  confianca: number;
+  motivo: string;
+  movimentoA: MovimentoItem;
+  movimentoB: MovimentoItem;
+}
+
+export interface SuspeitaAporteItem {
+  id: string;
+  tipo: 'SUSPEITA_APORTE';
+  confianca: number;
+  motivo: string;
+  movimento: MovimentoItem;
+  sugestaoNatureza: 'APORTE_PATRIMONIAL';
+}
+
+export interface SuspeitaCategorizacaoItem {
+  id: string;
+  tipo: 'SUSPEITA_CATEGORIZACAO';
+  confianca: number;
+  motivo: string;
+  movimento: MovimentoItem;
+  categoriaSugerida?: string;
+  termoVendedor?: string;
+  regraVendedorSalva?: { categoriaId: string; categoriaNome: string };
+  totalSimilaresVendedor?: number;
+}
+
+export interface SuspeitasResponse {
+  totalPendentes: number;
+  suspeitasDuplicatas: SuspeitaDuplicataItem[];
+  suspeitasAportes: SuspeitaAporteItem[];
+  suspeitasCategorizacao: SuspeitaCategorizacaoItem[];
+}
+
+export interface VereditoPayload {
+  acao:
+    | 'CONFIRMAR_DUPLICATA_DESCARTAR'
+    | 'CONFIRMAR_DISTINTOS_PRESERVAR'
+    | 'CONVERTER_APORTE_PATRIMONIAL'
+    | 'CONVERTER_TRANSFERENCIA_PROPRIA'
+    | 'CONFIRMAR_DESPESA_REGULAR'
+    | 'DEFINIR_CATEGORIA';
+  duplicataId?: string | null;
+  categoriaId?: string | null;
+  observacao?: string | null;
+  propagarMesmoVendedor?: boolean;
+  memorizarRegraVendedor?: boolean;
+}
+
+export interface RegraVendedorItem {
+  id: string;
+  termoVendedor: string;
+  categoriaId: string;
+  categoriaNome: string;
+  categoriaPaiNome: string | null;
+  totalAplicacoes: number;
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
+export interface AporteItem {
+  id: string;
+  contaId: string;
+  conta?: { id: string; nome: string; tipo: string } | null;
+  categoriaId?: string | null;
+  categoria?: { id: string; nome: string } | null;
+  dataMovimento: string;
+  competencia: string;
+  descricao: string;
+  produtoTipo: string;
+  valor: number;
+  natureza: 'APORTE_PATRIMONIAL';
+  status: string;
+  categoriaFixadaPeloUsuario?: boolean;
+  observacao?: string | null;
+  origemDocumento?: string | null;
+  criadoEm?: string;
+}
+
+export interface AportesResponse {
+  resumo: {
+    totalAportado: number;
+    quantidadeAportes: number;
+    ultimaAplicacao: string | null;
+  };
+  paginacao: {
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  };
+  aportes: AporteItem[];
+}
+
+export interface NovoAporteManualPayload {
+  dataAporte: string;
+  contaId: string;
+  descricao: string;
+  valor: number;
+  observacao?: string | null;
+  produtoTipo?: string | null;
+}
+
+export interface FiltroAportesParams {
+  competencia?: string;
+  dataInicio?: string;
+  dataFim?: string;
+  contaId?: string;
+  busca?: string;
+  page?: number;
+  limit?: number;
 }
 
 export interface MovimentosResponse {
@@ -1290,6 +1441,71 @@ export const apiService = {
     return data?.contas || [];
   },
 
+  async criarConta(payload: {
+    nome: string;
+    tipo: string;
+    diaFechamento?: number | null;
+    diaVencimento?: number | null;
+    saldoInicial?: number;
+    ativo?: boolean;
+  }): Promise<{ message: string; conta: ContaItem }> {
+    return apiFetch<{ message: string; conta: ContaItem }>('/api/contas', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async atualizarConta(
+    id: string,
+    payload: {
+      nome?: string;
+      tipo?: string;
+      diaFechamento?: number | null;
+      diaVencimento?: number | null;
+      saldoInicial?: number;
+      ativo?: boolean;
+    }
+  ): Promise<{ message: string; conta: ContaItem }> {
+    return apiFetch<{ message: string; conta: ContaItem }>(`/api/contas/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async getDependenciasConta(id: string): Promise<DependenciasContaResponse> {
+    return apiFetch<DependenciasContaResponse>(`/api/contas/${id}/dependencias`);
+  },
+
+  async migrarMovimentosConta(
+    id: string,
+    contaDestinoId: string
+  ): Promise<{ message: string; movimentosMigrados: number; parcelamentosMigrados: number }> {
+    return apiFetch<{ message: string; movimentosMigrados: number; parcelamentosMigrados: number }>(
+      `/api/contas/${id}/migrar-movimentos`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ contaDestinoId }),
+      }
+    );
+  },
+
+  async excluirMovimentosConta(
+    id: string
+  ): Promise<{ message: string; movimentosExcluidos: number; parcelamentosExcluidos: number }> {
+    return apiFetch<{ message: string; movimentosExcluidos: number; parcelamentosExcluidos: number }>(
+      `/api/contas/${id}/movimentos`,
+      {
+        method: 'DELETE',
+      }
+    );
+  },
+
+  async excluirConta(id: string): Promise<{ message: string; id: string }> {
+    return apiFetch<{ message: string; id: string }>(`/api/contas/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
   async getCategorias(): Promise<CategoriaTreeItem[]> {
     const data = await apiFetch<{ categorias: CategoriaTreeItem[] }>(
       '/api/categorias',
@@ -1402,6 +1618,92 @@ export const apiService = {
   async removerSplitMovimento(id: string): Promise<{ sucesso: boolean; message: string; movimentoId: string }> {
     return apiFetch(`/api/movimentos/${id}/split`, {
       method: 'DELETE',
+    });
+  },
+
+  // Central de Validação de Suspeitas do Usuário (TASK-45)
+  async getSuspeitas(): Promise<SuspeitasResponse> {
+    return apiFetch<SuspeitasResponse>('/api/movimentos/suspeitas', undefined, {
+      totalPendentes: 0,
+      suspeitasDuplicatas: [],
+      suspeitasAportes: [],
+      suspeitasCategorizacao: [],
+    });
+  },
+
+  async aplicarVereditoSuspeita(
+    id: string,
+    payload: VereditoPayload
+  ): Promise<{ sucesso: boolean; message: string; acaoAplicada: string }> {
+    return apiFetch<{ sucesso: boolean; message: string; acaoAplicada: string }>(
+      `/api/movimentos/suspeitas/${id}/veredito`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }
+    );
+  },
+
+  async reprocessarSuspeitas(): Promise<{
+    sucesso: boolean;
+    message: string;
+    resultadoDeduplicacao?: any;
+  }> {
+    return apiFetch<{ sucesso: boolean; message: string; resultadoDeduplicacao?: any }>(
+      '/api/movimentos/suspeitas/reprocessar',
+      {
+        method: 'POST',
+      }
+    );
+  },
+
+  // Catálogo de Regras de Vendedor / Lojas associadas a Categorias
+  async getRegrasVendedor(): Promise<{ regras: RegraVendedorItem[] }> {
+    return apiFetch<{ regras: RegraVendedorItem[] }>('/api/categorias/regras-vendedor', undefined, {
+      regras: [],
+    });
+  },
+
+  async excluirRegraVendedor(id: string): Promise<{ message: string }> {
+    return apiFetch<{ message: string }>(`/api/categorias/regras-vendedor/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // Módulo de Investimentos e Aportes Patrimoniais (TASK-46)
+  async getAportes(filtros?: FiltroAportesParams): Promise<AportesResponse> {
+    const params = new URLSearchParams();
+    if (filtros?.competencia) params.append('competencia', filtros.competencia);
+    if (filtros?.dataInicio) params.append('dataInicio', filtros.dataInicio);
+    if (filtros?.dataFim) params.append('dataFim', filtros.dataFim);
+    if (filtros?.contaId) params.append('contaId', filtros.contaId);
+    if (filtros?.busca) params.append('busca', filtros.busca);
+    if (filtros?.page) params.append('page', String(filtros.page));
+    if (filtros?.limit) params.append('limit', String(filtros.limit));
+
+    const queryString = params.toString() ? `?${params.toString()}` : '';
+    return apiFetch<AportesResponse>(`/api/investimentos/aportes${queryString}`, undefined, {
+      resumo: {
+        totalAportado: 0,
+        quantidadeAportes: 0,
+        ultimaAplicacao: null,
+      },
+      paginacao: {
+        total: 0,
+        page: 1,
+        limit: 50,
+        totalPages: 1,
+      },
+      aportes: [],
+    });
+  },
+
+  async criarAporteManual(
+    payload: NovoAporteManualPayload
+  ): Promise<{ message: string; aporte: AporteItem }> {
+    return apiFetch<{ message: string; aporte: AporteItem }>('/api/investimentos/aportes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     });
   },
 
@@ -1522,7 +1824,7 @@ export const apiService = {
   async parseIa(payload: {
     texto: string;
     modo: 'CREDITOS' | 'API_PROPRIA' | 'EXTERNO';
-    provedor?: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'OPENROUTER';
+    provedor?: ProvedorIa;
     modelo?: string;
     apiKey?: string;
   }): Promise<{
@@ -1557,30 +1859,8 @@ export const apiService = {
         configurada: false,
         hasEnvKey: false,
         provedorAtivo: null,
-        modeloPadrao: 'gemini-3.8-flash',
-        provedoresSuportados: [
-          {
-            id: 'GEMINI',
-            nome: 'Google Gemini',
-            modelos: ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'],
-            ajudaUrl: 'https://aistudio.google.com/app/apikey',
-            temChaveServidor: false,
-          },
-          {
-            id: 'OPENAI',
-            nome: 'OpenAI (ChatGPT)',
-            modelos: ['gpt-4o', 'gpt-4o-mini'],
-            ajudaUrl: 'https://platform.openai.com/api-keys',
-            temChaveServidor: false,
-          },
-          {
-            id: 'ANTHROPIC',
-            nome: 'Anthropic (Claude)',
-            modelos: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
-            ajudaUrl: 'https://console.anthropic.com/settings/keys',
-            temChaveServidor: false,
-          },
-        ],
+        modeloPadrao: modeloPadraoDoProvedor('GEMINI'),
+        provedoresSuportados: PROVEDORES_IA_CATALOGO_OFFLINE,
       });
     } catch {
       return {
@@ -1589,8 +1869,8 @@ export const apiService = {
         hasUserKey: false,
         chaveMascarada: null,
         provedorAtivo: null,
-        modeloPadrao: 'gemini-3.8-flash',
-        provedoresSuportados: [],
+        modeloPadrao: modeloPadraoDoProvedor('GEMINI'),
+        provedoresSuportados: PROVEDORES_IA_CATALOGO_OFFLINE,
       };
     }
   },
@@ -1622,6 +1902,14 @@ export const apiService = {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+  },
+
+  async getIaMediasConsolidadas(): Promise<IaMediasConsolidadasResponse> {
+    try {
+      return await apiFetch<IaMediasConsolidadasResponse>('/api/ia/medias-consolidadas');
+    } catch {
+      return { itens: [], total: 0 };
+    }
   },
 
   // Módulo de Conectores Bancários e Open Finance (TASK-15 / TASK-31)
@@ -1762,19 +2050,16 @@ export const apiService = {
     });
   },
 
-  // Módulo de Importação Inteligente por IA (TASK-32 a TASK-35)
+  // Módulo de Importação Inteligente por IA (TASK-32 a TASK-35, TASK-50)
   async uploadLoteImportacao(
     files: File[],
-    opcoes?: { provedorIa?: string; modeloIa?: string }
-  ): Promise<{
-    statusCode: number;
-    message: string;
-    loteId: string;
-    status: StatusLoteImportacao;
-    totalArquivos: number;
-    caminhoDiretorio: string;
-    arquivos: ArquivoImportacaoItem[];
-  }> {
+    opcoes?: {
+      provedorIa?: string;
+      modeloIa?: string;
+      origem?: OrigemLoteImportacao;
+      forcarReprocessamento?: boolean;
+    }
+  ): Promise<UploadImportacaoResponse> {
     const formData = new FormData();
     for (const file of files) {
       // webkitRelativePath preserva a estrutura de pastas se selecionada via pasta
@@ -1787,6 +2072,13 @@ export const apiService = {
     if (opcoes?.modeloIa) {
       formData.append('modeloIa', opcoes.modeloIa);
     }
+    if (opcoes?.origem) {
+      formData.append('origem', opcoes.origem);
+    }
+    // TASK-50: confirmação explícita de reprocessamento de arquivos duplicados
+    if (opcoes?.forcarReprocessamento) {
+      formData.append('forcarReprocessamento', 'true');
+    }
 
     const token = typeof window !== 'undefined' ? localStorage.getItem('evolvi_auth_token') : null;
     const authHeaders: Record<string, string> = {};
@@ -1794,12 +2086,19 @@ export const apiService = {
       authHeaders['Authorization'] = `Bearer ${token}`;
     }
 
-    const res = await fetch('/api/importacao/upload', {
+    const qs = opcoes?.forcarReprocessamento ? '?forcarReprocessamento=true' : '';
+    const res = await fetch(`/api/importacao/upload${qs}`, {
       method: 'POST',
       headers: authHeaders,
       body: formData,
       credentials: 'include',
     });
+
+    // TASK-50: HTTP 409 = duplicidade detectada; o corpo ainda é uma resposta útil
+    // (lote criado, arquivos aguardando confirmação). Retornamos para a tela decidir.
+    if (res.status === 409) {
+      return (await res.json()) as UploadImportacaoResponse;
+    }
 
     if (!res.ok) {
       let msg = `Erro no upload [${res.status}]: ${res.statusText}`;
@@ -1812,7 +2111,51 @@ export const apiService = {
       throw new Error(msg);
     }
 
-    return await res.json();
+    return (await res.json()) as UploadImportacaoResponse;
+  },
+
+  /** TASK-50: lista paginada do histórico de tentativas de um arquivo. */
+  async getTentativasArquivo(
+    arquivoId: string,
+    params?: { pagina?: number; limite?: number }
+  ): Promise<TentativasArquivoResponse> {
+    const qs = new URLSearchParams();
+    if (params?.pagina) qs.append('pagina', String(params.pagina));
+    if (params?.limite) qs.append('limite', String(params.limite));
+    const query = qs.toString() ? `?${qs.toString()}` : '';
+    return apiFetch(`/api/importacao/arquivos/${arquivoId}/tentativas${query}`, undefined, {
+      arquivo: {
+        id: arquivoId,
+        nomeArquivo: '',
+        totalTentativas: 0,
+        jaImportadoAnteriormente: false,
+        statusFinal: null,
+        ultimoProvedor: null,
+      },
+      arquivoId,
+      total: 0,
+      pagina: params?.pagina ?? 1,
+      limite: params?.limite ?? 20,
+      totalPaginas: 1,
+      tentativas: [],
+    });
+  },
+
+  /** TASK-50: confirma o reprocessamento de um arquivo apontado como duplicado. */
+  async confirmarReprocessamentoArquivo(arquivoId: string): Promise<{
+    statusCode: number;
+    message: string;
+    loteId: string;
+    arquivo: {
+      id: string;
+      nomeArquivo: string;
+      jaImportadoAnteriormente: boolean;
+      statusFinal?: string | null;
+    };
+  }> {
+    return apiFetch(`/api/importacao/arquivos/${arquivoId}/confirmar-reprocessamento`, {
+      method: 'POST',
+    });
   },
 
   async getLotesImportacao(params?: { status?: StatusLoteImportacao; limite?: number }): Promise<{
@@ -1952,6 +2295,10 @@ export const apiService = {
   }> {
     return apiFetch('/api/importacao/historico-arquivos', undefined, { historico: [] });
   },
+
+  async getLancamentosArquivoImportado(arquivoId: string): Promise<DetalhesLancamentosArquivoResponse> {
+    return apiFetch(`/api/importacao/arquivos/${arquivoId}/lancamentos`);
+  },
 };
 
 export interface AlertaConciliacaoItem {
@@ -1973,6 +2320,54 @@ export interface AlertaConciliacaoItem {
   } | null;
 }
 
+export interface DetalhesLancamentosArquivoResponse {
+  arquivo: {
+    id: string;
+    loteId: string;
+    nomeArquivo: string;
+    status: string;
+    statusFinal?: string | null;
+    tamanhoBytes: number;
+    totalTentativas: number;
+    ultimoProvedor?: string | null;
+    eFaturaCartao: boolean;
+    faturaDataVencimento?: string | null;
+    faturaValorTotal?: number | null;
+    criadoEm: string;
+    lote?: {
+      id: string;
+      origem: string;
+      status: string;
+      iaSelecionada?: string | null;
+      caminhoDiretorio: string;
+      criadoEm: string;
+    };
+    historico?: HistoricoImportacaoArquivoItem | null;
+    tentativas?: TentativaArquivoImportacaoItem[];
+  };
+  resumo: {
+    totalMovimentosOficiais: number;
+    totalStagingItens: number;
+    valorTotalMovimentos: number;
+  };
+  movimentos: Array<{
+    id: string;
+    usuarioId: string;
+    contaId: string;
+    categoriaId?: string | null;
+    dataMovimento: string;
+    competencia: string;
+    descricao: string;
+    valor: number;
+    natureza: string;
+    status: string;
+    origemDocumento?: string | null;
+    conta?: { id: string; nome: string; tipo: string };
+    categoria?: { id: string; nome: string } | null;
+  }>;
+  stagingItens: Array<StagingLancamentoItem>;
+}
+
 export interface HistoricoImportacaoArquivoItem {
   id: string;
   usuarioId: string;
@@ -1989,9 +2384,17 @@ export interface HistoricoImportacaoArquivoItem {
   criadoEm: string;
   arquivo?: {
     id: string;
+    loteId?: string;
     nomeArquivo: string;
     status: string;
+    statusFinal?: string | null;
     tamanhoBytes: number;
+    totalTentativas?: number;
+    ultimoProvedor?: string | null;
+    eFaturaCartao?: boolean;
+    faturaDataVencimento?: string | null;
+    faturaValorTotal?: number | null;
+    criadoEm?: string;
   } | null;
   conta?: {
     id: string;
@@ -2029,6 +2432,13 @@ export interface ArquivoImportacaoItem {
   mensagemErro?: string | null;
   criadoEm: string;
   atualizadoEm: string;
+  /** TASK-50: rastreabilidade de tentativas e duplicidade */
+  hashConteudo?: string | null;
+  totalTentativas?: number;
+  statusFinal?: string | null;
+  jaImportadoAnteriormente?: boolean;
+  arquivoOriginalId?: string | null;
+  ultimoProvedor?: string | null;
   stagingStats?: {
     totalLinhas: number;
     pendente: number;
@@ -2036,6 +2446,95 @@ export interface ArquivoImportacaoItem {
     ignorado: number;
     erro: number;
   };
+}
+
+// ---------------------------------------------------------------------------
+// TASK-50: Gestão de Importação — Lote → Arquivo → Detalhe (tentativas e duplicidade)
+// ---------------------------------------------------------------------------
+
+export type OrigemLoteImportacao = 'UPLOAD' | 'PASTA';
+export type StatusTentativaArquivo = 'SUCESSO' | 'FALHA' | 'DUPLICADO';
+export type MotivoDuplicidadeImportacao = 'MESMO_NOME' | 'MESMO_HASH';
+
+export interface OcorrenciaDuplicidadeImportacao {
+  id: string;
+  nomeArquivo: string;
+  loteId: string;
+  criadoEm: string;
+  mesmoNome: boolean;
+  mesmoHash: boolean;
+}
+
+export interface AlertaDuplicidadeImportacao {
+  arquivoId: string;
+  nomeArquivo: string;
+  jaImportadoAnteriormente: boolean;
+  motivos: MotivoDuplicidadeImportacao[];
+  arquivoOriginalId?: string | null;
+  ocorrencias: OcorrenciaDuplicidadeImportacao[];
+}
+
+export interface ArquivoDuplicadoResumo {
+  arquivoId: string;
+  nomeArquivo: string;
+  motivo: string;
+  motivos: MotivoDuplicidadeImportacao[];
+  arquivoOriginalId?: string | null;
+  ocorrencias: OcorrenciaDuplicidadeImportacao[];
+}
+
+export interface UploadImportacaoResponse {
+  statusCode: number;
+  message: string;
+  loteId: string;
+  status: StatusLoteImportacao;
+  origem?: OrigemLoteImportacao;
+  iaSelecionada?: string | null;
+  totalArquivos: number;
+  totalSucesso?: number;
+  totalFalha?: number;
+  totalDuplicados?: number;
+  totalLancamentos?: number;
+  caminhoDiretorio: string;
+  arquivos: ArquivoImportacaoItem[];
+  /** TASK-50: existem arquivos duplicados aguardando confirmação explícita. */
+  requerConfirmacaoReprocessamento?: boolean;
+  jaImportadoAnteriormente?: boolean;
+  alertasDuplicidade?: AlertaDuplicidadeImportacao[];
+  duplicados?: ArquivoDuplicadoResumo[];
+  instrucoes?: string;
+}
+
+export interface TentativaArquivoImportacaoItem {
+  id: string;
+  usuarioId: string;
+  arquivoId: string;
+  numeroTentativa: number;
+  provedor: string;
+  modelo: string;
+  status: StatusTentativaArquivo;
+  mensagemErro?: string | null;
+  totalTransacoesExtraidas: number;
+  duracaoMs: number;
+  usoIaLogId?: string | null;
+  criadoEm: string;
+}
+
+export interface TentativasArquivoResponse {
+  arquivo: {
+    id: string;
+    nomeArquivo: string;
+    totalTentativas: number;
+    jaImportadoAnteriormente: boolean;
+    statusFinal?: string | null;
+    ultimoProvedor?: string | null;
+  };
+  arquivoId: string;
+  total: number;
+  pagina: number;
+  limite: number;
+  totalPaginas: number;
+  tentativas: TentativaArquivoImportacaoItem[];
 }
 
 export interface MetricasProgressoLote {
@@ -2073,6 +2572,15 @@ export interface LoteImportacaoItem {
   status: StatusLoteImportacao;
   criadoEm: string;
   atualizadoEm: string;
+  /** TASK-50: contadores agregados e ciclo de vida do lote */
+  origem?: OrigemLoteImportacao;
+  iaSelecionada?: string | null;
+  totalSucesso?: number;
+  totalFalha?: number;
+  totalDuplicados?: number;
+  totalLancamentos?: number;
+  iniciadoEm?: string | null;
+  finalizadoEm?: string | null;
   arquivos?: ArquivoImportacaoItem[];
   metricasProgresso?: MetricasProgressoLote;
 }
@@ -2147,14 +2655,141 @@ export interface ConexaoBancariaItem {
   atualizadoEm: string;
 }
 
+/** Identificadores de provedores de IA suportados pelo Evolvi. */
+export type ProvedorIa = 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | 'OPENROUTER';
+
+/** Modelos padrão por provedor (fonte única no frontend, evita hardcodes espalhados). */
+const MODELO_PADRAO_POR_PROVEDOR: Record<ProvedorIa, string> = {
+  GEMINI: 'gemini-3.8-flash',
+  DEEPSEEK: 'deepseek-chat',
+  OPENROUTER: 'deepseek/deepseek-chat',
+  OPENAI: 'gpt-4o-mini',
+  ANTHROPIC: 'claude-3-5-sonnet-20241022',
+};
+
+/** Retorna o modelo padrão do provedor informado (fallback: Gemini). */
+export function modeloPadraoDoProvedor(id: ProvedorIa | string | null | undefined): string {
+  const chave = (id || '').toString().trim().toUpperCase() as ProvedorIa;
+  return MODELO_PADRAO_POR_PROVEDOR[chave] || MODELO_PADRAO_POR_PROVEDOR.GEMINI;
+}
+
+/** Nomes amigáveis dos provedores de IA (inclui OpenRouter). */
+export function nomeAmigavelDoProvedor(id: ProvedorIa | string | null | undefined): string {
+  switch ((id || '').toString().trim().toUpperCase()) {
+    case 'GEMINI':
+      return 'Google Gemini';
+    case 'DEEPSEEK':
+      return 'DeepSeek';
+    case 'OPENAI':
+      return 'OpenAI (ChatGPT)';
+    case 'OPENROUTER':
+      return 'OpenRouter';
+    case 'ANTHROPIC':
+      return 'Anthropic (Claude)';
+    default:
+      return (id || '').toString() || 'IA';
+  }
+}
+
 export interface ProvedorIaInfo {
-  id: 'GEMINI' | 'OPENAI' | 'ANTHROPIC' | 'DEEPSEEK' | 'OPENROUTER';
+  id: ProvedorIa;
   nome: string;
   modelos: string[];
   ajudaUrl: string;
   temChaveServidor?: boolean;
+  /** Modelo sugerido/padrão do provedor (quando o backend enviar). */
+  modeloPadrao?: string;
+  /** Capacidade de processar imagens (vision). */
+  suportaImagens?: boolean;
+  /** Capacidade de processar PDFs não estruturados/escaneados. */
+  suportaPdfsNaoEstruturados?: boolean;
+  /**
+   * `false` quando o provedor ainda não está implementado no fluxo de
+   * importação por IA (ex.: OPENAI, ANTHROPIC). Ausente = tratado como `true`
+   * para manter compatibilidade com backends antigos.
+   */
+  suportadoNoFluxo?: boolean;
   configurado?: boolean;
 }
+
+/**
+ * Catálogo offline de provedores de IA (usado quando o backend está indisponível).
+ * Mantém os 5 provedores visíveis e selecionáveis na tela de importação por IA
+ * mesmo antes de qualquer chave ser salva.
+ */
+export const PROVEDORES_IA_CATALOGO_OFFLINE: ProvedorIaInfo[] = [
+  {
+    id: 'GEMINI',
+    nome: 'Google Gemini',
+    modelos: [
+      'gemini-3.8-flash',
+      'gemini-2.5-flash',
+      'gemini-2.0-flash',
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
+    ],
+    modeloPadrao: 'gemini-3.8-flash',
+    suportaImagens: true,
+    suportaPdfsNaoEstruturados: true,
+    suportadoNoFluxo: true,
+    ajudaUrl: 'https://aistudio.google.com/app/apikey',
+    temChaveServidor: false,
+    configurado: false,
+  },
+  {
+    id: 'DEEPSEEK',
+    nome: 'DeepSeek',
+    modelos: ['deepseek-chat', 'deepseek-reasoner'],
+    modeloPadrao: 'deepseek-chat',
+    suportaImagens: false,
+    suportaPdfsNaoEstruturados: false,
+    suportadoNoFluxo: true,
+    ajudaUrl: 'https://platform.deepseek.com/api_keys',
+    temChaveServidor: false,
+    configurado: false,
+  },
+  {
+    id: 'OPENAI',
+    nome: 'OpenAI (ChatGPT)',
+    modelos: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
+    modeloPadrao: 'gpt-4o-mini',
+    suportaImagens: true,
+    suportaPdfsNaoEstruturados: true,
+    suportadoNoFluxo: false,
+    ajudaUrl: 'https://platform.openai.com/api-keys',
+    temChaveServidor: false,
+    configurado: false,
+  },
+  {
+    id: 'ANTHROPIC',
+    nome: 'Anthropic (Claude)',
+    modelos: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
+    modeloPadrao: 'claude-3-5-sonnet-20241022',
+    suportaImagens: true,
+    suportaPdfsNaoEstruturados: true,
+    suportadoNoFluxo: false,
+    ajudaUrl: 'https://console.anthropic.com/settings/keys',
+    temChaveServidor: false,
+    configurado: false,
+  },
+  {
+    id: 'OPENROUTER',
+    nome: 'OpenRouter',
+    modelos: [
+      'deepseek/deepseek-chat',
+      'anthropic/claude-3.5-sonnet',
+      'openai/gpt-4o',
+      'meta-llama/llama-3.3-70b-instruct',
+    ],
+    modeloPadrao: 'deepseek/deepseek-chat',
+    suportaImagens: true,
+    suportaPdfsNaoEstruturados: true,
+    suportadoNoFluxo: true,
+    ajudaUrl: 'https://openrouter.ai/keys',
+    temChaveServidor: false,
+    configurado: false,
+  },
+];
 
 export interface ConfiguracaoIaItem {
   provedor: string;
@@ -2175,3 +2810,20 @@ export interface StatusIaResponse {
   provedoresSuportados: ProvedorIaInfo[];
 }
 
+export interface IaMediaConsolidadaItem {
+  provedor: string;
+  modelo: string;
+  custoUsdPor1kTokens: number;
+  custoBrlPor1kTokens: number;
+  segundosPor1kTokens: number;
+  totalChamadas: number;
+  janelaDias: number;
+  cotacaoUsdBrl: number;
+  isEstimativa: boolean;
+  atualizadoEm: string;
+}
+
+export interface IaMediasConsolidadasResponse {
+  itens: IaMediaConsolidadaItem[];
+  total: number;
+}

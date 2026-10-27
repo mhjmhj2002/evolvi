@@ -51,3 +51,33 @@ export const removerConfiguracaoIaSchema = z.object({
 
 export type RemoverConfiguracaoIaInput = z.infer<typeof removerConfiguracaoIaSchema>;
 
+/**
+ * TASK-49 — Filtros de `GET /api/ia/consumo`.
+ * Período por data (YYYY-MM-DD), funcionalidade e provedor, além de
+ * paginação opcional das chamadas individuais mais recentes.
+ */
+export const funcionalidadeUsoIaSchema = z.enum([
+  'EXTRACAO_EXTRATO',
+  'CATEGORIZACAO',
+  'RECLASSIFICACAO',
+  'CHAT',
+  'OUTROS',
+]);
+
+export const queryConsumoIaSchema = z.object({
+  dataInicio: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato de data inválido (YYYY-MM-DD)')
+    .optional(),
+  dataFim: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato de data inválido (YYYY-MM-DD)')
+    .optional(),
+  funcionalidade: funcionalidadeUsoIaSchema.optional(),
+  provedor: z.string().min(1).max(30).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export type QueryConsumoIaInput = z.infer<typeof queryConsumoIaSchema>;
+

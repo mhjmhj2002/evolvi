@@ -1,4 +1,28 @@
 import { IaLancamentoParsed } from './ia.schema.js';
+import {
+  FuncionalidadeUsoIa,
+  UsoIaService,
+  tokensDeUsageGemini,
+  tokensDeUsageOpenAi,
+} from './uso-ia.service.js';
+import {
+  MODELO_OPENROUTER_PADRAO,
+  montarHeadersOpenRouter,
+  montarUrlOpenRouter,
+  normalizarModeloOpenRouter,
+} from './openrouter.config.js';
+
+/**
+ * TASK-49 — Opções de telemetria aceitas pelos clientes de IA.
+ * Quando `usuarioId` é informado, a chamada gera exatamente 1 linha em
+ * `uso_ia_logs` (sucesso ou falha), sem nunca interromper o fluxo de negócio.
+ */
+export interface OpcoesTelemetriaIa {
+  usuarioId?: string | null;
+  funcionalidade?: FuncionalidadeUsoIa;
+  loteId?: string | null;
+  arquivoId?: string | null;
+}
 
 export interface ContaContexto {
   id: string;
@@ -47,6 +71,7 @@ Selecione a categoria mais condizente e preencha "categoriaId" e "categoriaNomeS
 - "DESPESA": Compra, consumo, contas da casa, alimentação, combustível, etc.
 - "RECEITA": Salário, rendimentos, pix recebido, vendas.
 - "TRANSFERENCIA_PROPRIA": Transferência entre contas próprias ou pagamento de fatura de cartão de crédito.
+- "APORTE_PATRIMONIAL": Aplicações financeiras, investimentos, depósitos em poupança, aportes em CDB/RDB/LCI/LCA/Tesouro Direto, compra de ações (NUNCA classifique como DESPESA!).
 - Se for pagamento de fatura de cartão, "isPagamentoFatura" DEVE ser true e "natureza" = "TRANSFERENCIA_PROPRIA".
 - Se houver parcelamento explícito (ex: "em 3x de R$ 50", "parcela 2 de 10"), preencha "parcelasTotal" e "parcelaAtual" se identificados.
 
@@ -119,11 +144,28 @@ export function parseLocalDeterministic(texto: string, contexto: ContextoUsuario
     lower.includes('pagamento do cartao') ||
     lower.includes('pagamento de cartao') ||
     lower.includes('pagamento do cartão') ||
-    lower.includes('pagamento de cartão');
+    lower.includes('pagamento de cartão') ||
+    lower.includes('pagamento efetuado') ||
+    lower.includes('pagamento recebido') ||
+    ((lower.includes('pag boleto') || lower.includes('pagamento de boleto') || lower.includes('pagto boleto')) &&
+      (lower.includes('nu pagamentos') || lower.includes('nubank') || lower.includes('c6') || lower.includes('bradescard') || lower.includes('itaucard') || lower.includes('cartao') || lower.includes('cartão')));
+
 
   let natureza: 'DESPESA' | 'RECEITA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL' = 'DESPESA';
   if (isPagamentoFatura || lower.includes('transferencia') || lower.includes('transferência') || lower.includes('transferi')) {
     natureza = 'TRANSFERENCIA_PROPRIA';
+  } else if (
+    lower.includes('aplicação') ||
+    lower.includes('aplicacao') ||
+    lower.includes('investimento') ||
+    lower.includes('tesouro direto') ||
+    lower.includes('deposito poupanca') ||
+    lower.includes('depósito poupança') ||
+    lower.includes('compra acoes') ||
+    lower.includes('compra ações') ||
+    /\b(cdb|rdb|lci|lca)\b/i.test(lower)
+  ) {
+    natureza = 'APORTE_PATRIMONIAL';
   } else if (lower.includes('recebi') || lower.includes('salario') || lower.includes('salário') || lower.includes('venda')) {
     natureza = 'RECEITA';
   }
@@ -224,12 +266,14 @@ export function parseLocalDeterministic(texto: string, contexto: ContextoUsuario
 
 /**
  * Chamada à API oficial do Google Gemini (BYOK ou gerenciada)
+ * TASK-49: quando `opcoes.usuarioId` é informado, registra 1 linha em `uso_ia_logs`.
  */
 export async function callGeminiApi(
   apiKey: string,
   model: string = 'gemini-3.8-flash',
   promptSistema: string,
-  textoUsuario: string
+  textoUsuario: string,
+  opcoes?: OpcoesTelemetriaIa
 ): Promise<IaLancamentoParsed> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
@@ -248,34 +292,50 @@ export async function callGeminiApi(
     }
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  return UsoIaService.registrarChamada({
+    usuarioId: opcoes?.usuarioId,
+    funcionalidade: opcoes?.funcionalidade || 'CATEGORIZACAO',
+    provedor: 'GEMINI',
+    modelo: model,
+    loteId: opcoes?.loteId,
+    arquivoId: opcoes?.arquivoId,
+    extrairTokens: (r) => r.tokens,
+    execucao: async () => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
 
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Erro na API do Gemini (${response.status}): ${errText}`);
-  }
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Erro na API do Gemini (${response.status}): ${errText}`);
+      }
 
-  const data = (await response.json()) as any;
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!rawText) {
-    throw new Error('A resposta do Gemini não continha texto de saída.');
-  }
+      const data = (await response.json()) as any;
+      const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!rawText) {
+        throw new Error('A resposta do Gemini não continha texto de saída.');
+      }
 
-  return JSON.parse(rawText) as IaLancamentoParsed;
+      return {
+        parsed: JSON.parse(rawText) as IaLancamentoParsed,
+        tokens: tokensDeUsageGemini(data.usageMetadata),
+      };
+    },
+  }).then((r) => r.parsed);
 }
 
 /**
  * Chamada à API do DeepSeek (OpenAI-compatible chat completions)
+ * TASK-49: quando `opcoes.usuarioId` é informado, registra 1 linha em `uso_ia_logs`.
  */
 export async function callDeepSeekApi(
   apiKey: string,
   model: string = 'deepseek-chat',
   promptSistema: string,
-  textoUsuario: string
+  textoUsuario: string,
+  opcoes?: OpcoesTelemetriaIa
 ): Promise<IaLancamentoParsed> {
   const url = 'https://api.deepseek.com/chat/completions';
 
@@ -289,42 +349,61 @@ export async function callDeepSeekApi(
     temperature: 0.1,
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
+  return UsoIaService.registrarChamada({
+    usuarioId: opcoes?.usuarioId,
+    funcionalidade: opcoes?.funcionalidade || 'CATEGORIZACAO',
+    provedor: 'DEEPSEEK',
+    modelo: model || 'deepseek-chat',
+    loteId: opcoes?.loteId,
+    arquivoId: opcoes?.arquivoId,
+    extrairTokens: (r) => r.tokens,
+    execucao: async () => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Erro na API do DeepSeek (${response.status}): ${errText}`);
+      }
+
+      const data = (await response.json()) as any;
+      const rawText = data.choices?.[0]?.message?.content;
+      if (!rawText) {
+        throw new Error('A resposta do DeepSeek não continha texto de saída.');
+      }
+
+      return {
+        parsed: JSON.parse(rawText) as IaLancamentoParsed,
+        tokens: tokensDeUsageOpenAi(data.usage),
+      };
     },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Erro na API do DeepSeek (${response.status}): ${errText}`);
-  }
-
-  const data = (await response.json()) as any;
-  const rawText = data.choices?.[0]?.message?.content;
-  if (!rawText) {
-    throw new Error('A resposta do DeepSeek não continha texto de saída.');
-  }
-
-  return JSON.parse(rawText) as IaLancamentoParsed;
+  }).then((r) => r.parsed);
 }
 
 /**
  * Chamada à API do OpenRouter (OpenAI-compatible chat completions)
+ * TASK-49: quando `opcoes.usuarioId` é informado, registra 1 linha em `uso_ia_logs`.
  */
 export async function callOpenRouterApi(
   apiKey: string,
-  model: string = 'deepseek/deepseek-chat',
+  model: string = MODELO_OPENROUTER_PADRAO,
   promptSistema: string,
-  textoUsuario: string
+  textoUsuario: string,
+  opcoes?: OpcoesTelemetriaIa
 ): Promise<IaLancamentoParsed> {
-  const url = 'https://openrouter.ai/api/v1/chat/completions';
+  // URL base, headers de atribuição e chave fallback vêm de `openrouter.config.ts`
+  // (OPENROUTER_BASE_URL / OPENROUTER_HTTP_REFERER / OPENROUTER_X_TITLE / OPENROUTER_API_KEY).
+  const url = montarUrlOpenRouter('/chat/completions');
+  const modeloEfetivo = normalizarModeloOpenRouter(model);
 
   const body = {
-    model: model || 'deepseek/deepseek-chat',
+    model: modeloEfetivo,
     messages: [
       { role: 'system', content: promptSistema },
       { role: 'user', content: `Texto a ser analisado:\n"""${textoUsuario}"""` },
@@ -333,28 +412,37 @@ export async function callOpenRouterApi(
     temperature: 0.1,
   };
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-      'HTTP-Referer': 'https://evolvi.app',
-      'X-Title': 'Evolvi Financeiro',
+  return UsoIaService.registrarChamada({
+    usuarioId: opcoes?.usuarioId,
+    funcionalidade: opcoes?.funcionalidade || 'CATEGORIZACAO',
+    provedor: 'OPENROUTER',
+    modelo: modeloEfetivo,
+    loteId: opcoes?.loteId,
+    arquivoId: opcoes?.arquivoId,
+    extrairTokens: (r) => r.tokens,
+    execucao: async () => {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: montarHeadersOpenRouter(apiKey),
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Erro na API do OpenRouter (${response.status}): ${errText}`);
+      }
+
+      const data = (await response.json()) as any;
+      const rawText = data.choices?.[0]?.message?.content;
+      if (!rawText) {
+        throw new Error('A resposta do OpenRouter não continha texto de saída.');
+      }
+
+      return {
+        parsed: JSON.parse(rawText) as IaLancamentoParsed,
+        tokens: tokensDeUsageOpenAi(data.usage),
+      };
     },
-    body: JSON.stringify(body),
-  });
-
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Erro na API do OpenRouter (${response.status}): ${errText}`);
-  }
-
-  const data = (await response.json()) as any;
-  const rawText = data.choices?.[0]?.message?.content;
-  if (!rawText) {
-    throw new Error('A resposta do OpenRouter não continha texto de saída.');
-  }
-
-  return JSON.parse(rawText) as IaLancamentoParsed;
+  }).then((r) => r.parsed);
 }
 

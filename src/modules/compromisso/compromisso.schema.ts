@@ -27,7 +27,10 @@ export interface ItemCronogramaVencimento {
     parcelaAtualNoMes: number;
     totalParcelas: number;
     saldoDevedorRestanteAposMes: number;
+    primeiroVencimento?: string;
+    dataCompra?: string;
   };
+  dataCompra?: string;
 }
 
 export interface CronogramaVencimentosResponse {

@@ -135,6 +135,13 @@ export class BaselineService {
       },
     });
 
+    // Buscar exclusões ativas do motor / manuais para desconsiderar da média mensal
+    const exclusoesAtivas = await prisma.exclusaoMovimentoMedia.findMany({
+      where: { usuarioId, ativo: true },
+      select: { movimentoId: true },
+    });
+    const idsExcluidosSet = new Set<string>(exclusoesAtivas.map((e) => e.movimentoId));
+
     // Acumular despesas por categoria raiz
     const totalPorCategoriaRaiz = new Map<string, number>();
     for (const raiz of categoriasRaiz) {
@@ -143,6 +150,10 @@ export class BaselineService {
 
     let totalPeriodo = 0;
     for (const mov of movimentosDespesa) {
+      // Gastos excluídos pelo motor de regras ou pelo usuário não entram na média
+      if (idsExcluidosSet.has(mov.id)) {
+        continue;
+      }
       const valorTotalMov = Number(mov.valor);
       totalPeriodo += valorTotalMov;
 

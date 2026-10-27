@@ -10,6 +10,9 @@ export interface BankAccountRaw {
   diaFechamento?: number;
   diaVencimento?: number;
   subtipo?: string;
+  numeroConta?: string;
+  agencia?: string;
+  digitosCartao?: string;
 }
 
 export interface BankTransactionRaw {

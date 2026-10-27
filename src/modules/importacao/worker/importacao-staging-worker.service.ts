@@ -41,10 +41,13 @@ export class ImportacaoStagingWorkerService {
       return;
     }
 
+    console.log('[evolvi-worker:staging] Inicializando ouvinte de arquivos consolidados para staging...');
+
     this.boundListener = (event: ImportacaoArquivoConsolidadoProntoEvent) => {
+      console.log(`[evolvi-worker:staging] Arquivo [${event.nomeArquivo}] pronto (${event.totalTransacoes} transações). Carregando na staging...`);
       this.carregarArquivoParaStaging(event.arquivoId, event.usuarioId).catch((err) => {
         console.error(
-          `[ImportacaoStagingWorker] Erro ao carregar arquivo ${event.arquivoId} para staging:`,
+          `[evolvi-worker:staging] Erro ao carregar arquivo ${event.arquivoId} para staging:`,
           err
         );
       });
@@ -165,6 +168,8 @@ export class ImportacaoStagingWorkerService {
             natureza: txItem.natureza,
             contaSugerida: txItem.contaSugerida || null,
             tipoConta: tipoContaFinal,
+            numeroConta: txItem.numeroConta || null,
+            digitosCartao: txItem.digitosCartao || null,
             categoriaSugerida: txItem.categoriaSugerida || null,
             parcelaAtual: txItem.parcelaAtual || null,
             totalParcelas: txItem.totalParcelas || null,
@@ -208,6 +213,26 @@ export class ImportacaoStagingWorkerService {
         totalLinhasStaging: transacoes.length,
         timestamp: new Date(),
       });
+
+      // Limpeza imediata de arquivos temporários do disco após persistência garantida na base
+      try {
+        await fs.unlink(caminhoFisicoConsolidado);
+      } catch {
+        // Ignora se o consolidado já tiver sido removido
+      }
+
+      if (arquivo.caminhoRelativo) {
+        const caminhoFisicoOriginal = path.resolve(
+          this.baseDir,
+          arquivo.lote.caminhoDiretorio,
+          arquivo.caminhoRelativo
+        );
+        try {
+          await fs.unlink(caminhoFisicoOriginal);
+        } catch {
+          // Ignora se já tiver sido removido ou não existir fisicamente
+        }
+      }
 
       return {
         loteId: arquivo.loteId,

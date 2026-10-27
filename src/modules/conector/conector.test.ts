@@ -382,6 +382,11 @@ NEWFILEUID:NONE
       expect(fatura2.natureza).toBe('TRANSFERENCIA_PROPRIA');
       expect(fatura2.isPagamentoFatura).toBe(true);
 
+      const fatura3 = provider.constructor.classificarTransacaoItau('PAG BOLETO NU PAGAMENTOS SA');
+      expect(fatura3.natureza).toBe('TRANSFERENCIA_PROPRIA');
+      expect(fatura3.isPagamentoFatura).toBe(true);
+
+
       // Despesas de supermercado / alimentação
       const alim = provider.constructor.classificarTransacaoItau('COMPRA SUPERMERCADO PAO DE ACUCAR');
       expect(alim.natureza).toBe('DESPESA');

@@ -15,47 +15,32 @@ import {
 
 import { PdfTextExtractor } from '../../conector/parsers/pdf-text-extractor.js';
 import { C6InvoicePdfParser } from '../../conector/parsers/c6-invoice-pdf.parser.js';
+import { SantanderStatementPdfParser } from '../../conector/parsers/santander-statement-pdf.parser.js';
 import { CryptoService } from '../../../infrastructure/security/crypto.service.js';
+import {
+  TokensIa,
+  UsoIaService,
+  tokensDeUsageGemini,
+  tokensDeUsageOpenAi,
+} from '../../ia/uso-ia.service.js';
+import {
+  IA_CAPACIDADES_MEDIA,
+  IaCapacidadeMedia,
+  obterCapacidadeMedia,
+} from '../../ia/capacidades-media.js';
+import {
+  MODELO_OPENROUTER_PADRAO,
+  mensagemProvedorNaoSuportado,
+  montarHeadersOpenRouter,
+  montarUrlOpenRouter,
+  normalizarModeloOpenRouter,
+  obterConfigOpenRouter,
+  provedorSuportadoNoFluxo,
+} from '../../ia/openrouter.config.js';
 
-export interface IaCapacidadeMedia {
-  provedor: string;
-  suportaImagens: boolean;
-  suportaPdfsNaoEstruturados: boolean;
-  descricao: string;
-}
-
-export const IA_CAPACIDADES_MEDIA: Record<string, IaCapacidadeMedia> = {
-  GEMINI: {
-    provedor: 'GEMINI',
-    suportaImagens: true,
-    suportaPdfsNaoEstruturados: true,
-    descricao: 'Google Gemini (Multimodal nativo com suporte a imagens, visão computacional e PDFs)',
-  },
-  DEEPSEEK: {
-    provedor: 'DEEPSEEK',
-    suportaImagens: false,
-    suportaPdfsNaoEstruturados: false,
-    descricao: 'DeepSeek (Modelo puramente textual - requer texto legível, CSV, OFX ou PDFs textuais)',
-  },
-  OPENAI: {
-    provedor: 'OPENAI',
-    suportaImagens: true,
-    suportaPdfsNaoEstruturados: true,
-    descricao: 'OpenAI GPT-4o / Vision (Multimodal com suporte a visão e texto)',
-  },
-  CLAUDE: {
-    provedor: 'CLAUDE',
-    suportaImagens: true,
-    suportaPdfsNaoEstruturados: true,
-    descricao: 'Anthropic Claude 3.5 (Multimodal com suporte a visão e texto)',
-  },
-  OPENROUTER: {
-    provedor: 'OPENROUTER',
-    suportaImagens: true,
-    suportaPdfsNaoEstruturados: true,
-    descricao: 'OpenRouter (Catálogo Multi-Provedor com suporte a modelos de visão e texto)',
-  },
-};
+// Reexportado para preservar a API pública histórica do módulo.
+export type { IaCapacidadeMedia };
+export { IA_CAPACIDADES_MEDIA };
 
 export interface IIaExtratorClient {
   extrairTransacoes(params: {
@@ -66,6 +51,15 @@ export interface IIaExtratorClient {
     usuarioId?: string;
     provedorIa?: string;
     modeloIa?: string;
+    /** Vínculo opcional do log de consumo de IA com o lote de importação (TASK-49). */
+    loteId?: string;
+    /** Vínculo opcional do log de consumo de IA com o arquivo importado (TASK-49). */
+    arquivoId?: string;
+    /**
+     * TASK-50: handoff explícito do id da linha criada em `uso_ia_logs`, permitindo
+     * correlacionar de forma determinística a tentativa do arquivo ao log de telemetria.
+     */
+    aoRegistrarUsoIa?: (usoIaLogId: string | null) => void;
     contexto: {
       contas: { id: string; nome: string; tipo: string }[];
       categorias: { id: string; nome: string }[];
@@ -93,8 +87,7 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
   }
 
   public static suportaMidiaVisual(provedorIa?: string | null): boolean {
-    const prov = (provedorIa || 'GEMINI').toUpperCase();
-    const capacidade = IA_CAPACIDADES_MEDIA[prov];
+    const capacidade = obterCapacidadeMedia(provedorIa || 'GEMINI');
     return capacidade ? capacidade.suportaImagens : false;
   }
 
@@ -112,8 +105,12 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     usuarioId?: string;
     provedorIa?: string;
     modeloIa?: string;
+    loteId?: string;
+    arquivoId?: string;
+    /** TASK-50: handoff do id do log criado em `uso_ia_logs`. */
+    aoRegistrarUsoIa?: (usoIaLogId: string | null) => void;
     contexto: {
-      contas: { id: string; nome: string; tipo: string }[];
+      contas: { id: string; nome: string; tipo: string; numeroConta?: string | null; agencia?: string | null }[];
       categorias: { id: string; nome: string }[];
       dataReferencia: string;
       nomeTitular?: string | null;
@@ -172,6 +169,18 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
       }
     }
 
+    // 2.1. Se for extrato Santander em PDF com formatação reconhecida pelo parser especializado
+    if (isPdf && textoProcessado && SantanderStatementPdfParser.isSantanderStatement(textoProcessado)) {
+      const transacoesSantander = SantanderStatementPdfParser.parse(textoProcessado, {
+        dataReferencia: contexto.dataReferencia,
+        categorias: contexto.categorias,
+        nomeTitular: contexto.nomeTitular,
+      });
+      if (transacoesSantander.length > 0) {
+        return transacoesSantander;
+      }
+    }
+
     // 3. Se for fatura em PDF com consumo zero explícito (ex: Mercado Pago R$ 0,00)
     if (isPdf && textoProcessado) {
       const isFaturaZerada =
@@ -224,9 +233,22 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
       provedorEfetivo = 'GEMINI';
     }
 
+    provedorEfetivo = provedorEfetivo.trim().toUpperCase();
+
+    // Provedores sem implementação neste fluxo (OPENAI/ANTHROPIC) NÃO devem cair
+    // silenciosamente no Gemini — erro explícito e acionável.
+    if (!provedorSuportadoNoFluxo(provedorEfetivo)) {
+      throw new Error(mensagemProvedorNaoSuportado(provedorEfetivo));
+    }
+
     // Auto-sanitização: Se o modelo solicitado ou recuperado do perfil for o descontinuado gemini-2.5-flash, atualiza para gemini-3.8-flash
     if (provedorEfetivo === 'GEMINI' && modeloEfetivo === 'gemini-2.5-flash') {
       modeloEfetivo = 'gemini-3.8-flash';
+    }
+
+    // Modelo do OpenRouter normalizado (exige o formato `vendor/model`).
+    if (provedorEfetivo === 'OPENROUTER') {
+      modeloEfetivo = normalizarModeloOpenRouter(modeloEfetivo);
     }
 
     // NUNCA fazer fallback para chave de GEMINI se o provedor for DEEPSEEK ou outro provedor selecionado!
@@ -234,6 +256,9 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
       apiKeyEfetiva = this.apiKey;
     } else if (!apiKeyEfetiva && params.provedorIa === 'GEMINI') {
       apiKeyEfetiva = this.apiKey;
+    } else if (!apiKeyEfetiva && provedorEfetivo === 'OPENROUTER') {
+      // Paridade com GEMINI_API_KEY: chave de servidor (OPENROUTER_API_KEY) como fallback.
+      apiKeyEfetiva = obterConfigOpenRouter().apiKeyServidor || undefined;
     }
 
     if (!apiKeyEfetiva) {
@@ -250,39 +275,58 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
       );
     }
 
-    // Se temos apiKey, tentamos chamada de IA para o provedor selecionado
+    // Se temos apiKey, tentamos chamada de IA para o provedor selecionado.
+    // TASK-49: toda chamada de IA gera EXATAMENTE 1 registro em `uso_ia_logs`
+    // (sucesso ou falha). Qualquer erro de telemetria é engolido internamente
+    // pelo UsoIaService, nunca interrompendo a importação.
+    const chamada: () => Promise<{ transacoes: LancamentoConsolidadoIa[]; tokens: TokensIa }> =
+      provedorEfetivo === 'DEEPSEEK'
+        ? () =>
+            this.chamarDeepSeekApi(
+              nomeArquivo,
+              conteudoBuffer,
+              contexto,
+              textoProcessado,
+              apiKeyEfetiva,
+              modeloEfetivo
+            )
+        : provedorEfetivo === 'OPENROUTER'
+          ? () =>
+              this.chamarOpenRouterApi(
+                nomeArquivo,
+                mimeType,
+                conteudoBuffer,
+                contexto,
+                textoProcessado,
+                apiKeyEfetiva,
+                modeloEfetivo
+              )
+          : () =>
+              this.chamarGeminiApi(
+                nomeArquivo,
+                mimeType,
+                conteudoBuffer,
+                contexto,
+                textoProcessado,
+                apiKeyEfetiva,
+                modeloEfetivo
+              );
+
     try {
-      if (provedorEfetivo === 'DEEPSEEK') {
-        return await this.chamarDeepSeekApi(
-          nomeArquivo,
-          conteudoBuffer,
-          contexto,
-          textoProcessado,
-          apiKeyEfetiva,
-          modeloEfetivo
-        );
-      }
+      const resultado = await UsoIaService.registrarChamada({
+        usuarioId: params.usuarioId,
+        funcionalidade: 'EXTRACAO_EXTRATO',
+        provedor: provedorEfetivo,
+        modelo: modeloEfetivo,
+        loteId: params.loteId,
+        arquivoId: params.arquivoId,
+        execucao: chamada,
+        extrairTokens: (r) => r.tokens,
+        // TASK-50: handoff explícito do id do log para a tentativa do arquivo.
+        aoRegistrar: (logId) => params.aoRegistrarUsoIa?.(logId),
+      });
 
-      if (provedorEfetivo === 'OPENROUTER') {
-        return await this.chamarOpenRouterApi(
-          nomeArquivo,
-          conteudoBuffer,
-          contexto,
-          textoProcessado,
-          apiKeyEfetiva,
-          modeloEfetivo
-        );
-      }
-
-      return await this.chamarGeminiApi(
-        nomeArquivo,
-        mimeType,
-        conteudoBuffer,
-        contexto,
-        textoProcessado,
-        apiKeyEfetiva,
-        modeloEfetivo
-      );
+      return resultado.transacoes;
     } catch (err: unknown) {
       const detalhe = err instanceof Error ? err.message : String(err);
       console.error(
@@ -297,7 +341,7 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     nomeArquivo: string,
     conteudoBuffer: Buffer,
     contexto: {
-      contas: { id: string; nome: string; tipo: string }[];
+      contas: { id: string; nome: string; tipo: string; numeroConta?: string | null; agencia?: string | null }[];
       categorias: { id: string; nome: string }[];
       dataReferencia: string;
       nomeTitular?: string | null;
@@ -305,7 +349,7 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     textoProcessado?: string,
     apiKeyOverride?: string,
     modelOverride?: string
-  ): Promise<LancamentoConsolidadoIa[]> {
+  ): Promise<{ transacoes: LancamentoConsolidadoIa[]; tokens: TokensIa }> {
     const key = apiKeyOverride || this.apiKey;
     const mod = modelOverride || 'deepseek-chat';
     const url = 'https://api.deepseek.com/chat/completions';
@@ -316,6 +360,16 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     }
 
     const titularInfo = contexto.nomeTitular ? `Nome do titular da conta: "${contexto.nomeTitular}".` : '';
+
+    const contasFormatadas = contexto.contas
+      .map((c) => {
+        let det = `- "${c.nome}" (Tipo: ${c.tipo}`;
+        if (c.agencia) det += `, Agência: ${c.agencia}`;
+        if (c.numeroConta) det += `, Conta: ${c.numeroConta}`;
+        det += ')';
+        return det;
+      })
+      .join('\n') || '(Nenhuma cadastrada)';
 
     const promptSistema = `Você é o extrator inteligente e especialista financeiro do sistema Evolvi.
 Sua missão é extrair rigorosamente TODAS as transações financeiras (despesas, receitas, faturas, pagamentos, transferências) contidas no documento ou extrato anexo.
@@ -328,19 +382,27 @@ DIRETRIZES FUNDAMENTAIS:
    - LINHAS INFORMATIVAS DE PAGAMENTO EM FATURA DE CARTÃO (BUG-13): Em faturas de cartão de crédito, linhas como "PAGAMENTO RECEBIDO", "CRÉDITO DE PAGAMENTO DE FATURA", "PAGAMENTO EFETUADO" são compensações informativas da fatura e NÃO geram movimentação de caixa (pois o débito ocorre na conta corrente). Defina "natureza" = "TRANSFERENCIA_PROPRIA", "isPagamentoFatura" = true e "observacao" = "Informativo de quitação em fatura de cartão".
    - Créditos de salário ou proventos de empresa (ex: "TED CONTA SALARIO", "CRED SALARIO", "PLR", "REMUNERACAO", "FOLHA DE PAGAMENTO", "BONUS SALARIAL") são SEMPRE RECEITA operacional, mesmo quando o nome do titular constar na linha como favorecido/remetente da conta salário.
    - Se for transferência entre contas correntes/poupança, PIX ou TED cujo remetente/pagador for o próprio titular${contexto.nomeTitular ? ` (ex: "${contexto.nomeTitular}")` : ''} (exceto folha de pagamento/conta salário/PLR), ou se for resgate de aplicação/investimento próprio (ex: "RESGATE DE CDB", "RESGATE POUPANCA", "RESGATE INVESTIMENTO"): defina categoricamente "natureza" = "TRANSFERENCIA_PROPRIA" (NUNCA classifique como RECEITA!).
+   - Para aplicações financeiras, aportes, investimentos e compras de ativos (ex: "APLICAÇÃO", "APLICACAO", "CDB", "RDB", "LCI", "LCA", "TESOURO DIRETO", "DEPOSITO POUPANCA", "COMPRA ACOES", "INVESTIMENTO"): defina categoricamente "natureza" = "APORTE_PATRIMONIAL" (NUNCA classifique como DESPESA!).
    - Para compras ou despesas normais: "natureza" = "DESPESA".
    - Para salários, PLR, rendimentos de aplicações, transferências recebidas de terceiros: "natureza" = "RECEITA".
-3. Formato da Data e Regra de Ouro para Cartões (BUG-12):
+3. Formato da Data e Regra de Ouro para Cartões:
    - Formato estrito: "YYYY-MM-DD". Se o documento trouxer apenas DD/MM ou DD/MM/AAAA, converta para YYYY-MM-DD usando o ano de referência ("${contexto.dataReferencia.substring(0, 4)}").
-   - REGRA DE OURO PARA FATURAS DE CARTÃO DE CRÉDITO: A "dataMovimento" DEVE ser estritamente a data em que a compra ocorreu (data da transação). NUNCA utilize a data de vencimento, emissão ou fechamento da fatura para os lançamentos de compras!
+   - REGRA PARA FATURAS DE CARTÃO DE CRÉDITO:
+     * Para COMPRAS À VISTA (sem parcelas) ocorridas no ciclo recente da fatura: a "dataMovimento" DEVE ser a data exata da transação (compra).
+     * Para COMPRAS PARCELADAS (ex: "Parcela 2/10", "01/03", "5 de 6"): a exigibilidade financeira e o débito desta parcela ocorrem na fatura atual. Portanto, a "dataMovimento" deve ser atribuída ao mês e ano da fatura (usando o dia de fechamento/vencimento ou dataReferencia "${contexto.dataReferencia}"), preservando a data da compra original no texto da descrição/observação. NUNCA aloque uma parcela cobrada na fatura atual para um mês ou ano anterior!
 4. Formato de Valor: número decimal estritamente positivo (ponto como separador, ex: 125.50). Desconsidere ou não inclua linhas informativas com valor R$ 0,00 ou cupons de 100% de desconto.
 5. Parcelamento: Se houver indicação de parcela (ex: "01/03", "3/10", "parcela 2 de 5"), preencha "parcelaAtual" e "totalParcelas".
 6. Contas disponíveis do usuário:
-${contexto.contas.map((c) => `- "${c.nome}" (Tipo: ${c.tipo})`).join('\n') || '(Nenhuma cadastrada)'}
-Se o documento for de uma instituição específica (ex: Nubank, Itaú, Inter), sugira a conta em "contaSugerida" e o tipo ("CARTAO_CREDITO" ou "CONTA_CORRENTE") em "tipoConta".
+${contasFormatadas}
+Se o documento for de uma instituição específica (ex: Santander, Nubank, Itaú, Inter, C6), sugira a conta em "contaSugerida" e o tipo ("CARTAO_CREDITO" ou "CONTA_CORRENTE") em "tipoConta". Correlacione número da conta ou agência quando disponíveis.
+Identificação precisa da conta/cartão (BUG-16):
+- Se for extrato de conta corrente e houver número da conta/agência legível no cabeçalho ou metadados, extraia apenas os dígitos em "numeroConta" (ex: "010830489" ou "24220973" ou "123456").
+- Se for fatura de cartão de crédito e houver indicação do final do cartão/dígitos (ex: "Final 2458", "Cartão 7936"), extraia os últimos dígitos (normalmente 4 dígitos) em "digitosCartao".
 7. Categorias disponíveis (POF):
 ${contexto.categorias.map((c) => `- "${c.nome}"`).join('\n') || '(Nenhuma cadastrada)'}
 Preencha "categoriaSugerida" com a categoria mais aderente.
+8. Código Identificador da Transação (idOrigem):
+- Se o extrato/fatura apresentar código de transação, identificador único, "Nº Documento", "Documento", "NSU", "ID Transação" ou código de autenticação correspondente ao lançamento, extraia esse valor no campo "idOrigem". Isso é crucial para diferenciar e rastrear lançamentos únicos! Se não houver, preencha null.
 
 FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
 {
@@ -352,9 +414,12 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       "natureza": "DESPESA" | "RECEITA" | "TRANSFERENCIA_PROPRIA" | "APORTE_PATRIMONIAL",
       "contaSugerida": "string ou null",
       "tipoConta": "CONTA_CORRENTE" | "CARTAO_CREDITO" | null,
+      "numeroConta": "string ou null",
+      "digitosCartao": "string ou null",
       "categoriaSugerida": "string ou null",
       "parcelaAtual": number ou null,
       "totalParcelas": number ou null,
+      "idOrigem": "string ou null",
       "isPagamentoFatura": boolean,
       "observacao": "string ou null",
       "confianca": number
@@ -395,6 +460,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
     if (!rawText) {
       throw new Error('A resposta do DeepSeek não continha texto de saída.');
     }
+    // TASK-49: contagem real de tokens devolvida pelo provedor (usage)
+    const tokens = tokensDeUsageOpenAi(data.usage);
 
     let parsedJson: any;
     try {
@@ -421,7 +488,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
     }
     const lista = Array.isArray(parsedJson) ? parsedJson : parsedJson.transacoes || [];
 
-    return lista
+    const transacoes = lista
       .map((t: any) => ({
         dataMovimento: t.dataMovimento || contexto.dataReferencia,
         descricao: String(t.descricao || 'Lançamento extraído'),
@@ -438,13 +505,16 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
         confianca: Number(t.confianca ?? 0.95),
       }))
       .filter((t: LancamentoConsolidadoIa) => t.valor > 0);
+
+    return { transacoes, tokens };
   }
 
   private async chamarOpenRouterApi(
     nomeArquivo: string,
+    mimeType: string | null | undefined,
     conteudoBuffer: Buffer,
     contexto: {
-      contas: { id: string; nome: string; tipo: string }[];
+      contas: { id: string; nome: string; tipo: string; numeroConta?: string | null; agencia?: string | null }[];
       categorias: { id: string; nome: string }[];
       dataReferencia: string;
       nomeTitular?: string | null;
@@ -452,17 +522,54 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
     textoProcessado?: string,
     apiKeyOverride?: string,
     modelOverride?: string
-  ): Promise<LancamentoConsolidadoIa[]> {
+  ): Promise<{ transacoes: LancamentoConsolidadoIa[]; tokens: TokensIa }> {
+    // API compatível com OpenAI (chat completions). URL base e headers de
+    // atribuição vêm de `openrouter.config.ts` (OPENROUTER_BASE_URL/HTTP_REFERER/X_TITLE).
     const key = apiKeyOverride || this.apiKey;
-    const mod = modelOverride || 'deepseek/deepseek-chat';
-    const url = 'https://openrouter.ai/api/v1/chat/completions';
+    const mod = normalizarModeloOpenRouter(modelOverride || MODELO_OPENROUTER_PADRAO);
+    const url = montarUrlOpenRouter('/chat/completions');
 
-    const texto = textoProcessado || conteudoBuffer.toString('utf-8');
-    if (!texto || texto.trim().length === 0) {
-      throw new Error('Não foi possível extrair texto legível deste documento para enviar ao OpenRouter.');
+    const effectiveMime = mimeType || this.inferirMimeType(nomeArquivo);
+    const capacidade = obterCapacidadeMedia('OPENROUTER');
+
+    const isImagem = GeminiIaExtratorClient.isArquivoVisual(nomeArquivo, mimeType);
+    const isPdf =
+      effectiveMime.includes('pdf') ||
+      nomeArquivo.toLowerCase().endsWith('.pdf') ||
+      conteudoBuffer.subarray(0, 5).toString('latin1') === '%PDF-';
+
+    // Texto legível disponível (extraído previamente ou conteúdo textual de fato).
+    const textoLegivel = textoProcessado && textoProcessado.trim().length > 0 ? textoProcessado : null;
+
+    // PDF sem texto extraído ⇒ binário NÃO pode ser enviado como texto UTF-8.
+    if (isPdf && !textoLegivel && !capacidade?.suportaPdfsNaoEstruturados) {
+      throw new Error(
+        'Este PDF não possui texto legível e o provedor OPENROUTER está configurado sem suporte a PDFs não estruturados. Reprocesse selecionando o Google Gemini.'
+      );
     }
 
+    if (!isImagem && !isPdf && !textoLegivel) {
+      const bruto = conteudoBuffer.toString('utf-8').trim();
+      if (bruto.length === 0 || bruto.includes('\uFFFD')) {
+        throw new Error('Não foi possível extrair texto legível deste documento para enviar ao OpenRouter.');
+      }
+    }
+
+    // Conteúdo binário (imagem/PDF não estruturado) nunca é enviado como string UTF-8.
+    const conteudoBinario = isImagem || (isPdf && !textoLegivel);
+    const texto = textoLegivel || (conteudoBinario ? null : conteudoBuffer.toString('utf-8'));
+
     const titularInfo = contexto.nomeTitular ? `Nome do titular da conta: "${contexto.nomeTitular}".` : '';
+
+    const contasFormatadas = contexto.contas
+      .map((c) => {
+        let det = `- "${c.nome}" (Tipo: ${c.tipo}`;
+        if (c.agencia) det += `, Agência: ${c.agencia}`;
+        if (c.numeroConta) det += `, Conta: ${c.numeroConta}`;
+        det += ')';
+        return det;
+      })
+      .join('\n') || '(Nenhuma cadastrada)';
 
     const promptSistema = `Você é o extrator inteligente e especialista financeiro do sistema Evolvi.
 Sua missão é extrair rigorosamente TODAS as transações financeiras (despesas, receitas, faturas, pagamentos, transferências) contidas no documento ou extrato anexo.
@@ -475,19 +582,28 @@ DIRETRIZES FUNDAMENTAIS:
    - LINHAS INFORMATIVAS DE PAGAMENTO EM FATURA DE CARTÃO (BUG-13): Em faturas de cartão de crédito, linhas como "PAGAMENTO RECEBIDO", "CRÉDITO DE PAGAMENTO DE FATURA", "PAGAMENTO EFETUADO" são compensações informativas da fatura e NÃO geram movimentação de caixa (pois o débito ocorre na conta corrente). Defina "natureza" = "TRANSFERENCIA_PROPRIA", "isPagamentoFatura" = true e "observacao" = "Informativo de quitação em fatura de cartão".
    - Créditos de salário ou proventos de empresa (ex: "TED CONTA SALARIO", "CRED SALARIO", "PLR", "REMUNERACAO", "FOLHA DE PAGAMENTO", "BONUS SALARIAL") são SEMPRE RECEITA operacional, mesmo quando o nome do titular constar na linha como favorecido/remetente da conta salário.
    - Se for transferência entre contas correntes/poupança, PIX ou TED cujo remetente/pagador for o próprio titular${contexto.nomeTitular ? ` (ex: "${contexto.nomeTitular}")` : ''} (exceto folha de pagamento/conta salário/PLR), ou se for resgate de aplicação/investimento próprio (ex: "RESGATE DE CDB", "RESGATE POUPANCA", "RESGATE INVESTIMENTO"): defina categoricamente "natureza" = "TRANSFERENCIA_PROPRIA" (NUNCA classifique como RECEITA!).
+   - Para aplicações financeiras, aportes, investimentos e compras de ativos (ex: "APLICAÇÃO", "APLICACAO", "CDB", "RDB", "LCI", "LCA", "TESOURO DIRETO", "DEPOSITO POUPANCA", "COMPRA ACOES", "INVESTIMENTO"): defina categoricamente "natureza" = "APORTE_PATRIMONIAL" (NUNCA classifique como DESPESA!).
    - Para compras ou despesas normais: "natureza" = "DESPESA".
    - Para salários, PLR, rendimentos de aplicações, transferências recebidas de terceiros: "natureza" = "RECEITA".
-3. Formato da Data e Regra de Ouro para Cartões (BUG-12):
+3. Formato da Data e Regra de Ouro para Cartões:
    - Formato estrito: "YYYY-MM-DD". Se o documento trouxer apenas DD/MM ou DD/MM/AAAA, converta para YYYY-MM-DD usando o ano de referência ("${contexto.dataReferencia.substring(0, 4)}").
-   - REGRA DE OURO PARA FATURAS DE CARTÃO DE CRÉDITO: A "dataMovimento" DEVE ser estritamente a data em que a compra ocorreu (data da transação). NUNCA utilize a data de vencimento, emissão ou fechamento da fatura para os lançamentos de compras!
+   - REGRA PARA FATURAS DE CARTÃO DE CRÉDITO:
+     * Para COMPRAS À VISTA (sem parcelas) ocorridas no ciclo recente da fatura: a "dataMovimento" DEVE ser a data exata da transação (compra).
+     * Para COMPRAS PARCELADAS (ex: "Parcela 2/10", "01/03", "5 de 6"): a exigibilidade financeira e o débito desta parcela ocorrem na fatura atual. Portanto, a "dataMovimento" deve ser atribuída ao mês e ano da fatura (usando o dia de fechamento/vencimento ou dataReferencia "${contexto.dataReferencia}"), preservando a data da compra original no texto da descrição/observação. NUNCA aloque uma parcela cobrada na fatura atual para um mês ou ano anterior!
 4. Formato de Valor: número decimal estritamente positivo (ponto como separador, ex: 125.50). Desconsidere ou não inclua linhas informativas com valor R$ 0,00 ou cupons de 100% de desconto.
 5. Parcelamento: Se houver indicação de parcela (ex: "01/03", "3/10", "parcela 2 de 5"), preencha "parcelaAtual" e "totalParcelas".
 6. Contas disponíveis do usuário:
-${contexto.contas.map((c) => `- "${c.nome}" (Tipo: ${c.tipo})`).join('\n') || '(Nenhuma cadastrada)'}
-Se o documento for de uma instituição específica (ex: Nubank, Itaú, Inter), sugira a conta em "contaSugerida" e o tipo ("CARTAO_CREDITO" ou "CONTA_CORRENTE") em "tipoConta".
+${contasFormatadas}
+Se o documento for de uma instituição específica (ex: Santander, Nubank, Itaú, Inter, C6), sugira a conta em "contaSugerida" e o tipo ("CARTAO_CREDITO" ou "CONTA_CORRENTE") em "tipoConta". Correlacione número da conta ou agência quando disponíveis.
+Identificação precisa da conta/cartão (BUG-16):
+- Se for extrato de conta corrente e houver número da conta/agência legível no cabeçalho ou metadados, extraia apenas os dígitos em "numeroConta" (ex: "010830489" ou "24220973" ou "123456").
+- Se for fatura de cartão de crédito e houver indicação do final do cartão/dígitos (ex: "Final 2458", "Cartão 7936"), extraia os últimos dígitos (normalmente 4 dígitos) em "digitosCartao".
+- Se for fatura de cartão de crédito e houver indicação do final do cartão/dígitos (ex: "Final 2458", "Cartão 7936"), extraia os últimos dígitos (normalmente 4 dígitos) em "digitosCartao".
 7. Categorias disponíveis (POF):
 ${contexto.categorias.map((c) => `- "${c.nome}"`).join('\n') || '(Nenhuma cadastrada)'}
 Preencha "categoriaSugerida" com a categoria mais aderente.
+8. Código Identificador da Transação (idOrigem):
+- Se o extrato/fatura apresentar código de transação, identificador único, "Nº Documento", "Documento", "NSU", "ID Transação" ou código de autenticação correspondente ao lançamento, extraia esse valor no campo "idOrigem". Isso é crucial para diferenciar e rastrear lançamentos únicos! Se não houver, preencha null.
 
 FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
 {
@@ -499,9 +615,12 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       "natureza": "DESPESA" | "RECEITA" | "TRANSFERENCIA_PROPRIA" | "APORTE_PATRIMONIAL",
       "contaSugerida": "string ou null",
       "tipoConta": "CONTA_CORRENTE" | "CARTAO_CREDITO" | null,
+      "numeroConta": "string ou null",
+      "digitosCartao": "string ou null",
       "categoriaSugerida": "string ou null",
       "parcelaAtual": number ou null,
       "totalParcelas": number ou null,
+      "idOrigem": "string ou null",
       "isPagamentoFatura": boolean,
       "observacao": "string ou null",
       "confianca": number
@@ -509,14 +628,48 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
   ]
 }`;
 
+    // Conteúdo da mensagem do usuário (formato OpenAI-compatible).
+    // Texto puro ⇒ string; imagem/PDF não estruturado ⇒ array multimodal com
+    // `image_url` (data URL base64) ou `file` (data URL base64 application/pdf).
+    const base64 = conteudoBuffer.toString('base64');
+    let conteudoUsuario: any;
+
+    if (isImagem) {
+      const mimeImagem = mimeType && mimeType.startsWith('image/') ? mimeType : effectiveMime;
+      conteudoUsuario = [
+        {
+          type: 'text',
+          text: `${promptSistema}\n\nDocumento a analisar ("${nomeArquivo}"): analise a imagem anexa.`,
+        },
+        {
+          type: 'image_url',
+          image_url: { url: `data:${mimeImagem};base64,${base64}` },
+        },
+      ];
+    } else if (isPdf && !textoLegivel) {
+      // OpenRouter suporta PDFs em base64 via content type `file` (parse nativo ou OCR interno).
+      conteudoUsuario = [
+        {
+          type: 'text',
+          text: `${promptSistema}\n\nDocumento a analisar ("${nomeArquivo}"): analise o PDF anexo.`,
+        },
+        {
+          type: 'file',
+          file: {
+            filename: nomeArquivo,
+            file_data: `data:application/pdf;base64,${base64}`,
+          },
+        },
+      ];
+    } else {
+      conteudoUsuario = `Documento a analisar ("${nomeArquivo}"):\n"""\n${texto}\n"""`;
+    }
+
     const body = {
       model: mod,
       messages: [
         { role: 'system', content: promptSistema },
-        {
-          role: 'user',
-          content: `Documento a analisar ("${nomeArquivo}"):\n"""\n${texto}\n"""`,
-        },
+        { role: 'user', content: conteudoUsuario },
       ],
       response_format: { type: 'json_object' },
       temperature: 0.1,
@@ -525,12 +678,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
-        'HTTP-Referer': 'https://evolvi.app',
-        'X-Title': 'Evolvi Financeiro',
-      },
+      headers: montarHeadersOpenRouter(key),
       body: JSON.stringify(body),
     });
 
@@ -544,6 +692,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
     if (!rawText) {
       throw new Error('A resposta do OpenRouter não continha texto de saída.');
     }
+    // TASK-49: contagem real de tokens devolvida pelo provedor (usage)
+    const tokens = tokensDeUsageOpenAi(data.usage);
 
     let parsedJson: any;
     try {
@@ -569,7 +719,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
     }
     const lista = Array.isArray(parsedJson) ? parsedJson : parsedJson.transacoes || [];
 
-    return lista
+    const transacoes = lista
       .map((t: any) => ({
         dataMovimento: t.dataMovimento || contexto.dataReferencia,
         descricao: String(t.descricao || 'Lançamento extraído'),
@@ -586,6 +736,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
         confianca: Number(t.confianca ?? 0.95),
       }))
       .filter((t: LancamentoConsolidadoIa) => t.valor > 0);
+
+    return { transacoes, tokens };
   }
 
   private async chamarGeminiApi(
@@ -593,7 +745,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
     mimeType: string | null | undefined,
     conteudoBuffer: Buffer,
     contexto: {
-      contas: { id: string; nome: string; tipo: string }[];
+      contas: { id: string; nome: string; tipo: string; numeroConta?: string | null; agencia?: string | null }[];
       categorias: { id: string; nome: string }[];
       dataReferencia: string;
       nomeTitular?: string | null;
@@ -601,12 +753,22 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
     textoProcessado?: string,
     apiKeyOverride?: string,
     modelOverride?: string
-  ): Promise<LancamentoConsolidadoIa[]> {
+  ): Promise<{ transacoes: LancamentoConsolidadoIa[]; tokens: TokensIa }> {
     const key = apiKeyOverride || this.apiKey;
     const mod = modelOverride || this.model;
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${mod}:generateContent?key=${key}`;
 
     const titularInfo = contexto.nomeTitular ? `Nome do titular da conta: "${contexto.nomeTitular}".` : '';
+
+    const contasFormatadas = contexto.contas
+      .map((c) => {
+        let det = `- "${c.nome}" (Tipo: ${c.tipo}`;
+        if (c.agencia) det += `, Agência: ${c.agencia}`;
+        if (c.numeroConta) det += `, Conta: ${c.numeroConta}`;
+        det += ')';
+        return det;
+      })
+      .join('\n') || '(Nenhuma cadastrada)';
 
     const promptSistema = `Você é o extrator inteligente e especialista financeiro do sistema Evolvi.
 Sua missão é extrair rigorosamente TODAS as transações financeiras (despesas, receitas, faturas, pagamentos, transferências) contidas no documento ou extrato anexo.
@@ -619,19 +781,27 @@ DIRETRIZES FUNDAMENTAIS:
    - LINHAS INFORMATIVAS DE PAGAMENTO EM FATURA DE CARTÃO (BUG-13): Em faturas de cartão de crédito, linhas como "PAGAMENTO RECEBIDO", "CRÉDITO DE PAGAMENTO DE FATURA", "PAGAMENTO EFETUADO" são compensações informativas da fatura e NÃO geram movimentação de caixa (pois o débito ocorre na conta corrente). Defina "natureza" = "TRANSFERENCIA_PROPRIA", "isPagamentoFatura" = true e "observacao" = "Informativo de quitação em fatura de cartão".
    - Créditos de salário ou proventos de empresa (ex: "TED CONTA SALARIO", "CRED SALARIO", "PLR", "REMUNERACAO", "FOLHA DE PAGAMENTO", "BONUS SALARIAL") são SEMPRE RECEITA operacional, mesmo quando o nome do titular constar na linha como favorecido/remetente da conta salário.
    - Se for transferência entre contas correntes/poupança, PIX ou TED cujo remetente/pagador for o próprio titular${contexto.nomeTitular ? ` (ex: "${contexto.nomeTitular}")` : ''} (exceto folha de pagamento/conta salário/PLR), ou se for resgate de aplicação/investimento próprio (ex: "RESGATE DE CDB", "RESGATE POUPANCA", "RESGATE INVESTIMENTO"): defina categoricamente "natureza" = "TRANSFERENCIA_PROPRIA" (NUNCA classifique como RECEITA!).
+   - Para aplicações financeiras, aportes, investimentos e compras de ativos (ex: "APLICAÇÃO", "APLICACAO", "CDB", "RDB", "LCI", "LCA", "TESOURO DIRETO", "DEPOSITO POUPANCA", "COMPRA ACOES", "INVESTIMENTO"): defina categoricamente "natureza" = "APORTE_PATRIMONIAL" (NUNCA classifique como DESPESA!).
    - Para compras ou despesas normais: "natureza" = "DESPESA".
    - Para salários, PLR, rendimentos de aplicações, transferências recebidas de terceiros: "natureza" = "RECEITA".
-3. Formato da Data e Regra de Ouro para Cartões (BUG-12):
+3. Formato da Data e Regra de Ouro para Cartões:
    - Formato estrito: "YYYY-MM-DD". Se o documento trouxer apenas DD/MM ou DD/MM/AAAA, converta para YYYY-MM-DD usando o ano de referência ("${contexto.dataReferencia.substring(0, 4)}").
-   - REGRA DE OURO PARA FATURAS DE CARTÃO DE CRÉDITO: A "dataMovimento" DEVE ser estritamente a data em que a compra ocorreu (data da transação). NUNCA utilize a data de vencimento, emissão ou fechamento da fatura para os lançamentos de compras!
+   - REGRA PARA FATURAS DE CARTÃO DE CRÉDITO:
+     * Para COMPRAS À VISTA (sem parcelas) ocorridas no ciclo recente da fatura: a "dataMovimento" DEVE ser a data exata da transação (compra).
+     * Para COMPRAS PARCELADAS (ex: "Parcela 2/10", "01/03", "5 de 6"): a exigibilidade financeira e o débito desta parcela ocorrem na fatura atual. Portanto, a "dataMovimento" deve ser atribuída ao mês e ano da fatura (usando o dia de fechamento/vencimento ou dataReferencia "${contexto.dataReferencia}"), preservando a data da compra original no texto da descrição/observação. NUNCA aloque uma parcela cobrada na fatura atual para um mês ou ano anterior!
 4. Formato de Valor: número decimal estritamente positivo (ponto como separador, ex: 125.50). Desconsidere ou não inclua linhas informativas com valor R$ 0,00 ou cupons de 100% de desconto.
 5. Parcelamento: Se houver indicação de parcela (ex: "01/03", "3/10", "parcela 2 de 5"), preencha "parcelaAtual" e "totalParcelas".
 6. Contas disponíveis do usuário:
-${contexto.contas.map((c) => `- "${c.nome}" (Tipo: ${c.tipo})`).join('\n') || '(Nenhuma cadastrada)'}
-Se o documento for de uma instituição específica (ex: Nubank, Itaú, Inter), sugira a conta em "contaSugerida" e o tipo ("CARTAO_CREDITO" ou "CONTA_CORRENTE") em "tipoConta".
+${contasFormatadas}
+Se o documento for de uma instituição específica (ex: Santander, Nubank, Itaú, Inter, C6), sugira a conta em "contaSugerida" e o tipo ("CARTAO_CREDITO" ou "CONTA_CORRENTE") em "tipoConta". Correlacione número da conta ou agência quando disponíveis.
+Identificação precisa da conta/cartão (BUG-16):
+- Se for extrato de conta corrente e houver número da conta/agência legível no cabeçalho ou metadados, extraia apenas os dígitos em "numeroConta" (ex: "010830489" ou "24220973" ou "123456").
+- Se for fatura de cartão de crédito e houver indicação do final do cartão/dígitos (ex: "Final 2458", "Cartão 7936"), extraia os últimos dígitos (normalmente 4 dígitos) em "digitosCartao".
 7. Categorias disponíveis (POF):
 ${contexto.categorias.map((c) => `- "${c.nome}"`).join('\n') || '(Nenhuma cadastrada)'}
 Preencha "categoriaSugerida" com a categoria mais aderente.
+8. Código Identificador da Transação (idOrigem):
+- Se o extrato/fatura apresentar código de transação, identificador único, "Nº Documento", "Documento", "NSU", "ID Transação" ou código de autenticação correspondente ao lançamento, extraia esse valor no campo "idOrigem". Isso é crucial para diferenciar e rastrear lançamentos únicos! Se não houver, preencha null.
 
 FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
 {
@@ -643,6 +813,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       "natureza": "DESPESA" | "RECEITA" | "TRANSFERENCIA_PROPRIA" | "APORTE_PATRIMONIAL",
       "contaSugerida": "string ou null",
       "tipoConta": "CONTA_CORRENTE" | "CARTAO_CREDITO" | null,
+      "numeroConta": "string ou null",
+      "digitosCartao": "string ou null",
       "categoriaSugerida": "string ou null",
       "parcelaAtual": number ou null,
       "totalParcelas": number ou null,
@@ -713,10 +885,13 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       throw new Error('A resposta do Gemini não continha texto de saída.');
     }
 
+    // TASK-49: contagem real de tokens devolvida pelo Gemini (usageMetadata)
+    const tokens = tokensDeUsageGemini(data.usageMetadata);
+
     const parsedJson = JSON.parse(rawText);
     const lista = Array.isArray(parsedJson) ? parsedJson : parsedJson.transacoes || [];
 
-    return lista
+    const transacoes = lista
       .map((t: any) => ({
         dataMovimento: t.dataMovimento || contexto.dataReferencia,
         descricao: String(t.descricao || 'Lançamento extraído'),
@@ -733,6 +908,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
         confianca: Number(t.confianca ?? 0.95),
       }))
       .filter((t: LancamentoConsolidadoIa) => t.valor > 0);
+
+    return { transacoes, tokens };
   }
 
   public extrairLocalDeterministic(params: {
@@ -772,6 +949,18 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       }
     }
 
+    // 1.1. Tentar parser especializado para Extrato Santander
+    if (SantanderStatementPdfParser.isSantanderStatement(texto)) {
+      const transacoesSantander = SantanderStatementPdfParser.parse(texto, {
+        dataReferencia: contexto.dataReferencia,
+        categorias: contexto.categorias,
+        nomeTitular: contexto.nomeTitular,
+      });
+      if (transacoesSantander.length > 0) {
+        return transacoesSantander;
+      }
+    }
+
     // 2. Tentar parser universal (OFX, CSV, JSON)
     if (ext === '.ofx' || ext === '.csv' || ext === '.json' || texto.includes('<OFX>') || texto.includes(';')) {
       const parseRes = this.universalParser.parse(texto, nomeArquivo);
@@ -779,8 +968,41 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
         return parseRes.transacoes.map((t) => {
           let natureza: 'DESPESA' | 'RECEITA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL' = (t.natureza as any) || 'DESPESA';
           const descLower = t.descricao.toLowerCase();
+          const nomeTitular = contexto.nomeTitular;
+          let isTransferenciaPropriaTitular = false;
+          if (nomeTitular) {
+            const partesNome = nomeTitular
+              .trim()
+              .split(/\s+/)
+              .filter((p) => p.length >= 3);
+            const containsNomeCompleto = t.descricao.toUpperCase().includes(nomeTitular.toUpperCase());
+            const containsPartesSignificativas =
+              partesNome.length >= 2 &&
+              partesNome.every((p) => t.descricao.toUpperCase().includes(p.toUpperCase()));
+
+            if (containsNomeCompleto || containsPartesSignificativas) {
+              isTransferenciaPropriaTitular = true;
+            }
+          }
+
           if (t.isPagamentoFatura || descLower.includes('fatura') || descLower.includes('pagamento do cartao')) {
             natureza = 'TRANSFERENCIA_PROPRIA';
+          } else if (isTransferenciaPropriaTitular) {
+            natureza = 'TRANSFERENCIA_PROPRIA';
+          } else if (
+            descLower.includes('aplicação') ||
+            descLower.includes('aplicacao') ||
+            descLower.includes('investimento') ||
+            descLower.includes('tesouro direto') ||
+            descLower.includes('deposito poupanca') ||
+            descLower.includes('depósito poupança') ||
+            descLower.includes('deposito poupança') ||
+            descLower.includes('depósito poupanca') ||
+            descLower.includes('compra acoes') ||
+            descLower.includes('compra ações') ||
+            /\b(cdb|rdb|lci|lca)\b/i.test(descLower)
+          ) {
+            natureza = 'APORTE_PATRIMONIAL';
           } else if (
             descLower.includes('salario') ||
             descLower.includes('salário') ||
@@ -818,6 +1040,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
             natureza,
             contaSugerida: parseRes.contaSugerida?.nome || this.deduzirNomeContaPorArquivo(nomeArquivo),
             tipoConta: tipoContaDeduzido,
+            numeroConta: parseRes.contaSugerida?.numeroConta || null,
+            digitosCartao: parseRes.contaSugerida?.digitosCartao || null,
             categoriaSugerida: t.categoriaSugerida || this.deduzirCategoria(t.descricao, contexto.categorias),
             parcelaAtual: null,
             totalParcelas: null,
@@ -858,9 +1082,10 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
 
   private deduzirNomeContaPorArquivo(nome: string): string {
     const lower = nome.toLowerCase();
-    if (lower.includes('nubank')) return 'Nubank';
+    if (lower.includes('nubank') || lower.includes('nu_') || lower.startsWith('nu')) return 'Nubank';
     if (lower.includes('itau') || lower.includes('itaú')) return 'Itaú Unibanco';
     if (lower.includes('inter')) return 'Banco Inter';
+    if (lower.includes('c6')) return 'C6 Bank';
     if (lower.includes('santander')) return 'Santander';
     if (lower.includes('bradesco')) return 'Bradesco';
     if (lower.includes('caixa')) return 'Caixa Econômica';

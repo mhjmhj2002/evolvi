@@ -32,14 +32,18 @@ export type FaseAtiva = 'FASE_1' | 'FASE_2' | 'FASE_3';
 export interface TopBarProps {
   faseAtiva: FaseAtiva;
   onSelectFase?: (fase: FaseAtiva) => void;
+  totalSuspeitasPendentes?: number;
+  onOpenSuspeitas?: () => void;
+  onOpenInvestimentos?: () => void;
 }
 
-export type NavTab = 'dashboard' | 'lancamentos' | 'importacao' | 'semaforo' | 'compromissos' | 'cadastros' | 'fases';
+export type NavTab = 'dashboard' | 'lancamentos' | 'investimentos' | 'suspeitas' | 'importacao' | 'semaforo' | 'compromissos' | 'cadastros' | 'fases';
 
 export interface BottomNavProps {
   activeTab: NavTab;
   onSelectTab: (tab: NavTab) => void;
   onOpenNewTransaction: () => void;
+  totalSuspeitasPendentes?: number;
 }
 
 export interface StatusBadgeProps {

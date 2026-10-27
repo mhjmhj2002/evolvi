@@ -44,6 +44,45 @@ export class C6InvoicePdfParser {
   }
 
   /**
+   * Extrai metadados estruturados de fatura (vencimento e valor total)
+   */
+  public static extrairMetadadosFatura(texto: string): {
+    eFaturaCartao: boolean;
+    faturaDataVencimento: Date | null;
+    faturaValorTotal: number | null;
+  } {
+    const isFatura = /fatura|transa[cç][oõ]es\s+do\s+cart[aã]o|total\s+da\s+fatura/i.test(texto) && !/extrato\s+de\s+conta/i.test(texto);
+    if (!isFatura) {
+      return { eFaturaCartao: false, faturaDataVencimento: null, faturaValorTotal: null };
+    }
+
+    let dataVencimento: Date | null = null;
+    let valorTotal: number | null = null;
+
+    const vencimentoMatch = texto.match(/vencimento:\s*(\d{2})\/(\d{2})\/(\d{4})/i) ||
+      texto.match(/vencimento[\s\S]{0,30}(\d{2})\/(\d{2})\/(\d{4})/i);
+    if (vencimentoMatch) {
+      dataVencimento = new Date(`${vencimentoMatch[3]}-${vencimentoMatch[2]}-${vencimentoMatch[1]}T12:00:00.000Z`);
+    }
+
+    const totalMatch = texto.match(/total\s+(?:da\s+)?fatura[\s\S]{0,30}(?:r\$\s*)?([\d\.,]+)/i) ||
+      texto.match(/valor\s+total[\s\S]{0,30}(?:r\$\s*)?([\d\.,]+)/i);
+    if (totalMatch) {
+      const clean = totalMatch[1].replace(/\./g, '').replace(',', '.').trim();
+      const num = parseFloat(clean);
+      if (!isNaN(num) && num > 0) {
+        valorTotal = num;
+      }
+    }
+
+    return {
+      eFaturaCartao: true,
+      faturaDataVencimento: dataVencimento,
+      faturaValorTotal: valorTotal,
+    };
+  }
+
+  /**
    * Realiza a extração tabular das transações da fatura C6 Bank.
    */
   public static parse(
@@ -89,6 +128,12 @@ export class C6InvoicePdfParser {
       /C6 Carbon (?:Virtual )?Final (\d{4})\s*-\s*([A-Z\s]+?)(?:\s+(?:Cartão Virtual|Subtotal)|\s*$)/i;
 
     let currentCardNome = 'Cartão C6 Carbon';
+    let currentDigitosCartao: string | null = null;
+
+    // Detectar conta corrente no cabeçalho do extrato se presente (ex: "agência: 1 • conta: 24220973-2")
+    const contaCorrenteMatch = texto.match(/ag[êe]ncia:\s*(\d+)\s*[•·\-\/]\s*conta:\s*([0-9\-]+)/i);
+    const numeroContaExtrato = contaCorrenteMatch ? contaCorrenteMatch[2].replace(/\D/g, '') : null;
+    const agenciaExtrato = contaCorrenteMatch ? contaCorrenteMatch[1].trim() : null;
 
     // 3. Regex para linhas de transação:
     // Fatura Cartão: "     28 jan    BOTOESTHETIC VV LTDA - Parcela 12/12                                75,00"
@@ -119,6 +164,7 @@ export class C6InvoicePdfParser {
         const finalDigitos = cardMatch[1];
         const titular = cardMatch[2].trim();
         currentCardNome = `C6 Carbon Final ${finalDigitos} (${titular})`;
+        currentDigitosCartao = finalDigitos;
       }
 
       // Caso A: Extrato de Conta Corrente C6 Bank
@@ -157,6 +203,8 @@ export class C6InvoicePdfParser {
             natureza,
             contaSugerida: 'Conta C6 Bank',
             tipoConta: 'CONTA_CORRENTE',
+            numeroConta: numeroContaExtrato,
+            digitosCartao: null,
             categoriaSugerida,
             parcelaAtual: null,
             totalParcelas: null,
@@ -208,18 +256,30 @@ export class C6InvoicePdfParser {
         const isPagamento =
           /pag(amento)?\s*(de)?\s*(fat(ura)?|fatura)|pgto\s*fat(ura)?|fatura\s*boleto|pagamento\s*recebido|cr[eé]dito\s*pagamento/i.test(descBruta);
 
-        const natureza = isPagamento ? 'TRANSFERENCIA_PROPRIA' : 'DESPESA';
+        // Estornos, reembolsos e créditos na fatura abatem despesas e devem ter natureza RECEITA
+        const isEstorno =
+          /estorno|reembolso|devolu[cç][aã]o|cr[eé]dito\s+na\s+fatura/i.test(descBruta);
+
+        const natureza = isPagamento
+          ? 'TRANSFERENCIA_PROPRIA'
+          : isEstorno
+          ? 'RECEITA'
+          : 'DESPESA';
         const categoriaSugerida = isPagamento
           ? null
           : this.classificarCategoriaPof(descBruta, contexto?.categorias);
 
-        // BUG-12: A dataMovimento DEVE ser estritamente a data em que a compra ocorreu.
-        // NUNCA utilizar data de vencimento ou fechamento da fatura como data do lançamento.
-        const dataMovimentoFinal = dataMovimento;
+        // Compras parceladas (Parcela X/Y): a data impressa na fatura representa a compra original.
+        // O débito e exigibilidade financeira desta parcela pertencem à competência da fatura em cobrança!
+        // Portanto, a data de movimento financeiro da parcela é alocada no mês/ano da fatura,
+        // preservando a data de compra original na observação para auditoria exata.
+        let dataMovimentoFinal = dataMovimento;
         let observacaoTransacao = `Fatura C6 Bank - ${currentCardNome}`;
 
         if (parcelaAtual !== null && totalParcelas !== null) {
-          observacaoTransacao += ` (Parcela ${parcelaAtual}/${totalParcelas})`;
+          const diaFechamentoFatura = vencimentoMatch ? vencimentoMatch[1] : '10';
+          dataMovimentoFinal = `${anoFatura}-${mesFatura}-${diaFechamentoFatura}`;
+          observacaoTransacao += ` (Compra original parcelada em ${dia}/${mes}/${ano})`;
         }
 
         transacoes.push({
@@ -229,6 +289,8 @@ export class C6InvoicePdfParser {
           natureza,
           contaSugerida: currentCardNome,
           tipoConta: 'CARTAO_CREDITO',
+          numeroConta: null,
+          digitosCartao: currentDigitosCartao,
           categoriaSugerida,
           parcelaAtual,
           totalParcelas,
