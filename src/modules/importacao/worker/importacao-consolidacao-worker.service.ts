@@ -6,7 +6,13 @@ import {
   ImportacaoEventBus,
   ImportacaoArquivoStagingCarregadoEvent,
 } from '../../../infrastructure/events/importacao-event-bus.js';
-import { gerarChaveDedupe, extrairRaizComerciante, extrairInfoParcelamento } from '../../movimento/movimento.util.js';
+import {
+  gerarChaveDedupe,
+  extrairRaizComerciante,
+  extrairInfoParcelamento,
+  extrairFavorecidoObservacao,
+  correspondemRegraVendedor,
+} from '../../movimento/movimento.util.js';
 import { classificadorCombinatorioService } from '../../movimento/classificador-combinatorio.service.js';
 import { addMesesCompetencia } from '../../parcelamento/parcelamento.util.js';
 import { inferirCompetenciaFaturaDocumento } from '../../movimento/movimento-recalculo.service.js';
@@ -337,6 +343,11 @@ export class ImportacaoConsolidacaoWorkerService {
     // Mapeamento de contaId resolvido por arquivoId para catalogação com alta fidelidade
     const arquivoContasMap = new Map<string, string>();
 
+    // Carrega regras de vendedor/favorecido do usuário para correspondência inteligente
+    const regrasVendedorUsuario = await prisma.regraVendedorCategoria.findMany({
+      where: { usuarioId: lote.usuarioId },
+    });
+
     for (const item of stagingItens) {
       try {
         const cacheKey = `${item.contaSugerida || ''}_${item.tipoConta || ''}_${item.numeroConta || ''}_${item.digitosCartao || ''}_${item.arquivoOrigem}`;
@@ -377,11 +388,30 @@ export class ImportacaoConsolidacaoWorkerService {
           idOrigem: item.idOrigem,
         });
 
+        // Chave Dedupe alternativa sem idOrigem para cruzar extratos onde idOrigem não foi extraído
+        const chaveDedupeSemId = gerarChaveDedupe({
+          contaId: contaInfo.id,
+          dataMovimento: dataMovimentoStr,
+          valor: valorNum,
+          descricao: item.descricao,
+        });
+
         // Verificar duplicata no banco de movimentos oficiais
+        const orConditions: any[] = [{ chaveDedupe }];
+        if (chaveDedupeSemId !== chaveDedupe) {
+          orConditions.push({ chaveDedupe: chaveDedupeSemId });
+        }
+        orConditions.push({
+          contaId: contaInfo.id,
+          dataMovimento: item.dataMovimento,
+          valor: valorNum,
+          descricao: item.descricao,
+        });
+
         const movimentoExistente = await prisma.movimento.findFirst({
           where: {
             usuarioId: lote.usuarioId,
-            chaveDedupe,
+            OR: orConditions,
           },
         });
 
@@ -508,19 +538,28 @@ export class ImportacaoConsolidacaoWorkerService {
         let categoriaFixadaAutomaticamente = false;
 
         const raizComerciante = extrairRaizComerciante(item.descricao);
-        if (raizComerciante && raizComerciante.length >= 3) {
-          const regraVendedor = await prisma.regraVendedorCategoria.findFirst({
-            where: {
-              usuarioId: lote.usuarioId,
-              termoVendedor: { equals: raizComerciante, mode: 'insensitive' },
-            },
+        const favorecidoObservacao = extrairFavorecidoObservacao(item.observacao);
+
+        if (regrasVendedorUsuario.length > 0) {
+          const regraEncontrada = regrasVendedorUsuario.find((regra) => {
+            if (raizComerciante && correspondemRegraVendedor(raizComerciante, regra.termoVendedor)) {
+              return true;
+            }
+            if (favorecidoObservacao && correspondemRegraVendedor(favorecidoObservacao, regra.termoVendedor)) {
+              return true;
+            }
+            if (correspondemRegraVendedor(item.descricao, regra.termoVendedor)) {
+              return true;
+            }
+            return false;
           });
-          if (regraVendedor) {
-            categoriaIdFinal = regraVendedor.categoriaId;
+
+          if (regraEncontrada) {
+            categoriaIdFinal = regraEncontrada.categoriaId;
             categoriaFixadaAutomaticamente = true;
             // Incrementa o contador de uso da regra
             await prisma.regraVendedorCategoria.update({
-              where: { id: regraVendedor.id },
+              where: { id: regraEncontrada.id },
               data: {
                 totalAplicacoes: { increment: 1 },
                 atualizadoEm: new Date(),
@@ -842,7 +881,10 @@ export class ImportacaoConsolidacaoWorkerService {
             ],
           },
           {
-            NOT: { statusFinal: 'DUPLICADO' },
+            OR: [
+              { statusFinal: null },
+              { statusFinal: { not: 'DUPLICADO' } },
+            ],
           },
         ],
       },

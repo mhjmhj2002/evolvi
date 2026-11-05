@@ -109,11 +109,13 @@ body::before {
 }
 
 /* App Shell Wrapper */
+/* App Shell Wrapper */
 .app-container {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  max-width: 680px;
+  width: 100%;
+  max-width: 900px;
   margin: 0 auto;
   position: relative;
   z-index: 1;
@@ -125,6 +127,7 @@ body::before {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  width: 100%;
 }
 
 /* Top Bar Component */
@@ -134,7 +137,7 @@ body::before {
   left: 50%;
   transform: translateX(-50%);
   width: 100%;
-  max-width: 680px;
+  max-width: 900px;
   height: var(--top-bar-height);
   padding: 8px 16px;
   display: flex;
@@ -229,7 +232,7 @@ body::before {
   left: 50%;
   transform: translateX(-50%);
   width: 100%;
-  max-width: 680px;
+  max-width: 900px;
   height: var(--bottom-nav-height);
   background: rgba(11, 17, 30, 0.92);
   backdrop-filter: var(--glass-blur);
@@ -558,12 +561,13 @@ body::before {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  padding: 12px 14px;
-  font-size: 0.95rem;
+  padding: 10px 12px;
+  font-size: 0.9rem;
   font-family: var(--font-sans);
-  min-height: var(--touch-target-min);
+  min-height: 40px;
   outline: none;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  box-sizing: border-box;
 }
 
 .form-input:focus, .form-select:focus {
@@ -571,26 +575,122 @@ body::before {
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
 }
 
-.btn-primary {
-  background: linear-gradient(135deg, #0284c7 0%, #2563eb 100%);
-  color: white;
-  border: none;
-  border-radius: var(--radius-sm);
-  font-weight: 700;
-  font-size: 0.95rem;
-  min-height: var(--touch-target-min);
-  padding: 0 20px;
-  cursor: pointer;
-  display: flex;
+.btn {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
-  transition: filter 0.2s ease, transform 0.15s ease;
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 0.9rem;
+  border-radius: var(--radius-sm);
+  padding: 8px 16px;
+  min-height: 40px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  text-decoration: none;
+  transition: all 0.2s ease;
+  user-select: none;
 }
 
-.btn-primary:active {
+.btn:disabled, .btn[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed !important;
+  pointer-events: none;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #0284c7 0%, #2563eb 100%);
+  color: #ffffff;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.45);
+}
+
+.btn-primary:active:not(:disabled) {
   transform: scale(0.98);
+}
+
+.btn-secondary {
+  background: rgba(30, 41, 59, 0.7);
+  color: var(--text-primary);
+  border: 1px solid var(--border-card);
+  backdrop-filter: blur(8px);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: rgba(51, 65, 85, 0.9);
+  border-color: rgba(148, 163, 184, 0.4);
+  color: #ffffff;
+}
+
+.btn-secondary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+/* Modal Dialog System */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(5, 8, 15, 0.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.modal-dialog {
+  background: var(--bg-card-solid);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg), 0 0 30px rgba(0, 0, 0, 0.6);
+  width: 100%;
+  max-width: 540px;
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: fadeInLogin 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.modal-dialog-header {
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(15, 23, 42, 0.6);
+  flex-shrink: 0;
+}
+
+.modal-dialog-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.modal-dialog-footer {
+  padding: 16px 20px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(15, 23, 42, 0.6);
+  flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 /* ==========================================================================

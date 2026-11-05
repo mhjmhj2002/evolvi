@@ -424,6 +424,15 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
 
       await ImportacaoTentativasService.recalcularContadoresLote(arquivo.loteId);
 
+      // Dispara o processamento do lote pelo Worker 1 em segundo plano
+      const { importacaoIaWorkerService } = await import('./worker/importacao-ia-worker.service.js');
+      importacaoIaWorkerService.processarLote(arquivo.loteId).catch((err: unknown) => {
+        console.error(
+          `[ImportacaoRoutes] Erro ao disparar processamento pós-confirmação do lote ${arquivo.loteId}:`,
+          err
+        );
+      });
+
       return reply.status(200).send({
         statusCode: 200,
         message: `Reprocessamento confirmado para o arquivo "${arquivo.nomeArquivo}".`,
@@ -710,6 +719,48 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
           statusCode: status,
           error: isNotFound ? 'Not Found' : 'Internal Server Error',
           message: err.message || 'Erro ao carregar lançamentos do arquivo.',
+        });
+      }
+    });
+
+    /**
+     * DELETE /api/importacao/arquivos/:id/fatura
+     * Exclui a importação de uma fatura de cartão e todos os seus lançamentos vinculados,
+     * permitindo reimportar o documento sem duplicidade ou resquícios.
+     */
+    authApp.delete('/arquivos/:id/fatura', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const params = arquivoIdParamSchema.safeParse(request.params);
+
+      if (!params.success) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'ID do arquivo inválido.',
+          issues: params.error.issues,
+        });
+      }
+
+      const { conciliacaoService } = await import('./conciliacao.service.js');
+
+      try {
+        const resultado = await conciliacaoService.excluirImportacaoFaturaComLancamentos(
+          params.data.id,
+          usuarioId
+        );
+
+        return reply.status(200).send({
+          statusCode: 200,
+          message: `Fatura "${resultado.nomeArquivo}" e seus lançamentos foram excluídos com sucesso.`,
+          resultado,
+        });
+      } catch (err: any) {
+        const isNotFound = err.message?.includes('não encontrado') || err.message?.includes('não autorizado');
+        const status = isNotFound ? 404 : 500;
+        return reply.status(status).send({
+          statusCode: status,
+          error: isNotFound ? 'Not Found' : 'Internal Server Error',
+          message: err.message || 'Erro ao excluir importação da fatura.',
         });
       }
     });

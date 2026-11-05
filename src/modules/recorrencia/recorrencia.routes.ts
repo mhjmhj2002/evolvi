@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { prisma } from '../../infrastructure/database/prisma.js';
 import { ensureAuthenticated } from '../../middlewares/auth.middleware.js';
+import { recorrenciaSincronizacaoService } from './recorrencia-sincronizacao.service.js';
 import {
   createRecorrenciaSchema,
   updateRecorrenciaSchema,
@@ -15,6 +16,13 @@ export const recorrenciaRoutes: FastifyPluginAsync = async (app: FastifyInstance
     const usuarioId = request.user.sub;
     const query = queryRecorrenciaSchema.safeParse(request.query);
 
+    // Auto-sincronização de segurança sob demanda (atualização e purga de despesas obsoletas)
+    try {
+      await recorrenciaSincronizacaoService.sincronizarParaUsuario(usuarioId);
+    } catch (syncErr) {
+      console.error(`[RecorrenciaRoutes] Erro na auto-sincronização de recorrências [${usuarioId}]:`, syncErr);
+    }
+
     const where: any = { usuarioId };
     if (query.success) {
       if (query.data.essencial !== undefined) {
@@ -22,7 +30,11 @@ export const recorrenciaRoutes: FastifyPluginAsync = async (app: FastifyInstance
       }
       if (query.data.status) {
         where.status = query.data.status;
+      } else {
+        where.status = { not: 'CANCELADA' };
       }
+    } else {
+      where.status = { not: 'CANCELADA' };
     }
 
     const recorrencias = await prisma.recorrencia.findMany({
@@ -203,8 +215,11 @@ export const recorrenciaRoutes: FastifyPluginAsync = async (app: FastifyInstance
       });
     }
 
-    await prisma.recorrencia.delete({
+    // Exclusão por status CANCELADA para registrar a decisão do usuário
+    // e impedir que a sincronização automática recrie a recorrência
+    await prisma.recorrencia.update({
       where: { id },
+      data: { status: 'CANCELADA' },
     });
 
     return reply.status(200).send({

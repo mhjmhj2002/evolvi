@@ -8,13 +8,23 @@ import {
   importarMovimentosSchema,
   splitMovimentoSchema,
   vereditoSuspeitaSchema,
+  excluirPorCompetenciaSchema,
 } from './movimento.schema.js';
 import {
   gerarChaveDedupe,
   extrairRaizComerciante,
   extrairInfoParcelamento,
   gerarRegexParcelasIrmas,
+  extrairFavorecidoObservacao,
+  correspondemRegraVendedor,
 } from './movimento.util.js';
+import {
+  limparChaveAcesso,
+  validarChaveAcessoNfe,
+  extrairPayloadQrCodeNfe,
+  decomporChaveAcesso,
+  consultarPortalSefaz,
+} from './nota-fiscal.util.js';
 import { REGEX_APORTES_INVESTIMENTOS, MovimentoRecalculoService } from './movimento-recalculo.service.js';
 import { classificadorCombinatorioService } from './classificador-combinatorio.service.js';
 import { env } from '../../config/env.js';
@@ -30,6 +40,202 @@ import { SuspeitaMovimentoWorkerService } from './suspeita-movimento-worker.serv
 export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   app.addHook('preHandler', ensureAuthenticated);
 
+  // GET /api/movimentos/nota-fiscal/verificar/:chave
+  // Verifica se a nota já foi lançada para o usuário autenticado; se sim, retorna detalhes do lançamento
+  app.get('/nota-fiscal/verificar/:chave', async (request, reply) => {
+    const usuarioId = request.user.sub;
+    const { chave } = request.params as { chave: string };
+
+    const chaveLimpa = limparChaveAcesso(chave);
+    if (!validarChaveAcessoNfe(chaveLimpa)) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Chave de acesso inválida (deve conter 44 dígitos numéricos com dígito verificador válido).',
+      });
+    }
+
+    const lancamentoExistente = await prisma.movimento.findFirst({
+      where: {
+        usuarioId,
+        chaveAcessoNfe: chaveLimpa,
+      },
+      include: {
+        conta: {
+          select: {
+            id: true,
+            nome: true,
+            tipo: true,
+          },
+        },
+        categoria: {
+          select: {
+            id: true,
+            nome: true,
+          },
+        },
+      },
+    });
+
+    if (lancamentoExistente) {
+      return reply.status(200).send({
+        duplicada: true,
+        message: 'Esta nota fiscal já foi lançada anteriormente.',
+        movimento: {
+          id: lancamentoExistente.id,
+          dataMovimento: lancamentoExistente.dataMovimento.toISOString().split('T')[0],
+          competencia: lancamentoExistente.competencia,
+          descricao: lancamentoExistente.descricao,
+          valor: Number(lancamentoExistente.valor),
+          natureza: lancamentoExistente.natureza,
+          conta: lancamentoExistente.conta,
+          categoria: lancamentoExistente.categoria,
+          chaveAcessoNfe: lancamentoExistente.chaveAcessoNfe,
+        },
+      });
+    }
+
+    return reply.status(200).send({
+      duplicada: false,
+      message: 'Nota fiscal inédita para este usuário.',
+      chaveAcessoNfe: chaveLimpa,
+    });
+  });
+
+  // POST /api/movimentos/nota-fiscal/consultar
+  // Endpoint para decodificar URL da SEFAZ ou chave e extrair metadados da compra (data, valor, CNPJ, razão social/loja, categoria sugerida)
+  app.post('/nota-fiscal/consultar', async (request, reply) => {
+    const usuarioId = request.user.sub;
+    const body = request.body as { input?: string; chaveOuUrl?: string };
+    const rawInput = body?.input || body?.chaveOuUrl;
+
+    if (!rawInput || typeof rawInput !== 'string') {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'É obrigatório informar a chave de 44 dígitos ou a URL/payload do QR Code.',
+      });
+    }
+
+    const payload = extrairPayloadQrCodeNfe(rawInput);
+    if (!payload) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Não foi possível extrair uma chave de acesso válida de 44 dígitos a partir do texto/URL informado.',
+      });
+    }
+
+    const chave = payload.chaveAcesso;
+    const decomposta = decomporChaveAcesso(chave);
+
+    // 1. Checagem prévia de duplicidade no banco do usuário
+    const lancamentoExistente = await prisma.movimento.findFirst({
+      where: {
+        usuarioId,
+        chaveAcessoNfe: chave,
+      },
+      include: {
+        conta: { select: { id: true, nome: true, tipo: true } },
+        categoria: { select: { id: true, nome: true } },
+      },
+    });
+
+    // 2. Consulta complementar ao portal da SEFAZ se o valor total não veio no QR Code (ex: NFC-e online Versão 2.0)
+    let valorTotalFinal = payload.valorTotal ?? null;
+    let dadosSefazHtml: { valorTotal?: number; razaoSocial?: string; dataEmissao?: string } | null = null;
+
+    if (!valorTotalFinal && payload.urlOriginal?.startsWith('http')) {
+      try {
+        dadosSefazHtml = await consultarPortalSefaz(payload.urlOriginal, 3500);
+        if (dadosSefazHtml?.valorTotal) {
+          valorTotalFinal = dadosSefazHtml.valorTotal;
+        }
+      } catch {
+        // Falha graciosa na consulta externa
+      }
+    }
+
+    // 3. Extração/estimativa da data
+    let dataEmissaoSugerida: string;
+    if (dadosSefazHtml?.dataEmissao) {
+      dataEmissaoSugerida = dadosSefazHtml.dataEmissao;
+    } else {
+      const ano = decomposta?.ano || new Date().getFullYear();
+      const mes = decomposta?.mes ? String(decomposta.mes).padStart(2, '0') : String(new Date().getMonth() + 1).padStart(2, '0');
+      const dia = payload.diaEmissao ? String(payload.diaEmissao).padStart(2, '0') : '01';
+      dataEmissaoSugerida = `${ano}-${mes}-${dia}`;
+    }
+
+    // 4. Busca no Catálogo de Regras de Vendedor (TASK-48) para pré-preenchimento
+    // Tenta pelo CNPJ ou por termos conhecidos
+    let categoriaSugeridaId: string | null = null;
+    let categoriaSugeridaNome: string | null = null;
+    let razaoSocialSugerida = dadosSefazHtml?.razaoSocial || `Compra NFC-e (${decomposta?.ufSigla || 'BR'})`;
+
+    if (decomposta?.cnpj) {
+      const regraCnpj = await prisma.regraVendedorCategoria.findFirst({
+        where: {
+          usuarioId,
+          termoVendedor: { contains: decomposta.cnpj, mode: 'insensitive' },
+        },
+        include: { categoria: true },
+      });
+
+      if (regraCnpj?.categoria) {
+        categoriaSugeridaId = regraCnpj.categoriaId;
+        categoriaSugeridaNome = regraCnpj.categoria.nome;
+      }
+    }
+
+    // Se ainda não encontrou categoria, busca categoria padrão de despesa frequente (ex: Supermercado / Alimentação)
+    if (!categoriaSugeridaId) {
+      const catAlimentacao = await prisma.categoria.findFirst({
+        where: {
+          OR: [{ usuarioId }, { usuarioId: null }],
+          nome: { in: ['Supermercado', 'Alimentação', 'Mercado', 'Compras do Dia a Dia'], mode: 'insensitive' },
+        },
+      });
+      if (catAlimentacao) {
+        categoriaSugeridaId = catAlimentacao.id;
+        categoriaSugeridaNome = catAlimentacao.nome;
+      }
+    }
+
+    const compAno = dataEmissaoSugerida.substring(0, 4);
+    const compMes = dataEmissaoSugerida.substring(5, 7);
+
+    return reply.status(200).send({
+      sucesso: true,
+      duplicada: Boolean(lancamentoExistente),
+      movimentoExistente: lancamentoExistente ? {
+        id: lancamentoExistente.id,
+        dataMovimento: lancamentoExistente.dataMovimento.toISOString().split('T')[0],
+        competencia: lancamentoExistente.competencia,
+        descricao: lancamentoExistente.descricao,
+        valor: Number(lancamentoExistente.valor),
+        natureza: lancamentoExistente.natureza,
+        conta: lancamentoExistente.conta,
+        categoria: lancamentoExistente.categoria,
+        chaveAcessoNfe: lancamentoExistente.chaveAcessoNfe,
+      } : null,
+      dadosNota: {
+        chaveAcesso: chave,
+        cnpj: decomposta?.cnpj,
+        uf: decomposta?.ufSigla,
+        modelo: decomposta?.modelo === '65' ? 'NFC-e (Cupom Fiscal)' : 'NF-e',
+        numero: decomposta?.numero,
+        serie: decomposta?.serie,
+        valorTotal: valorTotalFinal,
+        dataEmissao: dataEmissaoSugerida,
+        competencia: `${compAno}-${compMes}`,
+        descricaoSugerida: razaoSocialSugerida,
+        categoriaSugeridaId,
+        categoriaSugeridaNome,
+      },
+    });
+  });
+
   // GET /api/movimentos (extrato filtrado com totalizadores separados para consumo real vs transferências/faturas)
   app.get('/', async (request, reply) => {
     const usuarioId = request.user.sub;
@@ -44,7 +250,21 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       });
     }
 
-    const { competencia, dataInicio, dataFim, busca, contaId, categoriaId, natureza, status } = queryParse.data;
+    const { competencia, dataInicio, dataFim, busca, contaId, categoriaId, categoriaRaizId, natureza, status } = queryParse.data;
+
+    let categoriaIdsFiltro: string[] | undefined = undefined;
+    if (categoriaRaizId) {
+      const subs = await prisma.categoria.findMany({
+        where: {
+          OR: [
+            { id: categoriaRaizId },
+            { categoriaPaiId: categoriaRaizId },
+          ],
+        },
+        select: { id: true },
+      });
+      categoriaIdsFiltro = subs.map((s) => s.id);
+    }
 
     const dataFiltro: any = {};
     if (dataInicio) {
@@ -59,6 +279,12 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       ...(competencia && { competencia }),
       ...(contaId && { contaId }),
       ...(categoriaId && { categoriaId }),
+      ...(categoriaIdsFiltro && !categoriaId && {
+        OR: [
+          { categoriaId: { in: categoriaIdsFiltro } },
+          { rateios: { some: { categoriaId: { in: categoriaIdsFiltro } } } },
+        ],
+      }),
       ...(natureza && { natureza }),
       ...(status && { status }),
       ...(Object.keys(dataFiltro).length > 0 && { dataMovimento: dataFiltro }),
@@ -137,6 +363,7 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
         natureza: mov.natureza,
         status: mov.status,
         chaveDedupe: mov.chaveDedupe,
+        chaveAcessoNfe: mov.chaveAcessoNfe,
         categoriaFixadaPeloUsuario: mov.categoriaFixadaPeloUsuario,
         validadoDedupe: mov.validadoDedupe,
         transferenciaVinculoId: mov.transferenciaVinculoId,
@@ -244,6 +471,49 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       });
     }
 
+    // TASK-54: Bloqueio rigoroso de duplicidade se a chave de acesso da Nota Fiscal já estiver cadastrada para este usuário
+    let chaveNfeNormalizada: string | null = null;
+    if (data.chaveAcessoNfe) {
+      chaveNfeNormalizada = limparChaveAcesso(data.chaveAcessoNfe);
+      if (!validarChaveAcessoNfe(chaveNfeNormalizada)) {
+        return reply.status(400).send({
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Chave de acesso da Nota Fiscal inválida (verifique os 44 dígitos e o dígito verificador).',
+        });
+      }
+
+      const notaExistente = await prisma.movimento.findFirst({
+        where: {
+          usuarioId,
+          chaveAcessoNfe: chaveNfeNormalizada,
+        },
+        include: {
+          conta: { select: { id: true, nome: true, tipo: true } },
+          categoria: { select: { id: true, nome: true } },
+        },
+      });
+
+      if (notaExistente) {
+        return reply.status(409).send({
+          statusCode: 409,
+          error: 'Conflict',
+          message: 'Esta nota fiscal já foi lançada anteriormente.',
+          duplicadaNfe: true,
+          movimentoExistente: {
+            id: notaExistente.id,
+            dataMovimento: notaExistente.dataMovimento.toISOString().split('T')[0],
+            competencia: notaExistente.competencia,
+            descricao: notaExistente.descricao,
+            valor: Number(notaExistente.valor),
+            conta: notaExistente.conta,
+            categoria: notaExistente.categoria,
+            chaveAcessoNfe: notaExistente.chaveAcessoNfe,
+          },
+        });
+      }
+    }
+
     // Tratar Transferência Própria entre Contas ou Pagamento de Fatura de Cartão
     const isTransferencia =
       data.natureza === 'TRANSFERENCIA_PROPRIA' ||
@@ -291,6 +561,7 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
             natureza: 'TRANSFERENCIA_PROPRIA',
             status: data.status,
             chaveDedupe: chaveDedupeCalculada,
+            chaveAcessoNfe: chaveNfeNormalizada,
             observacao: data.observacao,
             origemDocumento: data.origemDocumento,
           },
@@ -363,6 +634,7 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
           natureza: naturezaFinal,
           status: data.status,
           chaveDedupe: chaveDedupeCalculada,
+          chaveAcessoNfe: chaveNfeNormalizada,
           idOrigem: data.idOrigem,
           observacao: data.observacao,
           origemDocumento: data.origemDocumento,
@@ -495,8 +767,27 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
         ...(data.natureza && { natureza: data.natureza }),
         ...(data.status && { status: data.status }),
         ...(data.chaveDedupe !== undefined && { chaveDedupe: data.chaveDedupe }),
+        ...(data.chaveAcessoNfe !== undefined && {
+          chaveAcessoNfe: data.chaveAcessoNfe ? limparChaveAcesso(data.chaveAcessoNfe) : null,
+        }),
         ...(data.observacao !== undefined && { observacao: data.observacao }),
         ...(data.origemDocumento !== undefined && { origemDocumento: data.origemDocumento }),
+      },
+      include: {
+        conta: {
+          select: {
+            id: true,
+            nome: true,
+            tipo: true,
+          },
+        },
+        categoria: {
+          select: {
+            id: true,
+            nome: true,
+            categoriaPaiId: true,
+          },
+        },
       },
     });
 
@@ -541,24 +832,57 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       }
     }
 
-    // Se o usuário solicitou propagação da categoria para o mesmo vendedor
+    // Se o usuário solicitou propagação da categoria ou natureza para lançamentos similares / mesmo vendedor
     // TASK-43: Propaga apenas para lançamentos onde a categoria NÃO foi fixada manualmente pelo usuário
-    if (data.propagarMesmoVendedor && data.categoriaId !== undefined) {
+    if (data.propagarMesmoVendedor && (data.categoriaId !== undefined || data.natureza !== undefined)) {
       const raiz = extrairRaizComerciante(descricaoReferencia);
       if (raiz && raiz.length >= 3) {
         if (!termoVendedor) termoVendedor = raiz;
-        const resUpdateMany = await prisma.movimento.updateMany({
+        // Se estiver alterando natureza (ex: Aporte Patrimonial), propaga para todos os similares.
+        // Se estiver alterando apenas categoria, respeita categoriaFixadaPeloUsuario: false (TASK-43).
+        const todosCandidatos = await prisma.movimento.findMany({
           where: {
             usuarioId,
             id: { not: id },
-            categoriaFixadaPeloUsuario: false,
-            descricao: { contains: raiz, mode: 'insensitive' },
+            ...(data.natureza === undefined ? { categoriaFixadaPeloUsuario: false } : {}),
           },
-          data: {
-            categoriaId: data.categoriaId,
-          },
+          select: { id: true, descricao: true, observacao: true },
         });
-        totalPropagados += resUpdateMany.count;
+
+        const idsVendedor = todosCandidatos
+          .filter((c) => {
+            const rC = extrairRaizComerciante(c.descricao);
+            const favC = extrairFavorecidoObservacao(c.observacao);
+            return (
+              (rC && correspondemRegraVendedor(rC, raiz)) ||
+              (favC && correspondemRegraVendedor(favC, raiz)) ||
+              correspondemRegraVendedor(c.descricao, raiz)
+            );
+          })
+          .map((c) => c.id);
+
+        if (idsVendedor.length > 0) {
+          const dadosUpdate: any = {};
+          if (data.categoriaId !== undefined) {
+            dadosUpdate.categoriaId = data.categoriaId;
+          }
+          if (data.natureza !== undefined) {
+            dadosUpdate.natureza = data.natureza;
+            // Se foi propagado como APORTE_PATRIMONIAL pelo usuário, valida dedupe e fixa
+            if (data.natureza === 'APORTE_PATRIMONIAL') {
+              dadosUpdate.validadoDedupe = 'S';
+            }
+          }
+
+          const resUpdateMany = await prisma.movimento.updateMany({
+            where: {
+              usuarioId,
+              id: { in: idsVendedor },
+            },
+            data: dadosUpdate,
+          });
+          totalPropagados += resUpdateMany.count;
+        }
 
         // Memoriza o catálogo de vendedor para categoria somente se memorizarRegraVendedor !== false
         if (data.categoriaId && data.memorizarRegraVendedor !== false) {
@@ -587,7 +911,7 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
 
     return reply.status(200).send({
       message: totalPropagados > 0
-        ? `Movimento atualizado e categoria propagada para mais ${totalPropagados} lançamento(s) de "${termoVendedor}".`
+        ? `Movimento atualizado e classificação propagada para mais ${totalPropagados} lançamento(s) de "${termoVendedor}".`
         : 'Movimento atualizado com sucesso.',
       totalPropagados,
       termoVendedor,
@@ -642,25 +966,122 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
     }
 
     const raiz = extrairRaizComerciante(movimento.descricao);
-    if (!raiz || raiz.length < 3) {
+    const termoBusca = raiz && raiz.length >= 3 ? raiz : movimento.descricao.trim();
+
+    if (!termoBusca || termoBusca.length < 3) {
       return reply.status(200).send({
         termoVendedor: null,
         totalSimilares: 0,
       });
     }
 
-    const totalSimilares = await prisma.movimento.count({
+    // Busca todos os movimentos do usuário (exceto o próprio) para conferir similaridade
+    const outrosMovimentos = await prisma.movimento.findMany({
       where: {
         usuarioId,
         id: { not: id },
-        categoriaFixadaPeloUsuario: false,
-        descricao: { contains: raiz, mode: 'insensitive' },
+      },
+      select: {
+        id: true,
+        descricao: true,
+        observacao: true,
       },
     });
 
+    const similaresEncontrados = outrosMovimentos.filter((m) => {
+      const raizM = extrairRaizComerciante(m.descricao);
+      const favM = extrairFavorecidoObservacao(m.observacao);
+      return (
+        (raizM && correspondemRegraVendedor(raizM, termoBusca)) ||
+        (favM && correspondemRegraVendedor(favM, termoBusca)) ||
+        correspondemRegraVendedor(m.descricao, termoBusca) ||
+        (raiz && m.descricao.toLowerCase().includes(raiz.toLowerCase())) ||
+        (raiz && raizM && raizM.toLowerCase().includes(raiz.toLowerCase()))
+      );
+    });
+
     return reply.status(200).send({
-      termoVendedor: raiz,
-      totalSimilares,
+      termoVendedor: raiz || termoBusca,
+      totalSimilares: similaresEncontrados.length,
+    });
+  });
+
+  // DELETE /api/movimentos/competencia (exclusão em lote por competência / mês selecionado e anteriores)
+  app.delete('/competencia', async (request, reply) => {
+    const usuarioId = request.user.sub;
+
+    const parseResult = excluirPorCompetenciaSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Parâmetros inválidos para exclusão por competência.',
+        issues: parseResult.error.issues,
+      });
+    }
+
+    const { competencia, incluirAnteriores, contaId } = parseResult.data;
+
+    const filtroCompetencia = incluirAnteriores
+      ? { lte: competencia }
+      : competencia;
+
+    const whereClause: any = {
+      usuarioId,
+      competencia: filtroCompetencia,
+    };
+
+    if (contaId) {
+      whereClause.contaId = contaId;
+    }
+
+    // Busca os IDs dos movimentos a serem excluídos para tratar vínculos de fatura
+    const movimentosAlvo = await prisma.movimento.findMany({
+      where: whereClause,
+      select: { id: true },
+    });
+
+    if (movimentosAlvo.length === 0) {
+      return reply.status(200).send({
+        message: 'Nenhum lançamento encontrado para a competência informada.',
+        movimentosExcluidos: 0,
+        competencia,
+        incluirAnteriores,
+      });
+    }
+
+    const idsAlvo = movimentosAlvo.map((m) => m.id);
+
+    const resultado = await prisma.$transaction(async (tx) => {
+      // 1. Desvincular faturas vinculadas aos movimentos alvo
+      await tx.arquivoImportacao.updateMany({
+        where: { faturaPagamentoMovimentoId: { in: idsAlvo } },
+        data: { faturaPagamentoMovimentoId: null },
+      });
+
+      // 2. Desvincular transferências mútuas antes de deletar
+      await tx.movimento.updateMany({
+        where: { id: { in: idsAlvo } },
+        data: { transferenciaVinculoId: null },
+      });
+
+      // 3. Deletar os movimentos (rateios e suspeitas são removidos em cascata por FK onDelete: Cascade)
+      const del = await tx.movimento.deleteMany({
+        where: { id: { in: idsAlvo } },
+      });
+
+      return {
+        movimentosExcluidos: del.count,
+      };
+    });
+
+    return reply.status(200).send({
+      message: incluirAnteriores
+        ? `Lançamentos da competência ${competencia} e anteriores excluídos com sucesso.`
+        : `Lançamentos da competência ${competencia} excluídos com sucesso.`,
+      movimentosExcluidos: resultado.movimentosExcluidos,
+      competencia,
+      incluirAnteriores,
     });
   });
 
@@ -996,6 +1417,19 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       totalSimilaresVendedor?: number;
     }> = [];
 
+    const regrasVendedorUsuario = await prisma.regraVendedorCategoria.findMany({
+      where: { usuarioId },
+      include: {
+        categoria: {
+          select: {
+            id: true,
+            nome: true,
+            categoriaPai: { select: { nome: true } },
+          },
+        },
+      },
+    });
+
     for (const s of registrosSuspeita) {
       const confiancaNum = Number(s.confianca);
 
@@ -1049,31 +1483,31 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
         } | null = null;
         let totalSimilaresVendedor = 0;
 
-        if (raiz && raiz.length >= 3) {
-          const regra = await prisma.regraVendedorCategoria.findFirst({
-            where: {
-              usuarioId,
-              termoVendedor: { equals: raiz, mode: 'insensitive' },
-            },
-            include: {
-              categoria: {
-                select: {
-                  id: true,
-                  nome: true,
-                  categoriaPai: { select: { nome: true } },
-                },
-              },
-            },
-          });
-          if (regra) {
-            regraVendedorSalva = {
-              categoriaId: regra.categoria.id,
-              categoriaNome: regra.categoria.nome,
-              categoriaPaiNome: regra.categoria.categoriaPai?.nome || null,
-              totalAplicacoes: regra.totalAplicacoes,
-            };
-          }
+        const favorecidoObservacao = extrairFavorecidoObservacao(m.observacao);
 
+        const regra = regrasVendedorUsuario.find((r) => {
+          if (raiz && correspondemRegraVendedor(raiz, r.termoVendedor)) {
+            return true;
+          }
+          if (favorecidoObservacao && correspondemRegraVendedor(favorecidoObservacao, r.termoVendedor)) {
+            return true;
+          }
+          if (correspondemRegraVendedor(m.descricao, r.termoVendedor)) {
+            return true;
+          }
+          return false;
+        });
+
+        if (regra) {
+          regraVendedorSalva = {
+            categoriaId: regra.categoria.id,
+            categoriaNome: regra.categoria.nome,
+            categoriaPaiNome: regra.categoria.categoriaPai?.nome || null,
+            totalAplicacoes: regra.totalAplicacoes,
+          };
+        }
+
+        if (raiz && raiz.length >= 3) {
           totalSimilaresVendedor = await prisma.movimento.count({
             where: {
               usuarioId,
@@ -1197,6 +1631,47 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
           }
 
           if (movDescarte) {
+            // Se o movimento descartado for uma projeção de parcelamento ou tiver vínculo com parcelamento,
+            // verificar se há contrato associado para cancelar e evitar que seja recriado na sincronização futura
+            const isProjecaoDescarte =
+              movDescarte.origemDocumento === 'PROJECAO_PARCELAMENTO' || movDescarte.status === 'PREVISTO';
+            const infoParcDescarte = extrairInfoParcelamento(movDescarte.descricao);
+
+            if (isProjecaoDescarte || infoParcDescarte) {
+              const baseBusca = (infoParcDescarte?.prefixoBase || movDescarte.descricao).trim();
+              const parcelamentoVinculado = await tx.parcelamento.findFirst({
+                where: {
+                  usuarioId,
+                  contaId: movDescarte.contaId || undefined,
+                  status: 'ATIVO',
+                  OR: [
+                    { descricao: { contains: baseBusca, mode: 'insensitive' } },
+                    ...(infoParcDescarte ? [{ totalParcelas: infoParcDescarte.totalParcelas }] : []),
+                  ],
+                },
+              });
+
+              if (parcelamentoVinculado) {
+                // Se o descarte é de uma projeção futura ou o outro lançamento (preservado) já cobre o contrato,
+                // cancela o contrato redundante e limpa as demais projeções PREVISTO deste contrato
+                await tx.parcelamento.update({
+                  where: { id: parcelamentoVinculado.id },
+                  data: { status: 'CANCELADO' },
+                });
+
+                await tx.movimento.deleteMany({
+                  where: {
+                    usuarioId,
+                    contaId: parcelamentoVinculado.contaId || undefined,
+                    status: 'PREVISTO',
+                    origemDocumento: 'PROJECAO_PARCELAMENTO',
+                    descricao: { contains: baseBusca, mode: 'insensitive' },
+                    id: { not: idParaPreservar || '' },
+                  },
+                });
+              }
+            }
+
             await tx.movimento.delete({
               where: { id: idParaDescartar },
             });
@@ -1463,17 +1938,26 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
           // 3. Se solicitada propagação para outros lançamentos do mesmo estabelecimento/vendedor
           if (propagarMesmoVendedor && raizVendedor && raizVendedor.length >= 3) {
             termoVendedorIdentificado = raizVendedor;
-            const candidatosVendedor = await tx.movimento.findMany({
+            const todosNaoFixados = await tx.movimento.findMany({
               where: {
                 usuarioId,
                 id: { not: movimentoAlvoId },
                 categoriaFixadaPeloUsuario: false,
-                descricao: { contains: raizVendedor, mode: 'insensitive' },
               },
-              select: { id: true },
+              select: { id: true, descricao: true, observacao: true },
             });
 
-            const idsVendedor = candidatosVendedor.map((c) => c.id);
+            const idsVendedor = todosNaoFixados
+              .filter((c) => {
+                const rC = extrairRaizComerciante(c.descricao);
+                const favC = extrairFavorecidoObservacao(c.observacao);
+                return (
+                  (rC && correspondemRegraVendedor(rC, raizVendedor)) ||
+                  (favC && correspondemRegraVendedor(favC, raizVendedor)) ||
+                  correspondemRegraVendedor(c.descricao, raizVendedor)
+                );
+              })
+              .map((c) => c.id);
             if (idsVendedor.length > 0) {
               const resVendedor = await tx.movimento.updateMany({
                 where: {

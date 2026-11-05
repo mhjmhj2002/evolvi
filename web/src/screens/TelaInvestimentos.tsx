@@ -4,6 +4,7 @@ import {
   ContaItem,
   apiService,
 } from '../api.ts';
+import { formatarDataIso } from '../utils/data.ts';
 import {
   TrendingUp,
   Plus,
@@ -489,7 +490,7 @@ export const TelaInvestimentos: React.FC<TelaInvestimentosProps> = ({
             }}
           >
             {dadosAportes.resumo.ultimaAplicacao
-              ? dadosAportes.resumo.ultimaAplicacao.split('-').reverse().join('/')
+              ? formatarDataIso(dadosAportes.resumo.ultimaAplicacao)
               : 'Nenhum'}
           </div>
         </div>
@@ -682,7 +683,7 @@ export const TelaInvestimentos: React.FC<TelaInvestimentosProps> = ({
                         gap: '6px',
                       }}
                     >
-                      <span>{item.dataMovimento.split('-').reverse().join('/')}</span>
+                      <span>{formatarDataIso(item.dataMovimento)}</span>
                       <span>•</span>
                       <span>{item.conta?.nome || 'Conta'}</span>
                       {item.observacao && (

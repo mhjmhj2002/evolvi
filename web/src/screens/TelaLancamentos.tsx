@@ -6,6 +6,7 @@ import {
   FiltroMovimentosParams,
   apiService,
 } from '../api.ts';
+import { formatarDataIso } from '../utils/data.ts';
 import {
   Calendar,
   Search,
@@ -31,7 +32,10 @@ import {
   Building2,
   CreditCard,
   Layers,
+  QrCode,
   Sliders,
+  AlertTriangle,
+  Loader2,
 } from 'lucide-react';
 
 interface TelaLancamentosProps {
@@ -39,6 +43,7 @@ interface TelaLancamentosProps {
   contas: ContaItem[];
   categorias: CategoriaTreeItem[];
   onOpenNovoLancamento: () => void;
+  onOpenLeitorNotaFiscal?: () => void;
   onMovimentoModificado?: () => void;
   onNavigateTab?: (tab: any) => void;
 }
@@ -48,6 +53,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
   contas,
   categorias,
   onOpenNovoLancamento,
+  onOpenLeitorNotaFiscal,
   onMovimentoModificado,
   onNavigateTab,
 }) => {
@@ -60,6 +66,12 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
   const [filtroCategoriaId, setFiltroCategoriaId] = useState<string>('');
   const [filtroNatureza, setFiltroNatureza] = useState<string>('TODOS');
   const [filtroStatus, setFiltroStatus] = useState<string>('TODOS');
+
+  // Estados para Modal de Exclusão em Lote por Mês / Competência
+  const [modalExcluirCompetenciaAberto, setModalExcluirCompetenciaAberto] = useState<boolean>(false);
+  const [incluirMesesAnteriores, setIncluirMesesAnteriores] = useState<boolean>(false);
+  const [excluindoLoteCompetencia, setExcluindoLoteCompetencia] = useState<boolean>(false);
+  const [erroExcluirCompetencia, setErroExcluirCompetencia] = useState<string | null>(null);
 
   // Estados de Investigação Avançada (Instituição, Forma de Pagamento, Subcategoria, Agrupamento Multidimensional)
   const [filtroInstituicao, setFiltroInstituicao] = useState<string>('TODAS');
@@ -176,13 +188,30 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
       await carregarMovimentos();
       onMovimentoModificado?.();
 
-      // Atualiza o próprio item selecionado na tela
-      const catObj = categorias.find((c) => c.id === categoriaEdicao);
+      // Atualiza o próprio item selecionado na tela procurando em categorias e subcategorias
+      let catNome: string | undefined = res.movimento?.categoria?.nome;
+      let catPaiId: string | null = res.movimento?.categoria?.categoriaPaiId ?? null;
+      if (!catNome) {
+        for (const cat of categorias) {
+          if (cat.id === categoriaEdicao) {
+            catNome = cat.nome;
+            catPaiId = null;
+            break;
+          }
+          const sub = cat.subcategorias?.find((s) => s.id === categoriaEdicao);
+          if (sub) {
+            catNome = sub.nome;
+            catPaiId = cat.id;
+            break;
+          }
+        }
+      }
+
       setItemSelecionado({
         ...itemSelecionado,
         categoriaId: categoriaEdicao || null,
         categoriaFixadaPeloUsuario: true,
-        categoria: catObj ? { id: catObj.id, nome: catObj.nome, categoriaPaiId: null } : null,
+        categoria: categoriaEdicao && catNome ? { id: categoriaEdicao, nome: catNome, categoriaPaiId: catPaiId } : null,
       });
 
       setTimeout(() => {
@@ -195,22 +224,29 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
     }
   };
 
-  const handleAlternarPagamentoFaturaTransferencia = async (novaNatureza: 'TRANSFERENCIA_PROPRIA' | 'DESPESA') => {
+  const handleAlternarNatureza = async (novaNatureza: 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL' | 'DESPESA') => {
     if (!itemSelecionado) return;
     setSalvandoNatureza(true);
     setFeedbackNatureza(null);
     try {
       const res = await apiService.atualizarMovimento(itemSelecionado.id, {
         natureza: novaNatureza,
+        propagarMesmoVendedor: propagarVendedor,
       });
+
+      let textoSucesso = 'Lançamento atualizado com sucesso.';
+      if (novaNatureza === 'TRANSFERENCIA_PROPRIA') {
+        textoSucesso = res.message || 'Lançamento catalogado como Pagamento de Fatura / Transferência Própria (anti-dupla contagem ativado).';
+      } else if (novaNatureza === 'APORTE_PATRIMONIAL') {
+        textoSucesso = res.message || 'Lançamento catalogado como Aporte Patrimonial / Investimento (expurgado do cômputo de despesas).';
+      } else {
+        textoSucesso = res.message || 'Lançamento reclassificado como Despesa de consumo.';
+      }
 
       setFeedbackNatureza({
         tipo: 'sucesso',
-        texto: res.message || (novaNatureza === 'TRANSFERENCIA_PROPRIA'
-          ? 'Lançamento catalogado como Pagamento de Fatura / Transferência Própria (anti-dupla contagem ativado).'
-          : 'Lançamento reclassificado como Despesa de consumo.'),
+        texto: textoSucesso,
       });
-
 
       await carregarMovimentos();
       onMovimentoModificado?.();
@@ -461,6 +497,41 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
     }
   };
 
+  // Excluir lançamentos do mês / competência (com opção de incluir anteriores)
+  const handleExcluirLoteCompetencia = async () => {
+    if (!competencia) {
+      alert('Selecione uma competência válida para excluir os lançamentos.');
+      return;
+    }
+
+    setExcluindoLoteCompetencia(true);
+    setErroExcluirCompetencia(null);
+
+    try {
+      const resp = await apiService.excluirMovimentosPorCompetencia({
+        competencia,
+        incluirAnteriores: incluirMesesAnteriores,
+        contaId: filtroContaId || undefined,
+      });
+
+      setModalExcluirCompetenciaAberto(false);
+      setMensagemAviso(
+        resp.movimentosExcluidos > 0
+          ? `${resp.movimentosExcluidos} lançamento(s) excluído(s) com sucesso!`
+          : 'Nenhum lançamento encontrado para exclusão no período especificado.'
+      );
+      setTimeout(() => setMensagemAviso(null), 4000);
+
+      await carregarMovimentos();
+      if (onMovimentoModificado) onMovimentoModificado();
+    } catch (err: any) {
+      console.error('Falha ao excluir lançamentos por competência:', err);
+      setErroExcluirCompetencia(err?.message || 'Falha ao processar exclusão dos lançamentos.');
+    } finally {
+      setExcluindoLoteCompetencia(false);
+    }
+  };
+
   // Mapeamento plano de subcategorias para filtros e investigações
   const subcategoriasDisponiveis = useMemo(() => {
     if (filtroCategoriaId) {
@@ -668,20 +739,72 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
             Todos os Lançamentos
           </h1>
         </div>
-        <button
-          type="button"
-          onClick={onOpenNovoLancamento}
-          className="btn-primary"
-          style={{
-            padding: '8px 14px',
-            fontSize: '0.85rem',
-            minHeight: '38px',
-            borderRadius: 'var(--radius-sm)',
-            boxShadow: '0 2px 10px rgba(56, 189, 248, 0.25)',
-          }}
-        >
-          <Plus size={16} /> Novo
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            type="button"
+            onClick={() => {
+              setErroExcluirCompetencia(null);
+              setIncluirMesesAnteriores(false);
+              setModalExcluirCompetenciaAberto(true);
+            }}
+            title="Excluir lançamentos deste mês ou anteriores"
+            style={{
+              padding: '8px 12px',
+              fontSize: '0.82rem',
+              minHeight: '38px',
+              borderRadius: 'var(--radius-sm)',
+              background: 'rgba(239, 68, 68, 0.12)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              color: 'var(--status-red, #ef4444)',
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              transition: 'all 0.2s ease',
+            }}
+          >
+            <Trash2 size={15} /> Excluir Mês
+          </button>
+          {onOpenLeitorNotaFiscal && (
+            <button
+              type="button"
+              onClick={onOpenLeitorNotaFiscal}
+              style={{
+                padding: '8px 12px',
+                fontSize: '0.82rem',
+                minHeight: '38px',
+                borderRadius: 'var(--radius-sm)',
+                background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.15) 0%, rgba(129, 140, 248, 0.15) 100%)',
+                border: '1px solid rgba(56, 189, 248, 0.35)',
+                color: 'var(--brand-primary)',
+                fontWeight: 600,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                transition: 'all 0.2s ease',
+              }}
+              title="Ler Nota Fiscal (NFC-e / QR Code / Chave de 44 dígitos)"
+            >
+              <QrCode size={16} /> Nota Fiscal
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onOpenNovoLancamento}
+            className="btn-primary"
+            style={{
+              padding: '8px 14px',
+              fontSize: '0.85rem',
+              minHeight: '38px',
+              borderRadius: 'var(--radius-sm)',
+              boxShadow: '0 2px 10px rgba(56, 189, 248, 0.25)',
+            }}
+          >
+            <Plus size={16} /> Novo
+          </button>
+        </div>
       </div>
 
       {mensagemAviso && (
@@ -1637,7 +1760,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                               {/* Data (sempre visível ou destacada se não agrupado por data) */}
                               {modoAgrupamento !== 'DATA' && (
                                 <span style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
-                                  📅 {item.dataMovimento}
+                                  📅 {formatarDataIso(item.dataMovimento)}
                                 </span>
                               )}
 
@@ -1665,6 +1788,26 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                               >
                                 💳 {fpItem}
                               </span>
+
+                              {/* Badge de Nota Fiscal NFC-e (TASK-54) */}
+                              {item.chaveAcessoNfe && (
+                                <span
+                                  style={{
+                                    background: 'rgba(52, 211, 153, 0.12)',
+                                    color: '#34d399',
+                                    padding: '1px 5px',
+                                    borderRadius: '3px',
+                                    fontWeight: 700,
+                                    fontSize: '0.68rem',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '3px',
+                                  }}
+                                  title={`Nota Fiscal vinculada: ${item.chaveAcessoNfe}`}
+                                >
+                                  🧾 NFC-e
+                                </span>
+                              )}
 
                               {isAporte && (
                                 <span
@@ -1746,9 +1889,9 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                                         alignItems: 'center',
                                         gap: '3px',
                                       }}
-                                      title={`Compra parcelada (${matchParc[1]}/${matchParc[2]}) realizada em ${item.dataMovimento}`}
+                                      title={`Compra parcelada (${matchParc[1]}/${matchParc[2]}) realizada em ${formatarDataIso(item.dataMovimento)}`}
                                     >
-                                      📦 Parcela {matchParc[1]}/{matchParc[2]} • Compra: {item.dataMovimento}
+                                      📦 Parcela {matchParc[1]}/{matchParc[2]} • Compra: {formatarDataIso(item.dataMovimento)}
                                     </span>
                                   );
                                 }
@@ -1855,7 +1998,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border-subtle)' }}>
                 <span style={{ color: 'var(--text-muted)' }}>Data da Transação / Compra:</span>
                 <span style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                  {itemSelecionado.dataMovimento}
+                  {formatarDataIso(itemSelecionado.dataMovimento)}
                   {itemSelecionado.descricao.match(/(?:[\-_–—]|\()\s*(?:parcela\s+)?(\d+)\s*(?:\/|\s+de\s+)\s*(\d+)\s*\)?/i) && (
                     <span
                       style={{
@@ -2003,17 +2146,17 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                         style={{ cursor: 'pointer', accentColor: 'var(--brand-primary)', marginTop: '2px' }}
                       />
                       <span style={{ lineHeight: 1.4 }}>
-                        Aplicar também a todas as compras de{' '}
+                        Aplicar também a todos os lançamentos similares de{' '}
                         <strong style={{ color: 'var(--brand-primary)' }}>"{similaresInfo.termoVendedor}"</strong>{' '}
                         ({similaresInfo.totalSimilares} outro{similaresInfo.totalSimilares > 1 ? 's' : ''} lançamento{similaresInfo.totalSimilares > 1 ? 's' : ''})
                       </span>
                     </label>
                     {!propagarVendedor && (
                       <span style={{ fontSize: '0.72rem', color: 'var(--status-green)', paddingLeft: '22px' }}>
-                        ✓ Apenas esta compra
+                        ✓ Apenas este lançamento
                         {itemSelecionado.descricao.match(/(?:[\-_–—]|\()\s*parcela\s+(\d+)\s*(?:\/|\s+de\s+)\s*(\d+)\s*\)?/i)
-                          ? ' (e suas respectivas parcelas desta compra)'
-                          : ''} será atualizada.
+                          ? ' (e suas respectivas parcelas)'
+                          : ''} será atualizado.
                       </span>
                     )}
                   </div>
@@ -2070,6 +2213,153 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                   </div>
                 </div>
               )}
+              {/* Opção de Catalogação como Aporte Patrimonial / Investimento */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px',
+                  padding: '10px',
+                  background: itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
+                    ? 'rgba(56, 189, 248, 0.08)'
+                    : 'rgba(255, 255, 255, 0.02)',
+                  borderRadius: 'var(--radius-sm)',
+                  border: `1px solid ${
+                    itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
+                      ? 'rgba(56, 189, 248, 0.35)'
+                      : 'var(--border-subtle)'
+                  }`,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <PiggyBank size={14} color="#38bdf8" />
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 700, fontSize: '0.8rem' }}>
+                      Aporte Patrimonial / Investimento:
+                    </span>
+                  </div>
+                  {itemSelecionado.natureza === 'APORTE_PATRIMONIAL' && (
+                    <span
+                      style={{
+                        background: 'rgba(56, 189, 248, 0.18)',
+                        color: '#38bdf8',
+                        padding: '1px 7px',
+                        borderRadius: 'var(--radius-full)',
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                      }}
+                    >
+                      Aporte Ativo
+                    </span>
+                  )}
+                </div>
+
+                <p style={{ margin: 0, fontSize: '0.74rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                  {itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
+                    ? 'Este lançamento está catalogado como aplicação financeira / aporte patrimonial. O valor é expurgado das despesas de consumo e contabilizado no patrimônio.'
+                    : 'Classifique como aporte patrimonial (CDB, Tesouro, Ações, Poupança etc.) para não contabilizar este valor como despesa de consumo.'}
+                </p>
+
+                {/* Opção de Propagação para Lançamentos Similares (Marcar para Todos) */}
+                <div
+                  style={{
+                    padding: '8px 10px',
+                    background: propagarVendedor ? 'rgba(56, 189, 248, 0.12)' : 'rgba(56, 189, 248, 0.04)',
+                    border: `1px solid ${propagarVendedor ? 'rgba(56, 189, 248, 0.4)' : 'rgba(56, 189, 248, 0.2)'}`,
+                    borderRadius: 'var(--radius-xs)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    transition: 'all 0.2s ease',
+                  }}
+                >
+                  <label
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '8px',
+                      cursor: 'pointer',
+                      fontSize: '0.78rem',
+                      color: 'var(--text-primary)',
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={propagarVendedor}
+                      onChange={(e) => setPropagarVendedor(e.target.checked)}
+                      style={{ cursor: 'pointer', accentColor: '#38bdf8', marginTop: '2px' }}
+                    />
+                    <span style={{ lineHeight: 1.4 }}>
+                      <strong>Marcar para todos:</strong> aplicar também a todos os lançamentos similares de{' '}
+                      <strong style={{ color: '#38bdf8' }}>
+                        "{similaresInfo?.termoVendedor || itemSelecionado.descricao.replace(/^outros\s+gastos\s*/i, '').trim()}"
+                      </strong>
+                      {similaresInfo && similaresInfo.totalSimilares > 0 && (
+                        <span> ({similaresInfo.totalSimilares} outro{similaresInfo.totalSimilares > 1 ? 's' : ''} identificado{similaresInfo.totalSimilares > 1 ? 's' : ''})</span>
+                      )}
+                    </span>
+                  </label>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                  {itemSelecionado.natureza !== 'APORTE_PATRIMONIAL' ? (
+                    <button
+                      type="button"
+                      disabled={salvandoNatureza}
+                      onClick={() => handleAlternarNatureza('APORTE_PATRIMONIAL')}
+                      style={{
+                        flex: 1,
+                        background: 'rgba(56, 189, 248, 0.15)',
+                        border: '1px solid rgba(56, 189, 248, 0.4)',
+                        color: '#38bdf8',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '8px 12px',
+                        fontWeight: 700,
+                        fontSize: '0.80rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        cursor: salvandoNatureza ? 'not-allowed' : 'pointer',
+                        opacity: salvandoNatureza ? 0.6 : 1,
+                      }}
+                    >
+                      <PiggyBank size={14} />
+                      {salvandoNatureza
+                        ? 'Atualizando...'
+                        : propagarVendedor && similaresInfo && similaresInfo.totalSimilares > 0
+                        ? `Catalogar Este e Outros ${similaresInfo.totalSimilares} como Aporte`
+                        : 'Catalogar como Aporte / Investimento'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={salvandoNatureza}
+                      onClick={() => handleAlternarNatureza('DESPESA')}
+                      style={{
+                        flex: 1,
+                        background: 'rgba(239, 68, 68, 0.1)',
+                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                        color: 'var(--status-red)',
+                        borderRadius: 'var(--radius-sm)',
+                        padding: '8px 12px',
+                        fontWeight: 700,
+                        fontSize: '0.80rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        cursor: salvandoNatureza ? 'not-allowed' : 'pointer',
+                        opacity: salvandoNatureza ? 0.6 : 1,
+                      }}
+                    >
+                      <RotateCcw size={14} />
+                      {salvandoNatureza ? 'Atualizando...' : 'Reverter para Despesa Comum'}
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {/* Opção de Catalogação como Pagamento de Fatura / Transferência Própria (Anti-Dupla Contagem) */}
               <div
                 style={{
@@ -2122,7 +2412,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                     <button
                       type="button"
                       disabled={salvandoNatureza}
-                      onClick={() => handleAlternarPagamentoFaturaTransferencia('TRANSFERENCIA_PROPRIA')}
+                      onClick={() => handleAlternarNatureza('TRANSFERENCIA_PROPRIA')}
                       style={{
                         flex: 1,
                         background: 'rgba(129, 140, 248, 0.15)',
@@ -2147,7 +2437,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                     <button
                       type="button"
                       disabled={salvandoNatureza}
-                      onClick={() => handleAlternarPagamentoFaturaTransferencia('DESPESA')}
+                      onClick={() => handleAlternarNatureza('DESPESA')}
                       style={{
                         flex: 1,
                         background: 'rgba(239, 68, 68, 0.1)',
@@ -2569,6 +2859,164 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                 }}
               >
                 {salvandoSplit ? 'Salvando Rateio...' : 'Salvar Desdobramento'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Modal de Exclusão de Lançamentos do Mês / Competência com Opção de Anteriores */}
+      {modalExcluirCompetenciaAberto && (
+        <div
+          className="bottom-sheet-backdrop"
+          onClick={() => {
+            if (!excluindoLoteCompetencia) setModalExcluirCompetenciaAberto(false);
+          }}
+          style={{ zIndex: 120 }}
+        >
+          <div
+            className="bottom-sheet"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: '520px', gap: '16px', maxHeight: '90vh', overflowY: 'auto' }}
+          >
+            <div className="bottom-sheet-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <AlertTriangle size={20} color="var(--status-red, #ef4444)" />
+                <span className="bottom-sheet-title" style={{ color: 'var(--status-red, #ef4444)' }}>
+                  Excluir Lançamentos do Mês
+                </span>
+              </div>
+              <button
+                type="button"
+                className="bottom-sheet-close"
+                disabled={excluindoLoteCompetencia}
+                onClick={() => setModalExcluirCompetenciaAberto(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {erroExcluirCompetencia && (
+              <div className="login-error-alert" role="alert">
+                <AlertTriangle size={16} />
+                <span>{erroExcluirCompetencia}</span>
+              </div>
+            )}
+
+            <div style={{ fontSize: '0.86rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              Você está prestes a excluir os lançamentos do mês de{' '}
+              <strong style={{ color: 'var(--text-primary)' }}>{mesFormatadoExtenso}</strong> (
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{competencia}</span>
+              {filtroContaId && (
+                <span>
+                  {' '}
+                  na conta <strong>{contas.find((c) => c.id === filtroContaId)?.nome}</strong>
+                </span>
+              )}
+              ).
+            </div>
+
+            {/* Checkbox de Excluir mês escolhido e anteriores */}
+            <div
+              style={{
+                backgroundColor: 'rgba(239, 68, 68, 0.08)',
+                border: '1px solid rgba(239, 68, 68, 0.25)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '12px 14px',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '10px',
+                cursor: 'pointer',
+              }}
+              onClick={() => {
+                if (!excluindoLoteCompetencia) {
+                  setIncluirMesesAnteriores(!incluirMesesAnteriores);
+                }
+              }}
+            >
+              <input
+                type="checkbox"
+                id="check-excluir-anteriores"
+                checked={incluirMesesAnteriores}
+                onChange={(e) => setIncluirMesesAnteriores(e.target.checked)}
+                disabled={excluindoLoteCompetencia}
+                style={{
+                  marginTop: '3px',
+                  width: '18px',
+                  height: '18px',
+                  accentColor: 'var(--status-red, #ef4444)',
+                  cursor: 'pointer',
+                }}
+              />
+              <label
+                htmlFor="check-excluir-anteriores"
+                style={{
+                  fontSize: '0.84rem',
+                  color: 'var(--text-primary)',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                }}
+              >
+                Excluir lançamentos do mês escolhido ({competencia}) e todos os meses anteriores
+                <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontWeight: 400, marginTop: '2px' }}>
+                  Marque esta opção caso deseje limpar o histórico antigo ou resetar dados passados até esta data.
+                </div>
+              </label>
+            </div>
+
+            <div
+              style={{
+                fontSize: '0.78rem',
+                color: 'var(--status-red, #f87171)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              <AlertTriangle size={15} />
+              <span>Atenção: esta ação é irreversível e removerá permanentemente os registros.</span>
+            </div>
+
+            {/* Ações do Modal */}
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '8px' }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={excluindoLoteCompetencia}
+                onClick={() => setModalExcluirCompetenciaAberto(false)}
+                style={{ fontSize: '0.84rem', padding: '8px 14px' }}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={excluindoLoteCompetencia}
+                onClick={handleExcluirLoteCompetencia}
+                style={{
+                  background: 'var(--status-red, #ef4444)',
+                  border: 'none',
+                  color: '#ffffff',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '8px 16px',
+                  fontSize: '0.84rem',
+                  fontWeight: 700,
+                  cursor: excluindoLoteCompetencia ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  boxShadow: '0 2px 10px rgba(239, 68, 68, 0.3)',
+                  opacity: excluindoLoteCompetencia ? 0.7 : 1,
+                }}
+              >
+                {excluindoLoteCompetencia ? (
+                  <>
+                    <Loader2 size={16} className="spinner" /> Excluindo Lançamentos...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={16} /> Confirmar Exclusão
+                  </>
+                )}
               </button>
             </div>
           </div>

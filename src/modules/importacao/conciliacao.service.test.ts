@@ -586,5 +586,132 @@ describe('TASK-41: ConciliacaoService - Histórico Estruturado e Alertas de Lacu
       conciliacaoService.obterLancamentosArquivo(arquivo.id, outroUsuario.id)
     ).rejects.toThrow('Arquivo de importação não encontrado ou acesso não autorizado');
   });
+
+  it('deve excluir a importação de uma fatura e todos os seus lançamentos permitindo reimportação', async () => {
+    // 1. Cria lote e arquivo de fatura
+    const lote = await prisma.loteImportacao.create({
+      data: {
+        usuarioId,
+        caminhoDiretorio: '/tmp/lote_teste_fatura',
+        totalArquivos: 1,
+        totalSucesso: 1,
+        totalLancamentos: 2,
+      },
+    });
+
+    const arquivoFatura = await prisma.arquivoImportacao.create({
+      data: {
+        loteId: lote.id,
+        nomeArquivo: 'fatura_nubank_2026_05.pdf',
+        caminhoRelativo: 'fatura_nubank_2026_05.pdf',
+        tamanhoBytes: 15400,
+        mimeType: 'application/pdf',
+        hashConteudo: 'hash_fatura_exclusao_teste_123',
+        status: 'PROCESSADO_FINAL',
+        statusFinal: 'SUCESSO',
+        eFaturaCartao: true,
+      },
+    });
+
+    // 2. Cria catálogo no histórico
+    await prisma.historicoImportacaoArquivo.create({
+      data: {
+        usuarioId,
+        arquivoId: arquivoFatura.id,
+        contaId: contaCartaoId,
+        tipoDocumento: 'FATURA_CARTAO',
+        instituicao: 'Nubank',
+        competencia: '2026-05',
+        totalTransacoes: 2,
+        valorTotal: 500,
+      },
+    });
+
+    // 3. Cria staging item
+    await prisma.stagingLancamentoImportacao.create({
+      data: {
+        loteId: lote.id,
+        arquivoId: arquivoFatura.id,
+        arquivoOrigem: arquivoFatura.nomeArquivo,
+        dataMovimento: new Date('2026-05-10T12:00:00Z'),
+        descricao: 'Compra Mercado Maio',
+        valor: 300,
+        natureza: 'DESPESA',
+        statusProcessamento: 'PROCESSADO',
+      },
+    });
+
+    // 4. Cria movimentos financeiros gerados pela fatura
+    const mov1 = await prisma.movimento.create({
+      data: {
+        usuarioId,
+        contaId: contaCartaoId,
+        dataMovimento: new Date('2026-05-10T12:00:00Z'),
+        competencia: '2026-05',
+        descricao: 'Compra Mercado Maio',
+        valor: 300,
+        natureza: 'DESPESA',
+        status: 'CONCILIADO',
+        origemDocumento: `IA_LOTE_${arquivoFatura.nomeArquivo}`,
+      },
+    });
+
+    const mov2 = await prisma.movimento.create({
+      data: {
+        usuarioId,
+        contaId: contaCartaoId,
+        dataMovimento: new Date('2026-05-12T12:00:00Z'),
+        competencia: '2026-05',
+        descricao: 'Compra Farmácia Maio',
+        valor: 200,
+        natureza: 'DESPESA',
+        status: 'CONCILIADO',
+        origemDocumento: `IA_LOTE_${arquivoFatura.nomeArquivo}`,
+      },
+    });
+
+    // 5. Tentativa de exclusão por outro usuário deve falhar (multi-tenant)
+    const invasor = await prisma.usuario.create({
+      data: {
+        nome: 'Usuario Invasor',
+        email: `invasor_${Date.now()}@evolvi.app`,
+        senhaHash: 'hash',
+      },
+    });
+
+    await expect(
+      conciliacaoService.excluirImportacaoFaturaComLancamentos(arquivoFatura.id, invasor.id)
+    ).rejects.toThrow('Arquivo de fatura não encontrado ou acesso não autorizado.');
+
+    // 6. Exclui a fatura e lançamentos com o usuário autorizado
+    const resultado = await conciliacaoService.excluirImportacaoFaturaComLancamentos(arquivoFatura.id, usuarioId);
+
+    expect(resultado.sucesso).toBe(true);
+    expect(resultado.arquivoId).toBe(arquivoFatura.id);
+    expect(resultado.movimentosExcluidos).toBe(2);
+    expect(resultado.stagingExcluidos).toBe(1);
+
+    // 7. Confirma que os movimentos foram excluídos
+    const mov1Check = await prisma.movimento.findUnique({ where: { id: mov1.id } });
+    const mov2Check = await prisma.movimento.findUnique({ where: { id: mov2.id } });
+    expect(mov1Check).toBeNull();
+    expect(mov2Check).toBeNull();
+
+    // 8. Confirma que staging, histórico e arquivo foram removidos
+    const stagingCheck = await prisma.stagingLancamentoImportacao.findMany({
+      where: { arquivoId: arquivoFatura.id },
+    });
+    expect(stagingCheck).toHaveLength(0);
+
+    const historicoCheck = await prisma.historicoImportacaoArquivo.findFirst({
+      where: { arquivoId: arquivoFatura.id },
+    });
+    expect(historicoCheck).toBeNull();
+
+    const arquivoCheck = await prisma.arquivoImportacao.findUnique({
+      where: { id: arquivoFatura.id },
+    });
+    expect(arquivoCheck).toBeNull();
+  });
 });
 

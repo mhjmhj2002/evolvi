@@ -224,6 +224,17 @@ async function main() {
       where: { usuarioId: usuario.id },
     });
 
+    // 12. Médias consolidadas históricas e regras de exclusão da média
+    const delMediasConsolidadas = await tx.mediaMensalConsolidada.deleteMany({
+      where: { usuarioId: usuario.id },
+    });
+    const delExclusoesMedia = await tx.exclusaoMovimentoMedia.deleteMany({
+      where: { usuarioId: usuario.id },
+    });
+    const delRegrasExclusao = await tx.regraExclusaoMedia.deleteMany({
+      where: { usuarioId: usuario.id },
+    });
+
     return {
       delSuspeitas: delSuspeitas.count,
       delRateios: delRateios.count,
@@ -236,6 +247,9 @@ async function main() {
       delArquivos: delArquivos.count,
       delLotes: delLotes.count,
       delDadosBrutos: delDadosBrutos.count,
+      delMediasConsolidadas: delMediasConsolidadas.count,
+      delExclusoesMedia: delExclusoesMedia.count,
+      delRegrasExclusao: delRegrasExclusao.count,
     };
   });
 
@@ -253,6 +267,9 @@ async function main() {
   console.log(`- Arquivos de Importação excluídos:        ${resultado.delArquivos}`);
   console.log(`- Lotes de Importação excluídos:           ${resultado.delLotes}`);
   console.log(`- Dados Brutos Open Finance excluídos:     ${resultado.delDadosBrutos}`);
+  console.log(`- Médias Mensais Consolidadas excluídas:  ${resultado.delMediasConsolidadas}`);
+  console.log(`- Exclusões de Movimento da Média:        ${resultado.delExclusoesMedia}`);
+  console.log(`- Regras de Exclusão da Média excluídas:  ${resultado.delRegrasExclusao}`);
   console.log('------------------------------------------------------------------------------');
 
   const checagemIas = await prisma.configuracaoIaUsuario.findMany({

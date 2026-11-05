@@ -21,6 +21,7 @@ import {
   SemaforoResponse,
   CronogramaVencimentosResponse,
 } from '../api.ts';
+import { formatarDataIso } from '../utils/data.ts';
 import { NavTab } from '../components/types.ts';
 
 interface TelaDashboardProps {
@@ -261,7 +262,7 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
                             fontWeight: 600,
                           }}
                         >
-                          Compra: {item.dataCompra || item.parcelamentoInfo?.dataCompra || item.parcelamentoInfo?.primeiroVencimento || item.dataVencimentoPrevista}
+                          Compra: {formatarDataIso(item.dataCompra || item.parcelamentoInfo?.dataCompra || item.parcelamentoInfo?.primeiroVencimento || item.dataVencimentoPrevista)}
                         </span>
                       )}
                     </div>

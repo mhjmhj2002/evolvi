@@ -27,6 +27,7 @@ import {
   CategoriaTreeItem,
   VereditoPayload,
 } from '../api.ts';
+import { formatarDataIso } from '../utils/data.ts';
 
 type CriterioOrdenacao =
   | 'VALOR_DESC'
@@ -270,7 +271,7 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
             </span>
           </div>
           <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            Data: {mA.dataMovimento}
+            Data: {formatarDataIso(mA.dataMovimento)}
           </span>
         </div>
 
@@ -308,7 +309,7 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
             </div>
             <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>{mA.descricao}</div>
             <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-              Data da Compra: <strong style={{ color: 'var(--text-primary)' }}>{mA.dataMovimento}</strong> • Conta: {mA.conta?.nome || 'N/D'} • Cat: {mA.categoria?.nome || 'Sem categoria'}
+              Data da Compra: <strong style={{ color: 'var(--text-primary)' }}>{formatarDataIso(mA.dataMovimento)}</strong> • Conta: {mA.conta?.nome || 'N/D'} • Cat: {mA.categoria?.nome || 'Sem categoria'}
             </div>
             {mA.idOrigem && (
               <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
@@ -371,7 +372,7 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
             </div>
             <div style={{ fontSize: '0.9rem', fontWeight: 600 }}>{mB.descricao}</div>
             <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-              Data da Compra: <strong style={{ color: 'var(--text-primary)' }}>{mB.dataMovimento}</strong> • Conta: {mB.conta?.nome || 'N/D'} • Cat: {mB.categoria?.nome || 'Sem categoria'}
+              Data da Compra: <strong style={{ color: 'var(--text-primary)' }}>{formatarDataIso(mB.dataMovimento)}</strong> • Conta: {mB.conta?.nome || 'N/D'} • Cat: {mB.categoria?.nome || 'Sem categoria'}
             </div>
             {mB.idOrigem && (
               <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
@@ -506,7 +507,7 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
         <div>
           <div style={{ fontSize: '0.95rem', fontWeight: 700 }}>{m.descricao}</div>
           <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-            Data: {m.dataMovimento} • Conta: {m.conta?.nome || 'N/D'} • Atual: Despesa de Consumo
+            Data: {formatarDataIso(m.dataMovimento)} • Conta: {m.conta?.nome || 'N/D'} • Atual: Despesa de Consumo
           </div>
         </div>
 
@@ -613,7 +614,7 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
         <div>
           <div style={{ fontSize: '0.95rem', fontWeight: 700 }}>{m.descricao}</div>
           <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-            Data: {m.dataMovimento} • Conta: {m.conta?.nome || 'N/D'} • Cat Atual:{' '}
+            Data: {formatarDataIso(m.dataMovimento)} • Conta: {m.conta?.nome || 'N/D'} • Cat Atual:{' '}
             {m.categoria?.nome || 'Não definida'}
           </div>
           {m.observacao && (
@@ -648,7 +649,7 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
               >
                 <span>📦</span>
                 <span>
-                  Compra parcelada ({matchParcela[1]} de {matchParcela[2]}) • <strong>Data da Compra: {m.dataMovimento}</strong>. A categoria definida será aplicada a todas as parcelas desta compra.
+                  Compra parcelada ({matchParcela[1]} de {matchParcela[2]}) • <strong>Data da Compra: {formatarDataIso(m.dataMovimento)}</strong>. A categoria definida será aplicada a todas as parcelas desta compra.
                 </span>
               </div>
             );
@@ -902,7 +903,7 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
                   )}
                   {!propagarVendedorMap[m.id] && (
                     <span style={{ display: 'block', fontSize: '0.72rem', color: 'var(--status-green)', marginTop: '2px' }}>
-                      ✓ Modo seguro ativo: a categoria será aplicada <strong>apenas a esta compra</strong> (realizada em {m.dataMovimento})
+                      ✓ Modo seguro ativo: a categoria será aplicada <strong>apenas a esta compra</strong> (realizada em {formatarDataIso(m.dataMovimento)})
                       {m.descricao.match(/(?:[\-_–—]|\()\s*(?:parcela\s+)?(\d+)\s*(?:\/|\s+de\s+)\s*(\d+)\s*\)?/i) ? ' (e às suas demais parcelas)' : ''}.
                     </span>
                   )}

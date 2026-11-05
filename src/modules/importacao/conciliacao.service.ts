@@ -103,6 +103,39 @@ export class ConciliacaoService {
           };
         }
       }
+      // 6. Fatura Nubank: "Período vigente: 09 SET a 09 OUT" acompanhado de "Data de vencimento: 16 OUT 2026" ou "FATURA 16 OUT 2026"
+      const rNubankVigente = /Per[íi]odo\s+vigente:\s*(\d{1,2})\s+([A-Za-zç]+)\s+a\s+(\d{1,2})\s+([A-Za-zç]+)/i;
+      const rNubankVenc = /(?:vencimento:\s*|FATURA\s+)(\d{1,2})\s+([A-Za-zç]+)\s+(\d{4})/i;
+      const mVig = fonte.match(rNubankVigente);
+      const mVenc = fonte.match(rNubankVenc);
+      if (mVig && mVenc) {
+        const anoVenc = +mVenc[3];
+        const mesFim = MESES_MAP[mVig[4].toLowerCase().slice(0, 3)];
+        const diaFim = +mVig[3];
+        const mesIni = MESES_MAP[mVig[2].toLowerCase().slice(0, 3)];
+        const diaIni = +mVig[1];
+        if (mesFim && mesIni) {
+          const anoIni = mesIni > mesFim ? anoVenc - 1 : anoVenc;
+          return {
+            inicio: new Date(Date.UTC(anoIni, mesIni - 1, diaIni)),
+            fim: new Date(Date.UTC(anoVenc, mesFim - 1, diaFim)),
+          };
+        }
+      }
+
+      // 7. Vencimento isolado em fatura (ex: "vencimento: 16 MAR 2026" ou "16-Nubank_2026-03-16.pdf")
+      if (mVenc) {
+        const mesVenc = MESES_MAP[mVenc[2].toLowerCase().slice(0, 3)];
+        if (mesVenc) {
+          const anoVenc = +mVenc[3];
+          const diaVenc = +mVenc[1];
+          // Competência é o mês/ano do vencimento da fatura
+          return {
+            inicio: new Date(Date.UTC(anoVenc, mesVenc - 2, diaVenc)),
+            fim: new Date(Date.UTC(anoVenc, mesVenc - 1, diaVenc)),
+          };
+        }
+      }
     }
 
     return null;
@@ -131,6 +164,7 @@ export class ConciliacaoService {
 
     const arquivo = await prisma.arquivoImportacao.findUnique({
       where: { id: arquivoId },
+      include: { lote: true },
     });
 
     const nomeArquivo = arquivo?.nomeArquivo || '';
@@ -142,16 +176,30 @@ export class ConciliacaoService {
     // Prioridade 3: Menor e maior dataMovimento dos lançamentos staging
     let periodoInicio: Date = input.periodoInicio || stagings[0].dataMovimento;
     let periodoFim: Date = input.periodoFim || stagings[stagings.length - 1].dataMovimento;
+    let dataVencimentoDetectada: Date | null = arquivo?.faturaDataVencimento || null;
 
     if (!input.periodoInicio || !input.periodoFim) {
       let textoArquivo: string | null = null;
-      if (arquivo?.caminhoRelativo && fs.existsSync(arquivo.caminhoRelativo)) {
+      let caminhoResolvido: string | null = null;
+
+      if (arquivo?.caminhoRelativo) {
+        if (fs.existsSync(arquivo.caminhoRelativo)) {
+          caminhoResolvido = arquivo.caminhoRelativo;
+        } else if (arquivo.lote?.caminhoDiretorio) {
+          const candidatoDiretorio = path.resolve(arquivo.lote.caminhoDiretorio, arquivo.caminhoRelativo);
+          if (fs.existsSync(candidatoDiretorio)) {
+            caminhoResolvido = candidatoDiretorio;
+          }
+        }
+      }
+
+      if (caminhoResolvido) {
         try {
-          if (arquivo.caminhoRelativo.toLowerCase().endsWith('.pdf')) {
-            const buf = fs.readFileSync(arquivo.caminhoRelativo);
+          if (caminhoResolvido.toLowerCase().endsWith('.pdf')) {
+            const buf = fs.readFileSync(caminhoResolvido);
             textoArquivo = PdfTextExtractor.extrairTexto(buf);
           } else {
-            textoArquivo = fs.readFileSync(arquivo.caminhoRelativo, 'utf-8').slice(0, 5000);
+            textoArquivo = fs.readFileSync(caminhoResolvido, 'utf-8').slice(0, 5000);
           }
         } catch {
           // Fallback silencioso para nomenclatura ou datas dos stagings
@@ -163,16 +211,65 @@ export class ConciliacaoService {
         if (!input.periodoInicio) periodoInicio = periodoDetectado.inicio;
         if (!input.periodoFim) periodoFim = periodoDetectado.fim;
       }
-    }
 
-    // Soma valores absolutos para valorTotal
-    const valorTotal = stagings.reduce((acc, s) => acc + Math.abs(Number(s.valor)), 0);
+      if (textoArquivo) {
+        // Detecta vencimento específico de fatura Nubank ou geral por extenso (ex: "vencimento: 16 OUT 2026")
+        const rVenc = /(?:vencimento:\s*|FATURA\s+)(\d{1,2})\s+([A-Za-zç]+)\s+(\d{4})/i;
+        const mV = textoArquivo.match(rVenc);
+        if (mV) {
+          const mesV = MESES_MAP[mV[2].toLowerCase().slice(0, 3)];
+          if (mesV) {
+            dataVencimentoDetectada = new Date(Date.UTC(+mV[3], mesV - 1, +mV[1]));
+          }
+        }
+
+        // Detecta vencimento padrão Santander / boletos (ex: "Total a Pagar ... Vencimento ... R$ 566,51 15/03/2026")
+        if (!dataVencimentoDetectada) {
+          const rVencData = /(?:Vencimento|Total a Pagar)[\s\S]{1,250}?(?:R\$\s*[\d\.,]+)?\s+(\d{2})\/(\d{2})\/(20\d{2})/i;
+          const mVD = textoArquivo.match(rVencData);
+          if (mVD) {
+            dataVencimentoDetectada = new Date(Date.UTC(+mVD[3], +mVD[2] - 1, +mVD[1]));
+          }
+        }
+      }
+
+      // Se não encontrou vencimento no texto do arquivo, tenta extrair da nomenclatura
+      if (!dataVencimentoDetectada && nomeArquivo) {
+        // Ex: 04-Nubank_2026-04-16.pdf
+        const mNomeVenc = nomeArquivo.match(/(?:_|-)(\d{4})-(\d{2})-(\d{2})/);
+        if (mNomeVenc) {
+          dataVencimentoDetectada = new Date(Date.UTC(+mNomeVenc[1], +mNomeVenc[2] - 1, +mNomeVenc[3]));
+        } else {
+          // Ex: Fatura_032026_MANUEL_... (MMYYYY)
+          const mNomeMesAno = nomeArquivo.match(/(?:Fatura_|^)(\d{2})(20\d{2})/i);
+          if (mNomeMesAno) {
+            dataVencimentoDetectada = new Date(Date.UTC(+mNomeMesAno[2], +mNomeMesAno[1] - 1, 15));
+          } else {
+            // Ex: 09-Fatura_Santander_2026-09.pdf (YYYY-MM)
+            const mNomeAnoMes = nomeArquivo.match(/(?:_|-)(\d{4})-(\d{2})/);
+            if (mNomeAnoMes) {
+              dataVencimentoDetectada = new Date(Date.UTC(+mNomeAnoMes[1], +mNomeAnoMes[2] - 1, 10));
+            }
+          }
+        }
+      }
+    }
 
     // Heurística de TipoDocumento e Instituição
     let tipoDocumento: TipoDocumentoImportado = TipoDocumentoImportado.OUTRO;
     const nomeLower = (nomeArquivo + ' ' + (stagings[0].contaSugerida || '')).toLowerCase();
 
-    if (
+    const ehExtratoPorNome = nomeLower.includes('extrato') || nomeLower.includes('statement');
+    const todosStagingsCC = stagings.length > 0 && stagings.every((s) => s.tipoConta === 'CONTA_CORRENTE' && s.parcelaAtual === null);
+
+    const ehFaturaPorMetaOuStaging =
+      arquivo?.eFaturaCartao === true ||
+      stagings.some((s) => s.tipoConta === 'CARTAO_CREDITO' || s.parcelaAtual !== null);
+
+    if (ehExtratoPorNome && (todosStagingsCC || !ehFaturaPorMetaOuStaging)) {
+      tipoDocumento = TipoDocumentoImportado.EXTRATO_CONTA_CORRENTE;
+    } else if (
+      ehFaturaPorMetaOuStaging ||
       nomeLower.includes('fatura') ||
       nomeLower.includes('card') ||
       nomeLower.includes('cartao') ||
@@ -193,6 +290,31 @@ export class ConciliacaoService {
       tipoDocumento = TipoDocumentoImportado.EXTRATO_CONTA_CORRENTE;
     }
 
+    // Determina valorTotal para catálogo e grid de faturas:
+    // Para Fatura de Cartão:
+    // 1. Prioriza faturaValorTotal oficial gravado no arquivo (declarado no cabeçalho do documento)
+    // 2. Caso não presente, calcula a soma líquida das despesas/compras abatendo receitas/estornos e excluindo pagamentos de fatura
+    // Para Extratos: soma absoluta tradicional dos lançamentos
+    let valorTotal: number;
+    if (tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO) {
+      if (arquivo?.faturaValorTotal && Number(arquivo.faturaValorTotal) > 0) {
+        valorTotal = Number(arquivo.faturaValorTotal);
+      } else {
+        const comprasEfetivas = stagings.filter(
+          (s) =>
+            s.natureza !== 'TRANSFERENCIA_PROPRIA' &&
+            !/pag(amento)?\s*(de)?\s*(fat(ura)?|fatura)|pgto\s*fat(ura)?|fatura\s*boleto|pagamento\s*recebido/i.test(s.descricao)
+        );
+        const somaLiquida = comprasEfetivas.reduce((acc, s) => {
+          const val = Math.abs(Number(s.valor));
+          return s.natureza === 'RECEITA' ? acc - val : acc + val;
+        }, 0);
+        valorTotal = somaLiquida > 0 ? Number(somaLiquida.toFixed(2)) : stagings.reduce((acc, s) => acc + Math.abs(Number(s.valor)), 0);
+      }
+    } else {
+      valorTotal = stagings.reduce((acc, s) => acc + Math.abs(Number(s.valor)), 0);
+    }
+
     // Instituição
     let instituicao = 'Outros';
     if (nomeLower.includes('nubank')) instituicao = 'Nubank';
@@ -206,9 +328,12 @@ export class ConciliacaoService {
       instituicao = stagings[0].contaSugerida.replace(/Conta\s+|Cartão\s+/gi, '').trim() || 'Outros';
     }
 
-    // Competência de referência (YYYY-MM baseada na data final do período)
-    const ano = periodoFim.getUTCFullYear();
-    const mes = String(periodoFim.getUTCMonth() + 1).padStart(2, '0');
+    // Competência de referência (YYYY-MM baseada na data de vencimento se fatura, ou data final do período)
+    const dataRefCompetencia = (tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO && dataVencimentoDetectada)
+      ? dataVencimentoDetectada
+      : periodoFim;
+    const ano = dataRefCompetencia.getUTCFullYear();
+    const mes = String(dataRefCompetencia.getUTCMonth() + 1).padStart(2, '0');
     const competencia = `${ano}-${mes}`;
 
     // Conta vinculada:
@@ -266,7 +391,7 @@ export class ConciliacaoService {
         tipoDocumento,
         instituicao,
         competencia,
-        dataVencimento: tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO ? periodoFim : null,
+        dataVencimento: tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO ? (dataVencimentoDetectada || periodoFim) : null,
         periodoInicio,
         periodoFim,
         totalTransacoes,
@@ -277,7 +402,7 @@ export class ConciliacaoService {
         tipoDocumento,
         instituicao,
         competencia,
-        dataVencimento: tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO ? periodoFim : null,
+        dataVencimento: tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO ? (dataVencimentoDetectada || periodoFim) : null,
         periodoInicio,
         periodoFim,
         totalTransacoes,
@@ -576,8 +701,29 @@ export class ConciliacaoService {
       orderBy: { criadoEm: 'desc' },
     });
 
+    const arquivoIds = registros.map((r) => r.arquivoId);
+    const stagings = arquivoIds.length
+      ? await prisma.stagingLancamentoImportacao.findMany({
+          where: { arquivoId: { in: arquivoIds }, statusProcessamento: 'PROCESSADO' },
+          select: { arquivoId: true, dataMovimento: true, valor: true },
+        })
+      : [];
+    const distPorArquivo = new Map<string, Map<string, { competencia: string; totalTransacoes: number; valorTotal: number }>>();
+    for (const s of stagings) {
+      const comp = `${s.dataMovimento.getUTCFullYear()}-${String(s.dataMovimento.getUTCMonth() + 1).padStart(2, '0')}`;
+      const mapa = distPorArquivo.get(s.arquivoId) || new Map();
+      const atual = mapa.get(comp) || { competencia: comp, totalTransacoes: 0, valorTotal: 0 };
+      atual.totalTransacoes += 1;
+      atual.valorTotal = Number((atual.valorTotal + Math.abs(Number(s.valor))).toFixed(2));
+      mapa.set(comp, atual);
+      distPorArquivo.set(s.arquivoId, mapa);
+    }
+
     return registros.map((item) => ({
       ...item,
+      distribuicaoMensal: Array.from(distPorArquivo.get(item.arquivoId)?.values() || []).sort((a, b) =>
+        a.competencia.localeCompare(b.competencia)
+      ),
       valorTotal: item.valorTotal ? Number(item.valorTotal) : null,
       arquivo: item.arquivo
         ? {
@@ -674,6 +820,169 @@ export class ConciliacaoService {
       },
       movimentos,
       stagingItens,
+    };
+  }
+
+  /**
+   * Exclui a importação de uma fatura e todos os seus lançamentos vinculados,
+   * permitindo reimportar o documento sem conflito de duplicação ou resquícios de dados.
+   * Remove movimentos oficiais gerados, registros de staging, catálogo histórico e o arquivo físico/banco.
+   */
+  public async excluirImportacaoFaturaComLancamentos(arquivoId: string, usuarioId: string) {
+    const arquivo = await prisma.arquivoImportacao.findFirst({
+      where: {
+        id: arquivoId,
+        lote: { usuarioId },
+      },
+      include: {
+        lote: true,
+        historico: true,
+      },
+    });
+
+    if (!arquivo) {
+      throw new Error('Arquivo de fatura não encontrado ou acesso não autorizado.');
+    }
+
+    // 1. Identificar movimentos gerados a partir deste arquivo
+    const movimentosGerados = await prisma.movimento.findMany({
+      where: {
+        usuarioId,
+        origemDocumento: { contains: arquivo.nomeArquivo },
+      },
+      select: { id: true },
+    });
+    const idsMovimentos = movimentosGerados.map((m) => m.id);
+
+    // 2. Transação atômica para limpar movimentos, staging, histórico e o arquivo
+    const resultado = await prisma.$transaction(async (tx) => {
+      let movimentosExcluidos = 0;
+
+      if (idsMovimentos.length > 0) {
+        // Desvincular faturas vinculadas aos movimentos alvo (se algum movimento for pagamento de fatura)
+        await tx.arquivoImportacao.updateMany({
+          where: { faturaPagamentoMovimentoId: { in: idsMovimentos } },
+          data: { faturaPagamentoMovimentoId: null },
+        });
+
+        // Desvincular transferências mútuas antes de deletar
+        await tx.movimento.updateMany({
+          where: { id: { in: idsMovimentos } },
+          data: { transferenciaVinculoId: null },
+        });
+
+        // Deletar os movimentos (rateios e suspeitas são removidos em cascata por FK onDelete: Cascade)
+        const delMovs = await tx.movimento.deleteMany({
+          where: { id: { in: idsMovimentos } },
+        });
+        movimentosExcluidos = delMovs.count;
+      }
+
+      // Desvincular se este próprio arquivo de fatura estiver apontando para algum pagamento
+      if (arquivo.faturaPagamentoMovimentoId) {
+        await tx.arquivoImportacao.update({
+          where: { id: arquivoId },
+          data: { faturaPagamentoMovimentoId: null },
+        });
+      }
+
+      // Remover registros em staging vinculados ao arquivo
+      const delStaging = await tx.stagingLancamentoImportacao.deleteMany({
+        where: { arquivoId },
+      });
+
+      // Remover histórico de tentativas do arquivo (TASK-50)
+      await tx.tentativaArquivoImportacao.deleteMany({
+        where: { arquivoId },
+      });
+
+      // Remover catálogo analítico de histórico
+      await tx.historicoImportacaoArquivo.deleteMany({
+        where: { arquivoId },
+      });
+
+      // Remover o registro de arquivoImportacao
+      await tx.arquivoImportacao.delete({
+        where: { id: arquivoId },
+      });
+
+      // Recalcular status e contadores do lote pai
+      const loteId = arquivo.loteId;
+      const totalRestante = await tx.arquivoImportacao.count({
+        where: { loteId },
+      });
+
+      const processadosRestantes = await tx.arquivoImportacao.count({
+        where: {
+          loteId,
+          status: { in: ['IA_CONCLUIDO', 'STAGING_CARREGADO', 'PROCESSADO_FINAL'] },
+        },
+      });
+
+      const errosRestantes = await tx.arquivoImportacao.count({
+        where: { loteId, status: 'ERRO' },
+      });
+
+      let novoStatusLote = arquivo.lote.status;
+      if (totalRestante === 0) {
+        novoStatusLote = 'CONCLUIDO';
+      } else if (errosRestantes === 0 && (arquivo.lote.status === 'ERRO_PARCIAL' || arquivo.lote.status === 'ERRO_TOTAL')) {
+        if (processadosRestantes === totalRestante) {
+          novoStatusLote = 'CONCLUIDO';
+        } else {
+          novoStatusLote = 'PROCESSANDO_IA';
+        }
+      }
+
+      await tx.loteImportacao.update({
+        where: { id: loteId },
+        data: {
+          totalArquivos: totalRestante,
+          arquivosProcessados: processadosRestantes,
+          status: novoStatusLote,
+        },
+      });
+
+      return {
+        movimentosExcluidos,
+        stagingExcluidos: delStaging.count,
+        nomeArquivo: arquivo.nomeArquivo,
+      };
+    });
+
+    // 3. Remover arquivos físicos no disco (original e consolidado se existirem)
+    if (arquivo.lote.caminhoDiretorio) {
+      const pastaLote = path.resolve(process.cwd(), arquivo.lote.caminhoDiretorio);
+      if (arquivo.caminhoRelativo) {
+        const caminhoFisicoOriginal = path.resolve(pastaLote, arquivo.caminhoRelativo);
+        try {
+          await fs.promises.unlink(caminhoFisicoOriginal);
+        } catch {
+          // Arquivo pode já ter sido excluído ou não existir
+        }
+      }
+
+      const caminhoConsolidado = path.resolve(pastaLote, `consolidado_${arquivo.id}.json`);
+      try {
+        await fs.promises.unlink(caminhoConsolidado);
+      } catch {
+        // Ignora caso não exista
+      }
+    }
+
+    // 4. Reavalia lacunas de conciliação do usuário
+    try {
+      await this.verificarLacunas(usuarioId);
+    } catch (errLacunas) {
+      console.warn('[ConciliacaoService] Aviso ao verificar lacunas após exclusão:', errLacunas);
+    }
+
+    return {
+      sucesso: true,
+      arquivoId,
+      nomeArquivo: resultado.nomeArquivo,
+      movimentosExcluidos: resultado.movimentosExcluidos,
+      stagingExcluidos: resultado.stagingExcluidos,
     };
   }
 }

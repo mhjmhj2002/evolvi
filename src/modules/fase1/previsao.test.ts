@@ -297,23 +297,106 @@ describe('Motor de Previsão e Projeção 6M (M-005) - TASK-14', () => {
     });
   });
 
-  describe('4. Isolamento Multi-tenant', () => {
-    it('garante que a renda base de um usuário não impacta a do outro', async () => {
-      const respUser = await app.inject({
+  describe('5. Projeção em 3 Categorias (/api/fase1/previsao/tres-camadas)', () => {
+    it('deve retornar as 3 camadas e garantir a fórmula: mediaTotalProjetada = mediaRecorrentes + mediaParcelados + mediaVariaveis', async () => {
+      const resp = await app.inject({
         method: 'GET',
-        url: '/api/fase1/previsao/seis-meses?competenciaReferencia=2026-10',
+        url: '/api/fase1/previsao/tres-camadas?competenciaReferencia=2026-10&mesesProjecao=6',
         headers: { authorization: `Bearer ${tokenUser}` },
       });
-      const dataUser = JSON.parse(respUser.body);
-      expect(dataUser.rendaBaseMensal).toBe(11000.0);
 
-      const respInvasor = await app.inject({
-        method: 'GET',
-        url: '/api/fase1/previsao/seis-meses?competenciaReferencia=2026-10',
-        headers: { authorization: `Bearer ${tokenInvasor}` },
+      expect(resp.statusCode).toBe(200);
+      const data = JSON.parse(resp.body);
+
+      expect(data.competenciaReferencia).toBe('2026-10');
+      expect(data.mesesJanela).toBe(6);
+      expect(data.rendaBaseMensal).toBe(11000.0);
+
+      expect(data.recorrentes).toBeDefined();
+      expect(Array.isArray(data.recorrentes.itens)).toBe(true);
+
+      expect(data.parcelamentos).toBeDefined();
+      expect(Array.isArray(data.parcelamentos.itens)).toBe(true);
+
+      expect(data.variaveis).toBeDefined();
+      expect(Array.isArray(data.variaveis.itens)).toBe(true);
+
+      // Validação da Fórmula exata
+      expect(data.sintese).toBeDefined();
+      const soma = Number(
+        (data.sintese.mediaRecorrentes + data.sintese.mediaParcelados + data.sintese.mediaVariaveis).toFixed(2)
+      );
+      expect(data.sintese.mediaTotalProjetada).toBe(soma);
+      expect(data.sintese.formulaExplicativa).toContain('Média Projetada');
+    });
+
+    it('não deve diluir gasto recorrente detectado pelo total de meses da janela quando houver meses sem lançamento', async () => {
+      // Cria usuário com extrato em apenas 2 meses para um contrato de mensalidade
+      const userResp = await app.inject({
+        method: 'POST',
+        url: '/api/auth/cadastro',
+        payload: {
+          nome: 'User Recorrencia Teste',
+          email: `user-rec-${Date.now()}@teste.com`,
+          senha: 'Password123!',
+        },
       });
-      const dataInvasor = JSON.parse(respInvasor.body);
-      expect(dataInvasor.rendaBaseMensal).toBe(6000.0);
+      const token = JSON.parse(userResp.body).token;
+      const uId = JSON.parse(userResp.body).usuario.id;
+
+      const contaResp = await app.inject({
+        method: 'POST',
+        url: '/api/contas',
+        headers: { authorization: `Bearer ${token}` },
+        payload: {
+          nome: 'Conta Corrente Rec',
+          tipo: 'CONTA_CORRENTE',
+        },
+      });
+      const cId = JSON.parse(contaResp.body).conta.id;
+
+      // 2 meses de despesa de mensalidade (R$ 1.621,83 cada) numa janela de 6 meses
+      await prisma.movimento.createMany({
+        data: [
+          {
+            usuarioId: uId,
+            contaId: cId,
+            dataMovimento: new Date('2026-07-05'),
+            competencia: '2026-07',
+            descricao: 'PAG BOLETO UNIAO DE PROFESSORES LTDA',
+            valor: 1621.83,
+            natureza: 'DESPESA',
+            status: 'CONCILIADO',
+          },
+          {
+            usuarioId: uId,
+            contaId: cId,
+            dataMovimento: new Date('2026-09-05'),
+            competencia: '2026-09',
+            descricao: 'PAG BOLETO UNIAO DE PROFESSORES LTDA',
+            valor: 1621.83,
+            natureza: 'DESPESA',
+            status: 'CONCILIADO',
+          },
+        ],
+      });
+
+      const resp = await app.inject({
+        method: 'GET',
+        url: '/api/fase1/previsao/tres-camadas?competenciaReferencia=2026-10&mesesProjecao=6',
+        headers: { authorization: `Bearer ${token}` },
+      });
+
+      expect(resp.statusCode).toBe(200);
+      const data = JSON.parse(resp.body);
+
+      const itemEscola = data.recorrentes.itens.find(
+        (i: any) => i.descricao === 'Mensalidade Escolar'
+      );
+      expect(itemEscola).toBeDefined();
+      // O valor mensal deve ser R$ 1.621,83 (média nos meses que ocorreu), NUNCA R$ 540,61 (diluído por 6)
+      expect(itemEscola.valorMensal).toBe(1621.83);
     });
   });
 });
+

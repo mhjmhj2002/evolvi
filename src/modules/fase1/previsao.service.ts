@@ -5,7 +5,13 @@ import {
   ProjecaoMesItem,
   DecomposicaoCategoriasResponse,
   DecomposicaoCategoriaItem,
+  ProjecaoTresCamadasResponse,
+  ItemGastoRecorrente,
+  ItemParcelamentoFuturo,
+  ItemGastoVariavel,
 } from './previsao.schema.js';
+import { mediaMensalService } from '../media-mensal/media-mensal.service.js';
+import { calcularUltimosMesesFechados } from './baseline.service.js';
 
 /**
  * Baseline auditado do consumo variável por Categoria POF (FIN-161 e Auditoria_FIN161).
@@ -198,15 +204,24 @@ export class PrevisaoProjecaoService {
       },
     });
 
-    // Total de recorrentes ativas cadastradas ou fallback canônico FIN-161 se banco ainda não tiver dados
+    // Verifica se o usuário já possui movimentações ou importações próprias registradas no sistema
+    const temDadosProprios =
+      parcelamentosAtivos.length > 0 ||
+      recorrenciasAtivas.length > 0 ||
+      (await prisma.movimento.count({ where: { usuarioId } })) > 0 ||
+      (await prisma.loteImportacao.count({ where: { usuarioId } })) > 0;
+
+    // Total de recorrentes ativas cadastradas ou fallback canônico FIN-161 se usuário for novo sem dados
     let totalRecorrentesBase = 0;
     if (recorrenciasAtivas.length > 0) {
       totalRecorrentesBase = Number(
         recorrenciasAtivas.reduce((acc, r) => acc + Number(r.valorReferencia), 0).toFixed(2)
       );
-    } else {
-      // Valor auditado canônico FIN-161: R$ 4.482,80
+    } else if (!temDadosProprios) {
+      // Valor auditado canônico FIN-161 para usuário demo/teste sem histórico: R$ 4.482,80
       totalRecorrentesBase = 4482.8;
+    } else {
+      totalRecorrentesBase = 0.0;
     }
 
     // Camada variável auditada
@@ -236,8 +251,8 @@ export class PrevisaoProjecaoService {
             parcelasMes += Number(parc.parcelaValor);
           }
         }
-      } else {
-        // Fallback canônico exato da Previsao_Mensal FIN-161 para as competências reais
+      } else if (!temDadosProprios) {
+        // Fallback canônico exato da Previsao_Mensal FIN-161 apenas se usuário não tem histórico/dados
         const fallbackParc: Record<string, number> = {
           '2026-10': 3440.03,
           '2026-11': 1667.62,
@@ -252,6 +267,8 @@ export class PrevisaoProjecaoService {
           '2027-08': 364.65,
         };
         parcelasMes = fallbackParc[comp] ?? 1285.24;
+      } else {
+        parcelasMes = 0.0;
       }
       parcelasMes = Number(parcelasMes.toFixed(2));
 
@@ -264,6 +281,10 @@ export class PrevisaoProjecaoService {
       if (saldoProjetado > 0) statusSaldo = 'SUPERAVIT';
       else if (saldoProjetado < 0) statusSaldo = 'DEFICIT';
 
+      const observacao = temDadosProprios && parcelamentosAtivos.length === 0 && recorrenciasAtivas.length === 0
+        ? `Projeção calculada: Parcelas R$ ${parcelasMes.toFixed(2)} + Recorrentes R$ ${recorrentesMes.toFixed(2)} + Variável R$ ${variavelMes.toFixed(2)}`
+        : `BASE FIN-161: Parcelas R$ ${parcelasMes.toFixed(2)} + Recorrentes R$ ${recorrentesMes.toFixed(2)} + Variável R$ ${variavelMes.toFixed(2)}`;
+
       meses.push({
         competencia: comp,
         parcelamentos: parcelasMes,
@@ -273,7 +294,7 @@ export class PrevisaoProjecaoService {
         rendaBase,
         saldoProjetado,
         statusSaldo,
-        observacao: `BASE FIN-161: Parcelas R$ ${parcelasMes.toFixed(2)} + Recorrentes R$ ${recorrentesMes.toFixed(2)} + Variável R$ ${variavelMes.toFixed(2)}`,
+        observacao,
       });
 
       totalParcelamentosPeriodo += parcelasMes;
@@ -354,8 +375,15 @@ export class PrevisaoProjecaoService {
       }
     }
 
-    // Se o banco não tiver cadastros completos para este usuário, usar valores canônicos da Auditoria_FIN161
-    const usarFallbackCanonical = recorrencias.length === 0 && parcelamentos.length === 0;
+    // Verifica se o usuário já possui dados próprios no sistema
+    const temDadosProprios =
+      recorrencias.length > 0 ||
+      parcelamentos.length > 0 ||
+      (await prisma.movimento.count({ where: { usuarioId } })) > 0 ||
+      (await prisma.loteImportacao.count({ where: { usuarioId } })) > 0;
+
+    // Se o usuário não tiver dados no sistema (novo/demo), usar valores canônicos da Auditoria_FIN161
+    const usarFallbackCanonical = !temDadosProprios;
 
     // Tabela canônica FIN-161 para as 21 categorias
     const canonicalFin161: Record<string, { rec: number; parcOut: number; parcNov: number; parcDez: number; fund?: string }> = {
@@ -457,6 +485,344 @@ export class PrevisaoProjecaoService {
       totalVariavel,
       saldoMes,
       categorias: itensCategorias,
+    };
+  }
+
+  /**
+   * Obtém a projeção estruturada e separada estritamente nas 3 categorias:
+   * 1. Gastos Recorrentes: Despesas que entram todo mês sem data de término e com baixa variação.
+   * 2. Parcelamentos Futuros: Contratos/parcelas com vencimentos a partir da competência atual.
+   * 3. Gastos Variáveis: Consumo rotineiro e restante das despesas da média apurada.
+   * Síntese: Média total projetada dos X meses = Média Recorrentes + Média Parcelados + Média Variáveis.
+   */
+  async obterProjecaoTresCamadas(
+    usuarioId: string,
+    competenciaReferenciaParam?: string,
+    mesesProjecaoParam?: number
+  ): Promise<ProjecaoTresCamadasResponse> {
+    const usuario = await prisma.usuario.findUnique({
+      where: { id: usuarioId },
+      select: { rendaBaseMensal: true },
+    });
+    const rendaBase = usuario ? Number(usuario.rendaBaseMensal) : 0.0;
+
+    const mesesJanela =
+      mesesProjecaoParam && mesesProjecaoParam >= 1 && mesesProjecaoParam <= 24
+        ? mesesProjecaoParam
+        : await configuracaoService.obterMesesJanelaUsuario(usuarioId);
+
+    let compInicio = competenciaReferenciaParam;
+    if (!compInicio) {
+      const agora = new Date();
+      compInicio = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    const mesesFuturos = gerarCompetenciasFuturas(compInicio, mesesJanela);
+
+    // 1. BLOCO 1: GASTOS RECORRENTES
+    // Busca recorrências ativas cadastradas
+    const recorrenciasDb = await prisma.recorrencia.findMany({
+      where: { usuarioId, status: 'ATIVA' },
+      include: { categoria: { select: { nome: true } } },
+      orderBy: [{ diaPrevisto: 'asc' }, { descricao: 'asc' }],
+    });
+
+    const itensRecorrentes: ItemGastoRecorrente[] = [];
+    const ehContratoRecorrente = (desc: string) => {
+      const u = desc.toUpperCase();
+      return (
+        u.includes('EDP') ||
+        u.includes('CLARO') ||
+        u.includes('SEGURO CASA') ||
+        u.includes('CONDOMINIO') ||
+        u.includes('CREDITO IMOBILIARIO') ||
+        u.includes('PREST CR IM') ||
+        u.includes('UNIAO DE PROFESSORES') ||
+        u.includes('ALUGUEL') ||
+        u.includes('INTERNET') ||
+        u.includes('ACADEMIA') ||
+        u.includes('ESCOLA')
+      );
+    };
+
+    let mediaRecorrentes = 0;
+
+    if (recorrenciasDb.length > 0) {
+      for (const rec of recorrenciasDb) {
+        itensRecorrentes.push({
+          id: rec.id,
+          descricao: rec.descricao,
+          categoriaNome: rec.categoria?.nome || 'Geral',
+          valorMensal: Number(rec.valorReferencia),
+          diaPrevisto: rec.diaPrevisto,
+          essencial: rec.essencial,
+          origem: 'CADASTRO',
+        });
+      }
+      mediaRecorrentes = Number(
+        itensRecorrentes.reduce((sum, r) => sum + r.valorMensal, 0).toFixed(2)
+      );
+    } else {
+      // Se não houver recorrências cadastradas manualmente, detecta contratos regulares dos extratos
+      const normalizarPadraoRecorrente = (desc: string) => {
+        const u = desc.toUpperCase();
+        if (u.includes('EDP')) return 'Energia Elétrica (EDP)';
+        if (u.includes('ENEL')) return 'Energia Elétrica (Enel)';
+        if (u.includes('CLARO')) return 'Telecomunicações / Internet (Claro)';
+        if (u.includes('VIVO')) return 'Telecomunicações / Internet (Vivo)';
+        if (u.includes('TIM')) return 'Telecomunicações (TIM)';
+        if (u.includes('SEGURO CASA') || u.includes('SEGURO RESIDENCIAL')) return 'Seguro Residencial';
+        if (u.includes('CONDOMINIO') || u.includes('ALTAIR')) return 'Condomínio Edifício Altair';
+        if (u.includes('CREDITO IMOBILIARIO') || u.includes('PREST CR IM') || u.includes('HABITACIONAL')) return 'Financiamento Imobiliário';
+        if (u.includes('UNIAO DE PROFESSORES') || (u.includes('MENSALIDADE') && u.includes('PROFESSORES'))) return 'Mensalidade Escolar';
+        if (u.includes('NETFLIX')) return 'Netflix';
+        if (u.includes('SPOTIFY')) return 'Spotify';
+        return desc.trim();
+      };
+
+      // Inclui meses fechados + mês corrente para contemplar despesas já pagas no mês atual (ex: condomínio)
+      const mesesFechados = calcularUltimosMesesFechados(compInicio, mesesJanela);
+      const janelaAnalise = Array.from(new Set([compInicio, ...mesesFechados]));
+
+      const movsJanela = await prisma.movimento.findMany({
+        where: {
+          usuarioId,
+          natureza: 'DESPESA',
+          competencia: { in: janelaAnalise },
+        },
+        include: { categoria: { select: { nome: true } } },
+      });
+
+      const agrupados = new Map<string, typeof movsJanela>();
+      for (const m of movsJanela) {
+        if (!ehContratoRecorrente(m.descricao)) continue;
+        const chave = normalizarPadraoRecorrente(m.descricao);
+        if (!agrupados.has(chave)) agrupados.set(chave, []);
+        agrupados.get(chave)!.push(m);
+      }
+
+      for (const [chave, list] of agrupados.entries()) {
+        // Agrupa por competência para calcular a média real do mês (se houver mais de um lançamento no mesmo mês)
+        const porCompetencia = new Map<string, number>();
+        for (const item of list) {
+          porCompetencia.set(
+            item.competencia,
+            (porCompetencia.get(item.competencia) || 0) + Number(item.valor)
+          );
+        }
+
+        const mesesComLancamento = porCompetencia.size;
+        const totalItemJanela = Array.from(porCompetencia.values()).reduce((a, b) => a + b, 0);
+        // O valor mensal do contrato recorrente é a média nos meses em que ocorreu o lançamento,
+        // não sendo diluído por meses sem lançamento.
+        const valorMensalRecorrente = mesesComLancamento > 0 ? totalItemJanela / mesesComLancamento : 0;
+
+        itensRecorrentes.push({
+          id: `det-${chave.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+          descricao: chave,
+          categoriaNome: list[0].categoria?.nome || 'Recorrente',
+          valorMensal: Number(valorMensalRecorrente.toFixed(2)),
+          essencial: true,
+          origem: 'EXTRATO_DETECTADO',
+          ocorrenciasDetectadas: list.length,
+        });
+      }
+
+      mediaRecorrentes = Number(
+        itensRecorrentes.reduce((sum, r) => sum + r.valorMensal, 0).toFixed(2)
+      );
+    }
+
+    const totalRecorrentesPeriodo = Number((mediaRecorrentes * mesesJanela).toFixed(2));
+
+    // 2. BLOCO 2: PARCELAMENTOS FUTUROS (a partir do mês corrente / compInicio)
+    const parcelamentosDb = await prisma.parcelamento.findMany({
+      where: {
+        usuarioId,
+        status: 'ATIVO',
+        ultimoVencimento: { gte: compInicio },
+      },
+      include: {
+        categoria: { select: { nome: true } },
+        conta: { select: { nome: true } },
+      },
+      orderBy: { ultimoVencimento: 'asc' },
+    });
+
+    const itensParcelados: ItemParcelamentoFuturo[] = [];
+    let totalParcelasPeriodo = 0;
+
+    for (const parc of parcelamentosDb) {
+      const vUnitario = Number(parc.parcelaValor);
+      const m1 = compToMonths(parc.primeiroVencimento);
+      const mu = compToMonths(parc.ultimoVencimento);
+
+      // Quantas parcelas caem dentro da janela de meses projetados
+      let parcelasNaJanela = 0;
+      for (const compFutura of mesesFuturos) {
+        const mTarget = compToMonths(compFutura);
+        if (mTarget >= m1 && mTarget <= mu) {
+          parcelasNaJanela++;
+        }
+      }
+
+      const impactoContrato = Number((parcelasNaJanela * vUnitario).toFixed(2));
+      totalParcelasPeriodo += impactoContrato;
+
+      const parcelasRestantes = Math.max(0, parc.totalParcelas - parc.parcelaAtual + 1);
+      const saldoDevedor = Number((parcelasRestantes * vUnitario).toFixed(2));
+
+      itensParcelados.push({
+        id: parc.id,
+        descricao: parc.descricao,
+        categoriaNome: parc.categoria?.nome || 'Geral',
+        contaNome: parc.conta?.nome || 'Cartão de Crédito',
+        parcelaValor: vUnitario,
+        parcelaAtual: parc.parcelaAtual,
+        totalParcelas: parc.totalParcelas,
+        parcelasRestantes,
+        saldoDevedorRestante: saldoDevedor,
+        primeiroVencimento: parc.primeiroVencimento,
+        ultimoVencimento: parc.ultimoVencimento,
+        impactoPeriodo: impactoContrato,
+        mediaMensalNaJanela: Number((impactoContrato / mesesJanela).toFixed(2)),
+      });
+    }
+
+    totalParcelasPeriodo = Number(totalParcelasPeriodo.toFixed(2));
+    const mediaParcelados = Number((totalParcelasPeriodo / mesesJanela).toFixed(2));
+
+    // 3. BLOCO 3: GASTOS VARIÁVEIS (O restante dos gastos da média que não são recorrentes nem parcelados)
+    const consolidadoMedia = await mediaMensalService.obterMediasConsolidadas(
+      usuarioId,
+      compInicio,
+      mesesJanela
+    );
+
+    const itensVariaveis: ItemGastoVariavel[] = [];
+    let mediaVariaveis = 0;
+
+    // Se as recorrências vieram dos extratos, desmembrar a média excluindo os recorrentes para ter 100% de aderência à média global
+    if (recorrenciasDb.length === 0) {
+      const mesesFechados = calcularUltimosMesesFechados(compInicio, mesesJanela);
+      const movsVariaveisJanela = await prisma.movimento.findMany({
+        where: {
+          usuarioId,
+          natureza: 'DESPESA',
+          competencia: { in: mesesFechados },
+        },
+        include: {
+          categoria: { select: { id: true, nome: true } },
+          exclusoesMedia: { where: { ativo: true } },
+        },
+      });
+
+      const mapVarPorCat = new Map<string, { catId?: string; totalBruto: number; totalExcluido: number; count: number }>();
+
+      for (const m of movsVariaveisJanela) {
+        if (ehContratoRecorrente(m.descricao)) continue;
+
+        const catNome = m.categoria ? m.categoria.nome : 'Desconhecida';
+        const catId = m.categoria?.id;
+        const v = Number(m.valor);
+        const estaExcluido = m.exclusoesMedia.length > 0;
+
+        if (!mapVarPorCat.has(catNome)) {
+          mapVarPorCat.set(catNome, { catId, totalBruto: 0, totalExcluido: 0, count: 0 });
+        }
+        const itemCat = mapVarPorCat.get(catNome)!;
+        itemCat.totalBruto += v;
+        itemCat.count++;
+        if (estaExcluido) {
+          itemCat.totalExcluido += v;
+        }
+      }
+
+      for (const [catNome, dados] of mapVarPorCat.entries()) {
+        const efetivo = dados.totalBruto - dados.totalExcluido;
+        const mediaEfetiva = Number((efetivo / mesesJanela).toFixed(2));
+        itensVariaveis.push({
+          categoriaId: dados.catId,
+          categoriaNome: catNome,
+          mediaMensalEfetiva: mediaEfetiva,
+          totalPeriodoEfetivo: Number(efetivo.toFixed(2)),
+          totalPeriodoBruto: Number(dados.totalBruto.toFixed(2)),
+          totalExcluido: Number(dados.totalExcluido.toFixed(2)),
+          qtdLancamentos: dados.count,
+        });
+      }
+
+      mediaVariaveis = Number(
+        itensVariaveis.reduce((sum, v) => sum + v.mediaMensalEfetiva, 0).toFixed(2)
+      );
+    } else {
+      // Se houver recorrências cadastradas pelo usuário, a média de variáveis vem da tabela consolidada
+      for (const cat of consolidadoMedia.categorias) {
+        if (cat.mediaMensalEfetiva > 0 || cat.totalPeriodoEfetivo > 0) {
+          itensVariaveis.push({
+            categoriaId: cat.categoriaId,
+            categoriaNome: cat.nome,
+            mediaMensalEfetiva: cat.mediaMensalEfetiva,
+            totalPeriodoEfetivo: cat.totalPeriodoEfetivo,
+            totalPeriodoBruto: cat.totalPeriodoBruto,
+            totalExcluido: cat.totalExcluido,
+            qtdLancamentos: cat.qtdLancamentosTotais,
+          });
+        }
+      }
+      mediaVariaveis = Number(
+        (consolidadoMedia.global?.mediaMensalEfetiva || itensVariaveis.reduce((sum, v) => sum + v.mediaMensalEfetiva, 0)).toFixed(2)
+      );
+    }
+
+    const totalVariaveisPeriodo = Number((mediaVariaveis * mesesJanela).toFixed(2));
+
+    // 4. SÍNTESE E FÓRMULA FINAL
+    const mediaTotalProjetada = Number(
+      (mediaRecorrentes + mediaParcelados + mediaVariaveis).toFixed(2)
+    );
+    const totalGeralPeriodo = Number((mediaTotalProjetada * mesesJanela).toFixed(2));
+    const saldoMensalProjetado = Number((rendaBase - mediaTotalProjetada).toFixed(2));
+
+    const statusSaldo: 'SUPERAVIT' | 'DEFICIT' | 'ZERO_A_ZERO' =
+      saldoMensalProjetado > 0.05
+        ? 'SUPERAVIT'
+        : saldoMensalProjetado < -0.05
+        ? 'DEFICIT'
+        : 'ZERO_A_ZERO';
+
+    const formulaExplicativa = `Média Projetada (${mediaTotalProjetada.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}) = Recorrentes (${mediaRecorrentes.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}) + Parcelados (${mediaParcelados.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}) + Variáveis (${mediaVariaveis.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })})`;
+
+    return {
+      competenciaReferencia: compInicio,
+      mesesJanela,
+      mesesProjetados: mesesFuturos,
+      rendaBaseMensal: rendaBase,
+      recorrentes: {
+        itens: itensRecorrentes,
+        mediaMensal: mediaRecorrentes,
+        totalPeriodo: totalRecorrentesPeriodo,
+      },
+      parcelamentos: {
+        itens: itensParcelados,
+        mediaMensal: mediaParcelados,
+        totalPeriodo: totalParcelasPeriodo,
+      },
+      variaveis: {
+        itens: itensVariaveis,
+        mediaMensal: mediaVariaveis,
+        totalPeriodo: totalVariaveisPeriodo,
+      },
+      sintese: {
+        mediaRecorrentes,
+        mediaParcelados,
+        mediaVariaveis,
+        mediaTotalProjetada,
+        totalGeralPeriodo,
+        saldoMensalProjetado,
+        statusSaldo,
+        formulaExplicativa,
+      },
     };
   }
 }

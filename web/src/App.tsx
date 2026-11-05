@@ -7,6 +7,7 @@ import {
   FaseAtiva,
   NavTab,
   ModalRegistroIa,
+  LeitorNotaFiscalModal,
 } from './components/index.ts';
 import { useAuth } from './context/AuthContext.tsx';
 import {
@@ -46,7 +47,7 @@ import {
   PrevisaoSeisMesesResponse,
   DecomposicaoCategoriasResponse,
 } from './api.ts';
-import { CheckCircle2, Sparkles, Bot } from 'lucide-react';
+import { CheckCircle2, Sparkles, Bot, QrCode } from 'lucide-react';
 
 export const App: React.FC = () => {
   const { usuario: authUser, isAuthenticated } = useAuth();
@@ -90,12 +91,14 @@ export const App: React.FC = () => {
   };
 
   // Estado do formulário de novo lançamento
+  const [formDataMovimento, setFormDataMovimento] = useState(new Date().toISOString().split('T')[0]);
   const [formDescricao, setFormDescricao] = useState('');
   const [formValor, setFormValor] = useState('');
   const [formNatureza, setFormNatureza] = useState<'DESPESA' | 'RECEITA' | 'TRANSFERENCIA_PROPRIA'>('DESPESA');
   const [formContaId, setFormContaId] = useState('');
   const [formCategoriaId, setFormCategoriaId] = useState('');
   const [formIsPagamentoFatura, setFormIsPagamentoFatura] = useState(false);
+  const [formObservacao, setFormObservacao] = useState('');
   const [formMensagemSucesso, setFormMensagemSucesso] = useState<string | null>(null);
 
   const ultimoRecarregamentoRef = useRef<number>(0);
@@ -208,7 +211,9 @@ export const App: React.FC = () => {
   }, [isAuthenticated, authUser, recarregarDadosCompletos]);
 
   const [isIaModalOpen, setIsIaModalOpen] = useState(false);
+  const [isNfeModalOpen, setIsNfeModalOpen] = useState(false);
   const [formAvisoIa, setFormAvisoIa] = useState<string | null>(null);
+  const [formChaveAcessoNfe, setFormChaveAcessoNfe] = useState<string | null>(null);
 
   // Handlers
   const handleNovoLancamento = async (e: React.FormEvent) => {
@@ -217,16 +222,20 @@ export const App: React.FC = () => {
     if (isNaN(valorNum) || valorNum <= 0) return;
 
     try {
-      const hoje = new Date().toISOString().split('T')[0];
+      const dataLancamento = formDataMovimento || new Date().toISOString().split('T')[0];
+      const compLancamento = dataLancamento.substring(0, 7);
       await apiService.criarMovimento({
         contaId: formContaId || (contas[0]?.id ?? 'cta-cc'),
         categoriaId: formCategoriaId || undefined,
-        dataMovimento: hoje,
+        dataMovimento: dataLancamento,
+        competencia: compLancamento,
         descricao: formDescricao,
         valor: valorNum,
         natureza: formNatureza,
         status: 'CONCILIADO',
         isPagamentoFatura: formIsPagamentoFatura,
+        chaveAcessoNfe: formChaveAcessoNfe,
+        observacao: formObservacao || undefined,
       });
 
       // Atualizar o consumo imediatamente no termômetro se for despesa de consumo
@@ -235,11 +244,17 @@ export const App: React.FC = () => {
       }
 
       setFormMensagemSucesso('Lançamento registrado com sucesso!');
+      recarregarDadosCompletos(compLancamento);
+
       setTimeout(() => {
         setFormMensagemSucesso(null);
         setIsSheetOpen(false);
         setFormDescricao('');
         setFormValor('');
+        setFormDataMovimento(new Date().toISOString().split('T')[0]);
+        setFormObservacao('');
+        setFormChaveAcessoNfe(null);
+        setFormAvisoIa(null);
       }, 1000);
     } catch {
       // Atualização otimista no frontend
@@ -249,6 +264,10 @@ export const App: React.FC = () => {
       setIsSheetOpen(false);
       setFormDescricao('');
       setFormValor('');
+      setFormDataMovimento(new Date().toISOString().split('T')[0]);
+      setFormObservacao('');
+      setFormChaveAcessoNfe(null);
+      setFormAvisoIa(null);
     }
   };
 
@@ -335,6 +354,7 @@ export const App: React.FC = () => {
             contas={contas}
             categorias={categorias}
             onOpenNovoLancamento={() => setIsSheetOpen(true)}
+            /* onOpenLeitorNotaFiscal={() => setIsNfeModalOpen(true)} - oculto da tela temporariamente a pedido do usuário */
             onNavigateTab={(tab) => setActiveTab(tab)}
             onMovimentoModificado={async () => {
               try {
@@ -378,6 +398,7 @@ export const App: React.FC = () => {
             historicoResumo={historicoResumo}
             historicoCategorias={historicoCategorias}
             onMetasAtualizadas={(novoPlano) => setPlanoMetas(novoPlano)}
+            onNavigateTab={(tab) => setActiveTab(tab)}
           />
         )}
 
@@ -387,6 +408,7 @@ export const App: React.FC = () => {
             parcelamentos={parcelamentos}
             previsao={previsao6M}
             decomposicao={decomposicao6M}
+            categorias={categorias}
             onRegistrarPagamento={handleRegistrarPagamentoCronograma}
             onNovoCompromisso={() => setIsSheetOpen(true)}
             onAtualizarDados={recarregarDadosCompletos}
@@ -531,7 +553,7 @@ export const App: React.FC = () => {
             onSubmit={handleNovoLancamento}
             style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
           >
-            {/* Banner de atalho para IA */}
+            {/* Banner de atalho para IA e Nota Fiscal */}
             <div style={{
               display: 'flex',
               alignItems: 'center',
@@ -540,59 +562,95 @@ export const App: React.FC = () => {
               borderRadius: 'var(--radius-sm)',
               background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.15) 0%, rgba(129, 140, 248, 0.15) 100%)',
               border: '1px solid rgba(56, 189, 248, 0.3)',
+              gap: '8px',
+              flexWrap: 'wrap',
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Sparkles size={18} color="var(--brand-primary)" />
-                <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Quer ditar ou colar texto?</span>
+                <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Entrada Rápida Inteligente:</span>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsIaModalOpen(true)}
-                style={{
-                  background: 'var(--brand-primary)',
-                  color: 'var(--text-inverse)',
-                  border: 'none',
-                  borderRadius: '6px',
-                  padding: '5px 10px',
-                  fontSize: '0.75rem',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                }}
-              >
-                <Bot size={13} /> Usar IA (3 Modos)
-              </button>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => setIsNfeModalOpen(true)}
+                  style={{
+                    background: 'rgba(52, 211, 153, 0.15)',
+                    color: '#34d399',
+                    border: '1px solid rgba(52, 211, 153, 0.4)',
+                    borderRadius: '6px',
+                    padding: '5px 10px',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                  title="Ler Nota Fiscal (NFC-e / QR Code / Chave 44 dígitos)"
+                >
+                  <QrCode size={13} /> Ler Nota Fiscal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsIaModalOpen(true)}
+                  style={{
+                    background: 'var(--brand-primary)',
+                    color: 'var(--text-inverse)',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '5px 10px',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <Bot size={13} /> Usar IA
+                </button>
+              </div>
             </div>
 
             {formAvisoIa && (
               <div style={{
                 padding: '8px 12px',
                 borderRadius: '6px',
-                backgroundColor: 'rgba(56, 189, 248, 0.12)',
-                border: '1px solid rgba(56, 189, 248, 0.25)',
+                backgroundColor: formChaveAcessoNfe ? 'rgba(52, 211, 153, 0.12)' : 'rgba(56, 189, 248, 0.12)',
+                border: formChaveAcessoNfe ? '1px solid rgba(52, 211, 153, 0.3)' : '1px solid rgba(56, 189, 248, 0.25)',
                 fontSize: '0.8rem',
-                color: 'var(--brand-primary)',
+                color: formChaveAcessoNfe ? '#34d399' : 'var(--brand-primary)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px',
               }}>
-                <Sparkles size={14} />
+                {formChaveAcessoNfe ? <QrCode size={14} /> : <Sparkles size={14} />}
                 {formAvisoIa}
               </div>
             )}
 
-            <div className="form-group">
-              <label className="form-label">Descrição</label>
-              <input
-                type="text"
-                className="form-input"
-                placeholder="Ex: Supermercado, Almoço, Gasolina"
-                value={formDescricao}
-                onChange={(e) => setFormDescricao(e.target.value)}
-                required
-              />
+            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '12px' }}>
+              <div className="form-group">
+                <label className="form-label">Descrição</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  placeholder="Ex: Supermercado, Almoço, Gasolina"
+                  value={formDescricao}
+                  onChange={(e) => setFormDescricao(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Data</label>
+                <input
+                  type="date"
+                  className="form-input"
+                  value={formDataMovimento}
+                  onChange={(e) => setFormDataMovimento(e.target.value)}
+                  required
+                />
+              </div>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
@@ -658,6 +716,48 @@ export const App: React.FC = () => {
               </div>
             </div>
 
+            {formChaveAcessoNfe && (
+              <div
+                style={{
+                  backgroundColor: 'rgba(52, 211, 153, 0.08)',
+                  border: '1px solid rgba(52, 211, 153, 0.3)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '10px 12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.8rem', fontWeight: 600, color: '#34d399' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <QrCode size={14} /> Cupom Fiscal NFC-e Vinculado
+                  </span>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    Anti-duplicidade Ativo
+                  </span>
+                </div>
+                <div style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+                  {formChaveAcessoNfe.replace(/(.{4})/g, '$1 ').trim()}
+                </div>
+                {!formValor && (
+                  <div style={{ fontSize: '0.78rem', color: 'var(--status-yellow)', fontWeight: 500, marginTop: '2px' }}>
+                    * O valor não constava no QR Code da SEFAZ. Por favor, confira e preencha o valor no campo acima.
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="form-group">
+              <label className="form-label">Observação (Opcional)</label>
+              <input
+                type="text"
+                className="form-input"
+                placeholder="Ex: Itens da compra, detalhes, número do cupom"
+                value={formObservacao}
+                onChange={(e) => setFormObservacao(e.target.value)}
+              />
+            </div>
+
             {formNatureza === 'TRANSFERENCIA_PROPRIA' && (
               <label
                 style={{
@@ -684,6 +784,38 @@ export const App: React.FC = () => {
           </form>
         )}
       </BottomSheet>
+
+      {/* 5. Modal de Leitura de Nota Fiscal (QR Code / Digitação 44 Dígitos / NFC-e) */}
+      <LeitorNotaFiscalModal
+        isOpen={isNfeModalOpen}
+        onClose={() => setIsNfeModalOpen(false)}
+        onNotaCapturada={(dadosNota) => {
+          setFormDescricao(dadosNota.descricaoSugerida || 'Compra NFC-e');
+          if (dadosNota.valorTotal && dadosNota.valorTotal > 0) {
+            setFormValor(dadosNota.valorTotal.toFixed(2));
+          } else {
+            setFormValor('');
+          }
+          if (dadosNota.dataEmissao) {
+            setFormDataMovimento(dadosNota.dataEmissao);
+          }
+          setFormNatureza('DESPESA');
+          if (dadosNota.categoriaSugeridaId) {
+            setFormCategoriaId(dadosNota.categoriaSugeridaId);
+          }
+          setFormChaveAcessoNfe(dadosNota.chaveAcesso);
+          setFormObservacao(`Cupom Fiscal NFC-e (${dadosNota.uf || 'BR'}) - Chave: ${dadosNota.chaveAcesso.replace(/(.{4})/g, '$1 ').trim()}`);
+          setFormAvisoIa(
+            `Nota Fiscal lida com sucesso! (${dadosNota.uf || 'BR'} - Modelo ${dadosNota.modelo || 'NFC-e'}). ${dadosNota.valorTotal ? 'Valor preenchido.' : 'Informe o valor total do cupom.'}`
+          );
+          setIsNfeModalOpen(false);
+          setIsSheetOpen(true);
+        }}
+        onAbrirMovimentoExistente={(_movimentoExistente) => {
+          setIsNfeModalOpen(false);
+          setActiveTab('lancamentos');
+        }}
+      />
     </div>
     </ProtectedRoute>
   );

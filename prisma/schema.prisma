@@ -204,6 +204,7 @@ model Movimento {
   origemDocumento            String?           @map("origem_documento") @db.VarChar(255)
   categoriaFixadaPeloUsuario Boolean           @default(false) @map("categoria_fixada_usuario")
   validadoDedupe             String            @default("N") @map("validado_dedupe") @db.VarChar(1)
+  chaveAcessoNfe             String?           @map("chave_acesso_nfe") @db.VarChar(44)
   criadoEm                   DateTime          @default(now()) @map("criado_em") @db.Timestamptz(6)
 
   usuario                 Usuario             @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
@@ -222,6 +223,7 @@ model Movimento {
   @@index([categoriaId], map: "idx_movimentos_categoria")
   @@index([usuarioId, categoriaFixadaPeloUsuario], map: "idx_movimentos_usuario_fixada")
   @@index([usuarioId, validadoDedupe], map: "idx_movimentos_usuario_validado_dedupe")
+  @@index([usuarioId, chaveAcessoNfe], map: "idx_movimentos_usuario_chave_acesso_nfe")
   @@map("movimentos")
 }
 

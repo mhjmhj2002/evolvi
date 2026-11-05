@@ -618,5 +618,113 @@ describe('Motor de Movimentos e Anti-Dupla Contagem (TASK-05)', () => {
       expect(mOutro?.categoriaId).toBeNull();
     });
   });
+
+  describe('Exclusão em Lote por Mês / Competência (DELETE /api/movimentos/competencia)', () => {
+    it('deve excluir apenas os lançamentos do mês especificado quando incluirAnteriores for false', async () => {
+      // Cria movimentos em 2026-08, 2026-09 e 2026-10
+      await app.inject({
+        method: 'POST',
+        url: '/api/movimentos',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          contaId: contaCorrenteId,
+          dataMovimento: '2026-08-10',
+          competencia: '2026-08',
+          descricao: 'Gasto Antigo Agosto',
+          valor: 100.0,
+          natureza: 'DESPESA',
+        },
+      });
+
+      await app.inject({
+        method: 'POST',
+        url: '/api/movimentos',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          contaId: contaCorrenteId,
+          dataMovimento: '2026-09-15',
+          competencia: '2026-09',
+          descricao: 'Gasto Setembro Alvo',
+          valor: 150.0,
+          natureza: 'DESPESA',
+        },
+      });
+
+      await app.inject({
+        method: 'POST',
+        url: '/api/movimentos',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          contaId: contaCorrenteId,
+          dataMovimento: '2026-10-05',
+          competencia: '2026-10',
+          descricao: 'Gasto Outubro Futuro',
+          valor: 200.0,
+          natureza: 'DESPESA',
+        },
+      });
+
+      // Exclui apenas 2026-09
+      const resp = await app.inject({
+        method: 'DELETE',
+        url: '/api/movimentos/competencia',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          competencia: '2026-09',
+          incluirAnteriores: false,
+        },
+      });
+
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.movimentosExcluidos).toBeGreaterThanOrEqual(1);
+
+      // 2026-09 não deve existir mais
+      const movsSetembro = await prisma.movimento.findMany({
+        where: { usuarioId: userId, competencia: '2026-09' },
+      });
+      expect(movsSetembro.length).toBe(0);
+
+      // 2026-08 e 2026-10 devem continuar existindo
+      const movsAgosto = await prisma.movimento.findMany({
+        where: { usuarioId: userId, competencia: '2026-08' },
+      });
+      expect(movsAgosto.length).toBeGreaterThanOrEqual(1);
+
+      const movsOutubro = await prisma.movimento.findMany({
+        where: { usuarioId: userId, competencia: '2026-10' },
+      });
+      expect(movsOutubro.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('deve excluir lançamentos do mês especificado e todos os anteriores quando incluirAnteriores for true', async () => {
+      // Exclui 2026-08 e anteriores
+      const resp = await app.inject({
+        method: 'DELETE',
+        url: '/api/movimentos/competencia',
+        headers: { authorization: `Bearer ${tokenUser}` },
+        payload: {
+          competencia: '2026-08',
+          incluirAnteriores: true,
+        },
+      });
+
+      expect(resp.statusCode).toBe(200);
+      const body = JSON.parse(resp.body);
+      expect(body.movimentosExcluidos).toBeGreaterThanOrEqual(1);
+
+      // Não deve sobrar nenhum movimento <= 2026-08
+      const movsAteAgosto = await prisma.movimento.findMany({
+        where: { usuarioId: userId, competencia: { lte: '2026-08' } },
+      });
+      expect(movsAteAgosto.length).toBe(0);
+
+      // Movimentos de 2026-10 devem permanecer intactos
+      const movsOutubro = await prisma.movimento.findMany({
+        where: { usuarioId: userId, competencia: '2026-10' },
+      });
+      expect(movsOutubro.length).toBeGreaterThanOrEqual(1);
+    });
+  });
 });
 

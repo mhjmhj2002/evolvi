@@ -8,6 +8,18 @@ export const queryFase1BaselineSchema = z.object({
   mesesJanela: z.coerce.number().int().min(3).max(12).optional(),
 });
 
+export const queryFase1SemaforoSchema = z.object({
+  competenciaMes: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/, { message: 'Competência do mês analisado deve estar no formato YYYY-MM' })
+    .optional(),
+  competenciaReferencia: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/, { message: 'Competência de referência deve estar no formato YYYY-MM' })
+    .optional(),
+  mesesJanela: z.coerce.number().int().min(3).max(12).optional(),
+});
+
 export interface BaselineResponse {
   renda_base: number;
   meses_analisados: string[];
@@ -29,6 +41,9 @@ export interface CategoriaSemaforoItem {
   categoria_id: string;
   nome: string;
   ordem: number;
+  gasto_mes_atual?: number;
+  pct_mes_atual?: number;
+  valor_referencia_esperado?: number;
   gasto_medio_mensal: number;
   pct_gasto_atual: number;
   referencia_normalizada_pct: number;
@@ -39,8 +54,11 @@ export interface CategoriaSemaforoItem {
 export interface SemaforoResponse {
   total_categorias: number;
   renda_base: number;
+  competencia_analisada?: string;
+  total_mes_atual?: number;
   media_mensal_total: number;
   meses_analisados: string[];
+  meses_janela?: number;
   categorias: CategoriaSemaforoItem[];
 }
 

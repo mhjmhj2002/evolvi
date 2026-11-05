@@ -12,7 +12,7 @@ export function gerarChaveDedupe(params: {
   ocorrencia?: number;
 }): string {
   if (params.idOrigem && params.idOrigem.trim()) {
-    const normalizadaComId = `ID|${params.contaId}|${params.idOrigem.trim()}|${params.valor.toFixed(2)}`;
+    const normalizadaComId = `ID|${params.contaId}|${params.dataMovimento}|${params.idOrigem.trim()}|${params.valor.toFixed(2)}`;
     return crypto.createHash('sha256').update(normalizadaComId).digest('hex');
   }
 
@@ -30,6 +30,7 @@ export function extrairRaizComerciante(descricao: string): string {
   let limpo = (descricao || '').trim();
 
   // 1. Remove prefixos comuns bancários/cartão/transacionais
+  limpo = limpo.replace(/^(outros\s+gastos\s*(?:[\-_–—]\s*)?)/i, '');
   limpo = limpo.replace(/^(compra\s+(?:no\s+d[ée]bito|com\s+cart[ãa]o|de\s+cart[ãa]o|cart[ãa]o|a\s+vista)\s*(?:[\-_–—]\s*|:\s*no\s+estabelecimento\s*|:\s*)?)/i, '');
   limpo = limpo.replace(/^(d[ée]bito\s+de\s+cart[ãa]o\s*(?:[\-_–—]\s*)?)/i, '');
   limpo = limpo.replace(/^(compra\s+(?:no\s+cr[ée]dito|parcelada)\s*(?:[\-_–—]\s*)?)/i, '');
@@ -65,6 +66,66 @@ export function extrairRaizComerciante(descricao: string): string {
   limpo = limpo.replace(/^[\s\-_–—]+|[\s\-_–—]+$/g, '').trim();
 
   return limpo;
+}
+
+/**
+ * Normaliza uma string para comparação fonética/textual tolerante a acentos, pontuações e espaçamentos.
+ */
+export function normalizarParaComparacaoVendedor(texto: string): string {
+  return (texto || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Extrai o nome do favorecido a partir do campo de observação, se existir (ex: "Favorecido: Adilene de Oliveira Almeida Pagotto").
+ */
+export function extrairFavorecidoObservacao(observacao?: string | null): string | null {
+  if (!observacao) return null;
+  const match = observacao.match(/favorecido:\s*([^;,\n]+)/i);
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * Verifica se a raiz/descrição de um lançamento (ou favorecido da observação) corresponde
+ * a uma regra de vendedor cadastrada pelo usuário, tolerando truncamentos bancários em diferentes canais.
+ */
+export function correspondemRegraVendedor(termoMovimento: string, termoRegra: string): boolean {
+  const movNorm = normalizarParaComparacaoVendedor(termoMovimento);
+  const regraNorm = normalizarParaComparacaoVendedor(termoRegra);
+
+  if (!movNorm || !regraNorm) return false;
+
+  // 1. Igualdade estrita após normalização
+  if (movNorm === regraNorm) return true;
+
+  // 2. Contenção mútua (se um contém o outro e a parte menor tem tamanho seguro >= 6 caracteres)
+  // Ex: "Amazon Prime" contém "Amazon" (6 chars); "Adilene de Oliveira Almeida Pagotto" contém "Adilene De Oliveira A"
+  const menorLen = Math.min(movNorm.length, regraNorm.length);
+  if ((movNorm.includes(regraNorm) || regraNorm.includes(movNorm)) && menorLen >= 6) {
+    return true;
+  }
+
+  // 3. Compartilhamento de prefixo significativo (>= 10 caracteres) para truncamentos divergentes
+  // Ex: "Adilene de Oliveira Almei" (25 chars) vs "Adilene de Oliveira A" (21 chars) -> prefixo comum "adilene de oliveira a" (21 chars)
+  let prefixoComumLen = 0;
+  while (
+    prefixoComumLen < movNorm.length &&
+    prefixoComumLen < regraNorm.length &&
+    movNorm[prefixoComumLen] === regraNorm[prefixoComumLen]
+  ) {
+    prefixoComumLen++;
+  }
+
+  if (prefixoComumLen >= 10) {
+    return true;
+  }
+
+  return false;
 }
 
 export interface InfoParcelamento {

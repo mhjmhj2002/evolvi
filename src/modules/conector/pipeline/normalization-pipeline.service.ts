@@ -1,6 +1,10 @@
 import { prisma } from '../../../infrastructure/database/prisma.js';
 import { BankTransactionRaw } from '../types/bank-connector.interface.js';
-import { gerarChaveDedupe, extrairRaizComerciante } from '../../movimento/movimento.util.js';
+import {
+  gerarChaveDedupe,
+  extrairRaizComerciante,
+  correspondemRegraVendedor,
+} from '../../movimento/movimento.util.js';
 
 export interface IngestItemParams {
   contaId: string;
@@ -46,6 +50,10 @@ export class NormalizationPipelineService {
     if (!conta) {
       throw new Error(`Conta bancária [${contaId}] não pertence ao usuário ou não existe.`);
     }
+
+    const regrasVendedorUsuario = await prisma.regraVendedorCategoria.findMany({
+      where: { usuarioId },
+    });
 
     for (let i = 0; i < transacoes.length; i++) {
       const tx = transacoes[i];
@@ -108,24 +116,26 @@ export class NormalizationPipelineService {
         let categoriaFixadaAutomaticamente = false;
 
         const raizComerciante = extrairRaizComerciante(tx.descricao);
-        if (raizComerciante && raizComerciante.length >= 3) {
-          const regraVendedor = await prisma.regraVendedorCategoria.findFirst({
-            where: {
-              usuarioId,
-              termoVendedor: { equals: raizComerciante, mode: 'insensitive' },
-            },
-          });
-          if (regraVendedor) {
-            categoriaId = regraVendedor.categoriaId;
-            categoriaFixadaAutomaticamente = true;
-            await prisma.regraVendedorCategoria.update({
-              where: { id: regraVendedor.id },
-              data: {
-                totalAplicacoes: { increment: 1 },
-                atualizadoEm: new Date(),
-              },
-            }).catch(() => {});
+        const regraEncontrada = regrasVendedorUsuario.find((regra) => {
+          if (raizComerciante && correspondemRegraVendedor(raizComerciante, regra.termoVendedor)) {
+            return true;
           }
+          if (correspondemRegraVendedor(tx.descricao, regra.termoVendedor)) {
+            return true;
+          }
+          return false;
+        });
+
+        if (regraEncontrada) {
+          categoriaId = regraEncontrada.categoriaId;
+          categoriaFixadaAutomaticamente = true;
+          await prisma.regraVendedorCategoria.update({
+            where: { id: regraEncontrada.id },
+            data: {
+              totalAplicacoes: { increment: 1 },
+              atualizadoEm: new Date(),
+            },
+          }).catch(() => {});
         }
 
         if (!categoriaId && tx.categoriaSugerida) {

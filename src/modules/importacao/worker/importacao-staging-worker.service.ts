@@ -10,6 +10,7 @@ import {
   ArquivoConsolidadoIa,
   arquivoConsolidadoIaSchema,
 } from './ia-extrator.schema.js';
+import { ImportacaoTentativasService } from '../importacao-tentativas.service.js';
 
 export interface CargaStagingResultado {
   loteId: string;
@@ -194,6 +195,9 @@ export class ImportacaoStagingWorkerService {
           },
         });
       });
+
+      // Recalcula contadores do lote (incluindo totalLancamentos atualizado com a carga de staging)
+      await ImportacaoTentativasService.recalcularContadoresLote(arquivo.loteId);
 
       // Emite evento de progresso e de conclusão da staging
       importacaoEventBus.emitArquivoProgresso({

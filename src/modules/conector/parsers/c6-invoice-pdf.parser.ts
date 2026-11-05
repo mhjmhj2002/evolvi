@@ -16,17 +16,30 @@ import { LancamentoConsolidadoIa } from '../../importacao/worker/ia-extrator.sch
 export class C6InvoicePdfParser {
   private static readonly MESES_MAP: Record<string, string> = {
     jan: '01',
+    janeiro: '01',
     fev: '02',
+    fevereiro: '02',
     mar: '03',
+    marco: '03',
+    março: '03',
     abr: '04',
+    abril: '04',
     mai: '05',
+    maio: '05',
     jun: '06',
+    junho: '06',
     jul: '07',
+    julho: '07',
     ago: '08',
+    agosto: '08',
     set: '09',
+    setembro: '09',
     out: '10',
+    outubro: '10',
     nov: '11',
+    novembro: '11',
     dez: '12',
+    dezembro: '12',
   };
 
   /**
@@ -59,16 +72,51 @@ export class C6InvoicePdfParser {
     let dataVencimento: Date | null = null;
     let valorTotal: number | null = null;
 
-    const vencimentoMatch = texto.match(/vencimento:\s*(\d{2})\/(\d{2})\/(\d{4})/i) ||
+    // 1. Vencimento:
+    // Prioridade A: Vencimento em formato numérico exato (DD/MM/YYYY)
+    const vencimentoNumMatch = texto.match(/vencimento:?\s*(\d{2})\/(\d{2})\/(\d{4})/i) ||
       texto.match(/vencimento[\s\S]{0,30}(\d{2})\/(\d{2})\/(\d{4})/i);
-    if (vencimentoMatch) {
-      dataVencimento = new Date(`${vencimentoMatch[3]}-${vencimentoMatch[2]}-${vencimentoMatch[1]}T12:00:00.000Z`);
+    if (vencimentoNumMatch) {
+      dataVencimento = new Date(`${vencimentoNumMatch[3]}-${vencimentoNumMatch[2]}-${vencimentoNumMatch[1]}T12:00:00.000Z`);
+    } else {
+      // Prioridade B: Vencimento com mês por extenso (ex: "Data do vencimento: 20 de Abril", "Vencimento: 20 de Janeiro")
+      const vencimentoExtensoMatch = texto.match(/(?:data\s+do\s+vencimento|vencimento):\s*(\d{1,2})\s+de\s+([a-zç]+)(?:\s+de\s+(\d{4}))?/i) ||
+        texto.match(/vencimento\s+em\s+([a-zç]+)/i);
+      if (vencimentoExtensoMatch) {
+        const dia = vencimentoExtensoMatch[1]?.length <= 2 ? vencimentoExtensoMatch[1].padStart(2, '0') : '20';
+        const mesBruto = (vencimentoExtensoMatch[2] || vencimentoExtensoMatch[1]).toLowerCase();
+        const mes = this.MESES_MAP[mesBruto] || this.MESES_MAP[mesBruto.slice(0, 3)];
+
+        let ano = vencimentoExtensoMatch[3];
+        if (!ano) {
+          // Busca ano no código do boleto / linha digitável (ex: 20/04/2026)
+          const boletoData = texto.match(/(\d{2})\/(\d{2})\/(20\d{2})/);
+          if (boletoData) {
+            ano = boletoData[3];
+          } else {
+            ano = new Date().getFullYear().toString();
+          }
+        }
+
+        if (mes) {
+          dataVencimento = new Date(`${ano}-${mes}-${dia}T12:00:00.000Z`);
+        }
+      }
     }
 
-    const totalMatch = texto.match(/total\s+(?:da\s+)?fatura[\s\S]{0,30}(?:r\$\s*)?([\d\.,]+)/i) ||
+    // 2. Valor Total Oficial da Fatura:
+    // Prioridade A: "chegou no valor de R$ X.XXX,XX" (Cabeçalho da fatura original C6 Bank)
+    // Prioridade B: "Valor da fatura: R$ X.XXX,XX" ou "Total a pagar: R$ X.XXX,XX"
+    // Prioridade C: "Total da fatura ... R$ X.XXX,XX"
+    const totalMatch =
+      texto.match(/chegou\s+no\s+(?:valor\s+de\s*)?(?:r\$\s*)?([\d\.,]+)/i) ||
+      texto.match(/valor\s+da\s+fatura:\s*(?:r\$\s*)?([\d\.,]+)/i) ||
+      texto.match(/total\s+a\s+pagar\s*(?:r\$\s*)?([\d\.,]+)/i) ||
+      texto.match(/total\s+(?:da\s+)?fatura[\s\S]{0,30}(?:r\$\s*)?([\d\.,]+)/i) ||
       texto.match(/valor\s+total[\s\S]{0,30}(?:r\$\s*)?([\d\.,]+)/i);
+
     if (totalMatch) {
-      const clean = totalMatch[1].replace(/\./g, '').replace(',', '.').trim();
+      const clean = totalMatch[1].replace(/\./g, '').replace(',', '.').replace(/[^\d.]/g, '').trim();
       const num = parseFloat(clean);
       if (!isNaN(num) && num > 0) {
         valorTotal = num;
@@ -95,24 +143,38 @@ export class C6InvoicePdfParser {
     const lines = texto.split(/\r?\n/);
 
     // 1. Identificar ano e mês de referência da fatura
-    // Ex: "Vencimento: 20/01/2026" ou "vencimento em Janeiro" ou via contexto
+    // Ex: "Vencimento: 20/01/2026", "Data do vencimento: 20 de Abril" ou "vencimento em Janeiro" ou via contexto
     let anoFatura = contexto?.dataReferencia
       ? contexto.dataReferencia.substring(0, 4)
       : new Date().getFullYear().toString();
     let mesFatura = contexto?.dataReferencia
       ? contexto.dataReferencia.substring(5, 7)
       : (new Date().getMonth() + 1).toString().padStart(2, '0');
+    let diaVencimentoFatura = '20';
 
     const vencimentoMatch = texto.match(/vencimento:\s*(\d{2})\/(\d{2})\/(\d{4})/i);
     if (vencimentoMatch) {
+      diaVencimentoFatura = vencimentoMatch[1];
       mesFatura = vencimentoMatch[2];
       anoFatura = vencimentoMatch[3];
     } else {
-      const vencimentoExtensoMatch = texto.match(/vencimento\s+em\s+([a-zç]+)/i);
+      const vencimentoExtensoMatch = texto.match(/(?:data\s+do\s+vencimento|vencimento):\s*(\d{1,2})\s+de\s+([a-zç]+)(?:\s+de\s+(\d{4}))?/i) ||
+        texto.match(/vencimento\s+em\s+([a-zç]+)/i);
       if (vencimentoExtensoMatch) {
-        const mesExtenso = vencimentoExtensoMatch[1].substring(0, 3).toLowerCase();
-        if (this.MESES_MAP[mesExtenso]) {
-          mesFatura = this.MESES_MAP[mesExtenso];
+        if (vencimentoExtensoMatch[1]?.length <= 2) {
+          diaVencimentoFatura = vencimentoExtensoMatch[1].padStart(2, '0');
+        }
+        const mesBruto = (vencimentoExtensoMatch[2] || vencimentoExtensoMatch[1]).toLowerCase();
+        if (this.MESES_MAP[mesBruto] || this.MESES_MAP[mesBruto.slice(0, 3)]) {
+          mesFatura = this.MESES_MAP[mesBruto] || this.MESES_MAP[mesBruto.slice(0, 3)];
+        }
+        if (vencimentoExtensoMatch[3]) {
+          anoFatura = vencimentoExtensoMatch[3];
+        } else {
+          const boletoData = texto.match(/(\d{2})\/(\d{2})\/(20\d{2})/);
+          if (boletoData) {
+            anoFatura = boletoData[3];
+          }
         }
       }
     }
@@ -277,7 +339,7 @@ export class C6InvoicePdfParser {
         let observacaoTransacao = `Fatura C6 Bank - ${currentCardNome}`;
 
         if (parcelaAtual !== null && totalParcelas !== null) {
-          const diaFechamentoFatura = vencimentoMatch ? vencimentoMatch[1] : '10';
+          const diaFechamentoFatura = diaVencimentoFatura || (vencimentoMatch ? vencimentoMatch[1] : '10');
           dataMovimentoFinal = `${anoFatura}-${mesFatura}-${diaFechamentoFatura}`;
           observacaoTransacao += ` (Compra original parcelada em ${dia}/${mes}/${ano})`;
         }

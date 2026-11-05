@@ -6,6 +6,7 @@ import { historicoConsumoService } from './historico.service.js';
 import { queryFase1HistoricoSchema } from './historico.schema.js';
 import {
   queryFase1BaselineSchema,
+  queryFase1SemaforoSchema,
   queryFase1MetasSchema,
   salvarMetasZeroAZeroSchema,
   queryFase1MetasExecucaoSchema,
@@ -15,6 +16,7 @@ import {
   queryFase1PrevisaoSchema,
   queryDecomposicaoCategoriasSchema,
   updateVariavelAuditadaLoteSchema,
+  queryProjecaoTresCamadasSchema,
 } from './previsao.schema.js';
 
 export const fase1Routes: FastifyPluginAsync = async (app: FastifyInstance) => {
@@ -48,7 +50,7 @@ export const fase1Routes: FastifyPluginAsync = async (app: FastifyInstance) => {
   app.get('/semaforo', async (request, reply) => {
     const usuarioId = request.user.sub;
 
-    const queryParse = queryFase1BaselineSchema.safeParse(request.query);
+    const queryParse = queryFase1SemaforoSchema.safeParse(request.query);
     if (!queryParse.success) {
       return reply.status(400).send({
         statusCode: 400,
@@ -58,11 +60,12 @@ export const fase1Routes: FastifyPluginAsync = async (app: FastifyInstance) => {
       });
     }
 
-    const { competenciaReferencia, mesesJanela } = queryParse.data;
+    const { competenciaMes, competenciaReferencia, mesesJanela } = queryParse.data;
     const resultado = await baselineService.calcularSemaforo(
       usuarioId,
-      competenciaReferencia,
-      mesesJanela
+      competenciaMes,
+      mesesJanela,
+      competenciaReferencia
     );
 
     return reply.status(200).send(resultado);
@@ -248,10 +251,31 @@ export const fase1Routes: FastifyPluginAsync = async (app: FastifyInstance) => {
       bodyParse.data.ajustes
     );
 
-    return reply.status(200).send({
-      mensagem: 'Calibração da camada variável atualizada com sucesso.',
-      variavelAuditada: resultado,
-    });
+    return reply.status(200).send({ variavelAuditada: resultado });
+  });
+
+  // GET /api/fase1/previsao/tres-camadas - Projeção detalhada em 3 Camadas (Recorrentes + Parcelamentos + Variáveis)
+  app.get('/previsao/tres-camadas', async (request, reply) => {
+    const usuarioId = request.user.sub;
+
+    const queryParse = queryProjecaoTresCamadasSchema.safeParse(request.query);
+    if (!queryParse.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Parâmetros de consulta inválidos para projeção em 3 camadas.',
+        issues: queryParse.error.issues,
+      });
+    }
+
+    const { competenciaReferencia, mesesProjecao } = queryParse.data;
+    const resultado = await previsaoProjecaoService.obterProjecaoTresCamadas(
+      usuarioId,
+      competenciaReferencia,
+      mesesProjecao
+    );
+
+    return reply.status(200).send(resultado);
   });
 };
 

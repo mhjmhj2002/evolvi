@@ -16,6 +16,7 @@ export const createMovimentoSchema = z.object({
   observacao: z.string().optional().nullable(),
   origemDocumento: z.string().max(255).optional().nullable(),
   categoriaFixadaPeloUsuario: z.boolean().optional(),
+  chaveAcessoNfe: z.string().max(44).optional().nullable(),
   // Campos específicos para transferência ou pagamento de fatura entre contas
   contaDestinoId: z.string().uuid({ message: 'ID da conta destino deve ser um UUID válido' }).optional().nullable(),
   isPagamentoFatura: z.boolean().optional(),
@@ -35,6 +36,7 @@ export const updateMovimentoSchema = z.object({
   idOrigem: z.string().max(255).optional().nullable(),
   observacao: z.string().optional().nullable(),
   origemDocumento: z.string().max(255).optional().nullable(),
+  chaveAcessoNfe: z.string().max(44).optional().nullable(),
   propagarMesmoVendedor: z.boolean().optional(),
   memorizarRegraVendedor: z.boolean().optional(),
 });
@@ -46,6 +48,7 @@ export const queryMovimentosSchema = z.object({
   busca: z.string().max(100).optional(),
   contaId: z.string().uuid().optional(),
   categoriaId: z.string().uuid().optional(),
+  categoriaRaizId: z.string().uuid().optional(),
   natureza: z.enum(['RECEITA', 'DESPESA', 'TRANSFERENCIA_PROPRIA', 'APORTE_PATRIMONIAL']).optional(),
   status: z.enum(['PREVISTO', 'CONCILIADO', 'CANCELADO']).optional(),
 });
@@ -99,6 +102,12 @@ export const vereditoSuspeitaSchema = z.object({
   memorizarRegraVendedor: z.boolean().optional(),
 });
 
+export const excluirPorCompetenciaSchema = z.object({
+  competencia: z.string().regex(/^\d{4}-\d{2}$/, { message: 'Competência deve estar no formato YYYY-MM' }),
+  incluirAnteriores: z.boolean().optional().default(false),
+  contaId: z.string().uuid({ message: 'ID da conta deve ser um UUID válido' }).optional().nullable(),
+});
+
 export type CreateMovimentoInput = z.infer<typeof createMovimentoSchema>;
 export type UpdateMovimentoInput = z.infer<typeof updateMovimentoSchema>;
 export type QueryMovimentosInput = z.infer<typeof queryMovimentosSchema>;
@@ -106,3 +115,4 @@ export type ImportarMovimentosInput = z.infer<typeof importarMovimentosSchema>;
 export type SplitItemInput = z.infer<typeof splitItemSchema>;
 export type SplitMovimentoInput = z.infer<typeof splitMovimentoSchema>;
 export type VereditoSuspeitaInput = z.infer<typeof vereditoSuspeitaSchema>;
+export type ExcluirPorCompetenciaInput = z.infer<typeof excluirPorCompetenciaSchema>;

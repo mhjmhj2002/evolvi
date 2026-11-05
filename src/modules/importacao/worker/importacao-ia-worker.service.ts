@@ -113,16 +113,6 @@ export class ImportacaoIaWorkerService {
       throw new Error(`Lote ${loteId} não encontrado.`);
     }
 
-    // Atualiza status do lote para PROCESSANDO_IA
-    await prisma.loteImportacao.update({
-      where: { id: loteId },
-      data: {
-        status: 'PROCESSANDO_IA',
-        iniciadoEm: lote.iniciadoEm ?? new Date(),
-        iaSelecionada: opcoes?.modeloIa || opcoes?.provedorIa || lote.iaSelecionada,
-      },
-    });
-
     // Busca arquivos pendentes (status RECEPCIONADO ou ENVIADO_IA) ordenados por data de criação.
     // TASK-50: arquivos marcados como já importados anteriormente aguardam confirmação
     // explícita do usuário e não entram no pipeline.
@@ -133,6 +123,27 @@ export class ImportacaoIaWorkerService {
         jaImportadoAnteriormente: false,
       },
       orderBy: { criadoEm: 'asc' },
+    });
+
+    if (arquivosPendentes.length === 0) {
+      await ImportacaoTentativasService.recalcularContadoresLote(loteId);
+      return {
+        loteId,
+        totalArquivos: 0,
+        arquivosProcessadosComSucesso: 0,
+        arquivosComErro: 0,
+        resultados: [],
+      };
+    }
+
+    // Atualiza status do lote para PROCESSANDO_IA
+    await prisma.loteImportacao.update({
+      where: { id: loteId },
+      data: {
+        status: 'PROCESSANDO_IA',
+        iniciadoEm: lote.iniciadoEm ?? new Date(),
+        iaSelecionada: opcoes?.modeloIa || opcoes?.provedorIa || lote.iaSelecionada,
+      },
     });
 
     // Buscar contexto do usuário (contas cadastradas e categorias POF)
@@ -524,11 +535,14 @@ export class ImportacaoIaWorkerService {
       // 5. Geração do Arquivo Físico Consolidado na pasta do lote
       // Padrão: consolidado_{arquivoId}.json
       const nomeConsolidado = `consolidado_${arquivo.id}.json`;
+      const pastaLoteFisico = path.resolve(this.baseDir, lote.caminhoDiretorio);
       const caminhoFisicoConsolidado = path.resolve(
-        this.baseDir,
-        lote.caminhoDiretorio,
+        pastaLoteFisico,
         nomeConsolidado
       );
+
+      // Garante que o diretório físico do lote exista antes de salvar o JSON consolidado
+      await fs.mkdir(pastaLoteFisico, { recursive: true });
 
       await fs.writeFile(
         caminhoFisicoConsolidado,
@@ -562,19 +576,26 @@ export class ImportacaoIaWorkerService {
           faturaDataVencimento = metadadosC6.faturaDataVencimento;
           faturaValorTotal = metadadosC6.faturaValorTotal;
         } else {
-          // Heurística universal em texto
-          const isFatura = /fatura|cart[aã]o\s+de\s+cr[eé]dito|fatura\s+fechada/i.test(textoDocumento) ||
-            /fatura|nubank/i.test(arquivo.nomeArquivo);
+          // Heurística universal em texto: se for extrato bancário/conta corrente explícito, não deve ser classificado como fatura
+          const isExtrato = /extrato|conta\s*corrente/i.test(arquivo.nomeArquivo) || /extrato\s+de\s+conta|conta\s*corrente/i.test(textoDocumento);
+          const isFatura = !isExtrato && (
+            /fatura|cart[aã]o\s+de\s+cr[eé]dito|fatura\s+fechada/i.test(textoDocumento) ||
+            /fatura|nubank/i.test(arquivo.nomeArquivo)
+          );
           if (isFatura) {
             eFaturaCartao = true;
             const vencMatch = textoDocumento.match(/vencimento[\s\S]{0,30}(\d{2})\/(\d{2})\/(\d{4})/i);
             if (vencMatch) {
               faturaDataVencimento = new Date(`${vencMatch[3]}-${vencMatch[2]}-${vencMatch[1]}T12:00:00.000Z`);
             }
-            const totalMatch = textoDocumento.match(/total\s+(?:da\s+)?fatura[\s\S]{0,30}(?:r\$\s*)?([\d\.,]+)/i) ||
+            const totalMatch =
+              textoDocumento.match(/chegou\s+no\s+(?:valor\s+de\s*)?(?:r\$\s*)?([\d\.,]+)/i) ||
+              textoDocumento.match(/valor\s+da\s+fatura:\s*(?:r\$\s*)?([\d\.,]+)/i) ||
+              textoDocumento.match(/total\s+a\s+pagar\s*(?:r\$\s*)?([\d\.,]+)/i) ||
+              textoDocumento.match(/total\s+(?:da\s+)?fatura[\s\S]{0,30}(?:r\$\s*)?([\d\.,]+)/i) ||
               textoDocumento.match(/valor\s+total[\s\S]{0,30}(?:r\$\s*)?([\d\.,]+)/i);
             if (totalMatch) {
-              const clean = totalMatch[1].replace(/\./g, '').replace(',', '.').trim();
+              const clean = totalMatch[1].replace(/\./g, '').replace(',', '.').replace(/[^\d.]/g, '').trim();
               const num = parseFloat(clean);
               if (!isNaN(num) && num > 0) faturaValorTotal = num;
             }
@@ -583,8 +604,20 @@ export class ImportacaoIaWorkerService {
       }
 
       // Se ainda não identificou valor total mas as transações são de cartão de crédito, soma os débitos como estimativa de total se for fatura
-      if (!eFaturaCartao && transacoesExtraidas.some((t) => t.tipoConta === 'CARTAO_CREDITO' || /fatura|nubank/i.test(arquivo.nomeArquivo))) {
+      const ehNomeFatura = /fatura|nubank/i.test(arquivo.nomeArquivo) && !/extrato/i.test(arquivo.nomeArquivo);
+      if (!eFaturaCartao && (transacoesExtraidas.some((t) => t.tipoConta === 'CARTAO_CREDITO') || ehNomeFatura)) {
         eFaturaCartao = true;
+      }
+
+      // Se é fatura de cartão e não conseguiu extrair faturaValorTotal do texto, calcula o valor líquido das transações (despesas - receitas/estornos, excluindo pagamentos)
+      if (eFaturaCartao && (!faturaValorTotal || faturaValorTotal <= 0) && transacoesExtraidas.length > 0) {
+        const comprasEfetivas = transacoesExtraidas.filter((t) => !t.isPagamentoFatura);
+        const totalLiquido = comprasEfetivas.reduce((acc, t) => {
+          return t.natureza === 'RECEITA' ? acc - t.valor : acc + t.valor;
+        }, 0);
+        if (totalLiquido > 0) {
+          faturaValorTotal = Number(totalLiquido.toFixed(2));
+        }
       }
 
       // 6. Atualização de status no banco para IA_CONCLUIDO e salvamento de metadados da fatura (BUG-21)

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   PrevisaoSeisMesesResponse,
   DecomposicaoCategoriasResponse,
+  ProjecaoTresCamadasResponse,
   apiService,
 } from '../api.ts';
 import {
@@ -10,6 +11,12 @@ import {
   Calendar,
   Sliders,
   BarChart3,
+  Repeat,
+  CreditCard,
+  ShoppingBag,
+  Calculator,
+  ShieldCheck,
+  HelpCircle,
 } from 'lucide-react';
 
 interface ComponentePrevisao6MProps {
@@ -30,13 +37,34 @@ export const ComponentePrevisao6M: React.FC<ComponentePrevisao6MProps> = ({
     decomposicaoInicial
   );
   const [carregandoDecomposicao, setCarregandoDecomposicao] = useState(false);
-  const [abaVisao, setAbaVisao] = useState<'grafico' | 'tabela' | 'decomposicao'>('grafico');
+  const [abaVisao, setAbaVisao] = useState<'tres-camadas' | 'grafico' | 'tabela' | 'decomposicao'>('tres-camadas');
+
+  // Estado para Projeção em 3 Categorias (Recorrentes, Parcelamentos, Variáveis)
+  const [projecaoTresCamadas, setProjecaoTresCamadas] = useState<ProjecaoTresCamadasResponse | null>(null);
+  const [carregandoTresCamadas, setCarregandoTresCamadas] = useState(false);
+  const [mesesJanelaProjecao, setMesesJanelaProjecao] = useState<number>(6);
 
   // Ajuste rápido de variável auditada
   const [modalCalibrarAberto, setModalCalibrarAberto] = useState(false);
   const [catAjusteNome, setCatAjusteNome] = useState('Lazer');
   const [catAjusteValor, setCatAjusteValor] = useState('91.62');
   const [salvandoCalibracao, setSalvandoCalibracao] = useState(false);
+
+  const carregarTresCamadas = async (comp: string, meses: number) => {
+    setCarregandoTresCamadas(true);
+    try {
+      const res = await apiService.getProjecaoTresCamadas(comp, meses);
+      if (res) setProjecaoTresCamadas(res);
+    } catch (err) {
+      console.warn('Erro ao carregar projeção de 3 camadas', err);
+    } finally {
+      setCarregandoTresCamadas(false);
+    }
+  };
+
+  useEffect(() => {
+    carregarTresCamadas(competenciaSelecionada, mesesJanelaProjecao);
+  }, [competenciaSelecionada, mesesJanelaProjecao]);
 
   const carregarDecomposicao = async (comp: string) => {
     setCompetenciaSelecionada(comp);
@@ -64,6 +92,7 @@ export const ComponentePrevisao6M: React.FC<ComponentePrevisao6MProps> = ({
       setModalCalibrarAberto(false);
       if (onAtualizar) onAtualizar();
       await carregarDecomposicao(competenciaSelecionada);
+      await carregarTresCamadas(competenciaSelecionada, mesesJanelaProjecao);
     } catch (err) {
       console.warn('Erro ao salvar calibração', err);
     } finally {
@@ -154,7 +183,7 @@ export const ComponentePrevisao6M: React.FC<ComponentePrevisao6MProps> = ({
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr',
+          gridTemplateColumns: 'repeat(4, 1fr)',
           gap: '6px',
           background: 'rgba(30, 41, 59, 0.6)',
           padding: '4px',
@@ -164,13 +193,35 @@ export const ComponentePrevisao6M: React.FC<ComponentePrevisao6MProps> = ({
       >
         <button
           type="button"
-          onClick={() => setAbaVisao('grafico')}
+          onClick={() => setAbaVisao('tres-camadas')}
           style={{
-            padding: '8px',
+            padding: '8px 4px',
             border: 'none',
             borderRadius: 'var(--radius-sm)',
             fontWeight: 700,
-            fontSize: '0.8rem',
+            fontSize: '0.78rem',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+            backgroundColor: abaVisao === 'tres-camadas' ? 'var(--brand-primary)' : 'transparent',
+            color: abaVisao === 'tres-camadas' ? '#090d16' : 'var(--text-secondary)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '5px',
+          }}
+        >
+          <Calculator size={14} /> 3 Categorias
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setAbaVisao('grafico')}
+          style={{
+            padding: '8px 4px',
+            border: 'none',
+            borderRadius: 'var(--radius-sm)',
+            fontWeight: 700,
+            fontSize: '0.78rem',
             cursor: 'pointer',
             transition: 'all 0.2s ease',
             backgroundColor: abaVisao === 'grafico' ? 'var(--brand-primary)' : 'transparent',
@@ -178,21 +229,21 @@ export const ComponentePrevisao6M: React.FC<ComponentePrevisao6MProps> = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '6px',
+            gap: '5px',
           }}
         >
-          <BarChart3 size={15} /> Projeção Gráfica
+          <BarChart3 size={14} /> Gráfico 6M
         </button>
 
         <button
           type="button"
           onClick={() => setAbaVisao('tabela')}
           style={{
-            padding: '8px',
+            padding: '8px 4px',
             border: 'none',
             borderRadius: 'var(--radius-sm)',
             fontWeight: 700,
-            fontSize: '0.8rem',
+            fontSize: '0.78rem',
             cursor: 'pointer',
             transition: 'all 0.2s ease',
             backgroundColor: abaVisao === 'tabela' ? 'var(--brand-primary)' : 'transparent',
@@ -200,10 +251,10 @@ export const ComponentePrevisao6M: React.FC<ComponentePrevisao6MProps> = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '6px',
+            gap: '5px',
           }}
         >
-          <Calendar size={15} /> Tabela Mês a Mês
+          <Calendar size={14} /> Tabela Mensal
         </button>
 
         <button
@@ -213,11 +264,11 @@ export const ComponentePrevisao6M: React.FC<ComponentePrevisao6MProps> = ({
             if (!decomposicao) carregarDecomposicao(competenciaSelecionada);
           }}
           style={{
-            padding: '8px',
+            padding: '8px 4px',
             border: 'none',
             borderRadius: 'var(--radius-sm)',
             fontWeight: 700,
-            fontSize: '0.8rem',
+            fontSize: '0.78rem',
             cursor: 'pointer',
             transition: 'all 0.2s ease',
             backgroundColor: abaVisao === 'decomposicao' ? 'var(--brand-primary)' : 'transparent',
@@ -225,14 +276,462 @@ export const ComponentePrevisao6M: React.FC<ComponentePrevisao6MProps> = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: '6px',
+            gap: '5px',
           }}
         >
-          <Layers size={15} /> Decomposição POF
+          <Layers size={14} /> Categorias POF
         </button>
       </div>
 
-      {/* 3. VISÃO 1: GRÁFICO EMPILHADO DAS 3 CAMADAS E LINHA DE RENDA */}
+      {/* 2.1 VISÃO NOVA: PROJEÇÃO SEPARADA EM 3 CATEGORIAS (FIN-161 / TASK-PROJEÇÃO) */}
+      {abaVisao === 'tres-camadas' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          {/* Seletor de janela de meses (3M, 6M, 12M) */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              backgroundColor: 'rgba(30, 41, 59, 0.4)',
+              padding: '8px 12px',
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border-subtle)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Calculator size={15} color="var(--brand-primary)" />
+              <span style={{ fontSize: '0.82rem', fontWeight: 700 }}>
+                Horizonte da Média Projetada:
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              {[3, 6, 12].map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMesesJanelaProjecao(m)}
+                  style={{
+                    padding: '3px 10px',
+                    borderRadius: '4px',
+                    border: '1px solid var(--border-subtle)',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    backgroundColor: mesesJanelaProjecao === m ? 'var(--brand-primary)' : 'rgba(255, 255, 255, 0.05)',
+                    color: mesesJanelaProjecao === m ? '#090d16' : 'var(--text-secondary)',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  {m} Meses
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* CARD DE SÍNTESE DA FÓRMULA COM DESTAQUE DA EQUAÇÃO */}
+          {projecaoTresCamadas ? (
+            <div
+              className="card"
+              style={{
+                background: 'linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.9) 100%)',
+                border: '1px solid var(--border-subtle)',
+                borderTop: '3px solid var(--brand-primary)',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '8px' }}>
+                <div>
+                  <div style={{ fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--brand-primary)', fontWeight: 700 }}>
+                    Cálculo da Média de {projecaoTresCamadas.mesesJanela} Meses
+                  </div>
+                  <h3 style={{ fontSize: '1.15rem', fontWeight: 800, marginTop: '2px' }}>
+                    Média Projetada = Recorrentes + Parcelados + Variáveis
+                  </h3>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Média Total / Mês</div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.3rem', fontWeight: 800, color: 'var(--status-yellow)' }}>
+                    {projecaoTresCamadas.sintese.mediaTotalProjetada.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Box da Equação Visual */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+                  gap: '8px',
+                  backgroundColor: 'rgba(0, 0, 0, 0.35)',
+                  padding: '12px',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px dashed rgba(255, 255, 255, 0.1)',
+                }}
+              >
+                {/* 1. Recorrentes */}
+                <div style={{ borderLeft: '3px solid #3b82f6', paddingLeft: '8px' }}>
+                  <div style={{ fontSize: '0.7rem', color: '#93c5fd', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Repeat size={12} /> Recorrentes
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.98rem', color: '#60a5fa', marginTop: '2px' }}>
+                    {projecaoTresCamadas.sintese.mediaRecorrentes.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                    {projecaoTresCamadas.recorrentes.itens.length} itens fixos
+                  </div>
+                </div>
+
+                {/* 2. Parcelados */}
+                <div style={{ borderLeft: '3px solid #ec4899', paddingLeft: '8px' }}>
+                  <div style={{ fontSize: '0.7rem', color: '#fbcfe8', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <CreditCard size={12} /> Parcelamentos
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.98rem', color: '#f472b6', marginTop: '2px' }}>
+                    {projecaoTresCamadas.sintese.mediaParcelados.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                    {projecaoTresCamadas.parcelamentos.itens.length} parcelas ativas
+                  </div>
+                </div>
+
+                {/* 3. Variáveis */}
+                <div style={{ borderLeft: '3px solid #10b981', paddingLeft: '8px' }}>
+                  <div style={{ fontSize: '0.7rem', color: '#a7f3d0', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <ShoppingBag size={12} /> Variáveis
+                  </div>
+                  <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.98rem', color: '#34d399', marginTop: '2px' }}>
+                    {projecaoTresCamadas.sintese.mediaVariaveis.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                    {projecaoTresCamadas.variaveis.itens.length} categorias
+                  </div>
+                </div>
+
+                {/* Saldo vs Renda */}
+                <div style={{ borderLeft: '3px solid var(--border-subtle)', paddingLeft: '8px' }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    Saldo Mensal Est.
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontWeight: 800,
+                      fontSize: '0.98rem',
+                      marginTop: '2px',
+                      color: projecaoTresCamadas.sintese.saldoMensalProjetado >= 0 ? 'var(--status-green)' : 'var(--status-red)',
+                    }}
+                  >
+                    {projecaoTresCamadas.sintese.saldoMensalProjetado.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                  </div>
+                  <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                    Renda: {projecaoTresCamadas.rendaBaseMensal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Explicação da Fórmula */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                <HelpCircle size={14} color="var(--brand-primary)" style={{ flexShrink: 0 }} />
+                <span>
+                  {projecaoTresCamadas.sintese.formulaExplicativa}
+                </span>
+              </div>
+            </div>
+          ) : carregandoTresCamadas ? (
+            <div className="card" style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)' }}>
+              Calculando projeção em 3 categorias...
+            </div>
+          ) : null}
+
+          {/* ============================================================== */}
+          {/* CATEGORIA 1: GASTOS RECORRENTES (Fixos, todo mês, sem fim)     */}
+          {/* ============================================================== */}
+          <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div
+                  style={{
+                    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                    padding: '6px',
+                    borderRadius: 'var(--radius-sm)',
+                    color: '#3b82f6',
+                  }}
+                >
+                  <Repeat size={16} />
+                </div>
+                <div>
+                  <h4 style={{ fontSize: '0.92rem', fontWeight: 700 }}>
+                    1. Gastos Recorrentes
+                  </h4>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    Entram todo mês, sem data de término e com valor constante (ex: condomínio, luz, aluguel, internet).
+                  </div>
+                </div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Média Recorrente</span>
+                <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.95rem', color: '#60a5fa' }}>
+                  {projecaoTresCamadas?.recorrentes.mediaMensal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) || 'R$ 0,00'}
+                </div>
+              </div>
+            </div>
+
+            {/* Lista de itens recorrentes */}
+            {projecaoTresCamadas?.recorrentes.itens && projecaoTresCamadas.recorrentes.itens.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {projecaoTresCamadas.recorrentes.itens.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '10px 12px',
+                      backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid rgba(59, 130, 246, 0.15)',
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{item.descricao}</span>
+                        {item.essencial && (
+                          <span
+                            style={{
+                              fontSize: '0.65rem',
+                              backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                              color: 'var(--status-green)',
+                              padding: '1px 6px',
+                              borderRadius: '999px',
+                              fontWeight: 700,
+                            }}
+                          >
+                            Essencial
+                          </span>
+                        )}
+                        <span
+                          style={{
+                            fontSize: '0.65rem',
+                            backgroundColor: 'rgba(59, 130, 246, 0.12)',
+                            color: '#93c5fd',
+                            padding: '1px 6px',
+                            borderRadius: '999px',
+                          }}
+                        >
+                          {item.origem === 'CADASTRO' ? 'Contrato Fixo' : 'Detectado Extrato'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {item.categoriaNome} • {item.contaNome}
+                        {item.diaVencimento ? ` • Vencimento dia ${item.diaVencimento}` : ''}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                        {item.valorMensal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                      </div>
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>ao mês</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                Nenhum gasto recorrente cadastrado ou detectado.
+              </div>
+            )}
+          </div>
+
+          {/* ============================================================== */}
+          {/* CATEGORIA 2: PARCELAMENTOS (Futuros, a partir do mês corrente)  */}
+          {/* ============================================================== */}
+          <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div
+                  style={{
+                    backgroundColor: 'rgba(236, 72, 153, 0.15)',
+                    padding: '6px',
+                    borderRadius: 'var(--radius-sm)',
+                    color: '#ec4899',
+                  }}
+                >
+                  <CreditCard size={16} />
+                </div>
+                <div>
+                  <h4 style={{ fontSize: '0.92rem', fontWeight: 700 }}>
+                    2. Parcelamentos Futuros
+                  </h4>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    Compras parceladas com vencimento a partir do mês corrente ({projecaoTresCamadas?.competenciaReferencia || 'mês atual'}).
+                  </div>
+                </div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Média na Janela</span>
+                <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.95rem', color: '#f472b6' }}>
+                  {projecaoTresCamadas?.parcelamentos.mediaMensal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) || 'R$ 0,00'}
+                </div>
+              </div>
+            </div>
+
+            {/* Lista de parcelamentos */}
+            {projecaoTresCamadas?.parcelamentos.itens && projecaoTresCamadas.parcelamentos.itens.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {projecaoTresCamadas.parcelamentos.itens.map((parc) => (
+                  <div
+                    key={parc.id}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '10px 12px',
+                      backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid rgba(236, 72, 153, 0.15)',
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{parc.descricao}</span>
+                        <span
+                          style={{
+                            fontSize: '0.65rem',
+                            backgroundColor: 'rgba(236, 72, 153, 0.15)',
+                            color: '#f472b6',
+                            padding: '1px 6px',
+                            borderRadius: '999px',
+                            fontWeight: 700,
+                          }}
+                        >
+                          {parc.parcelasRestantes}x restantes
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                        {parc.categoriaNome} • {parc.contaNome} • Parcela {parc.parcelaAtual}/{parc.totalParcelas} • Vence até {parc.ultimoVencimento}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                        {parc.parcelaValor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                      </div>
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                        Total Restante: {parc.saldoDevedorRestante.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div
+                style={{
+                  padding: '14px',
+                  textAlign: 'center',
+                  color: 'var(--text-muted)',
+                  fontSize: '0.82rem',
+                  backgroundColor: 'rgba(0, 0, 0, 0.15)',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px dashed rgba(255, 255, 255, 0.06)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', color: 'var(--status-green)', marginBottom: '4px' }}>
+                  <ShieldCheck size={16} />
+                  <span style={{ fontWeight: 600 }}>Nenhum parcelamento futuro ativo</span>
+                </div>
+                Todos os gastos futuros do período são livres de dívidas pré-comprometidas.
+              </div>
+            )}
+          </div>
+
+          {/* ============================================================== */}
+          {/* CATEGORIA 3: GASTOS VARIÁVEIS (Supermercado, alimentação, etc) */}
+          {/* ============================================================== */}
+          <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div
+                  style={{
+                    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                    padding: '6px',
+                    borderRadius: 'var(--radius-sm)',
+                    color: '#10b981',
+                  }}
+                >
+                  <ShoppingBag size={16} />
+                </div>
+                <div>
+                  <h4 style={{ fontSize: '0.92rem', fontWeight: 700 }}>
+                    3. Gastos Variáveis
+                  </h4>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    Despesas do dia a dia apuradas nos extratos (supermercado, alimentação, transporte, farmácia, lazer).
+                  </div>
+                </div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Média Variável</span>
+                <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.95rem', color: '#34d399' }}>
+                  {projecaoTresCamadas?.variaveis.mediaMensal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) || 'R$ 0,00'}
+                </div>
+              </div>
+            </div>
+
+            {/* Grid de categorias de gastos variáveis */}
+            {projecaoTresCamadas?.variaveis.itens && projecaoTresCamadas.variaveis.itens.length > 0 ? (
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))',
+                  gap: '8px',
+                }}
+              >
+                {projecaoTresCamadas.variaveis.itens.map((item, idx) => (
+                  <div
+                    key={item.categoriaId || `cat-var-${idx}`}
+                    style={{
+                      padding: '10px 12px',
+                      backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                      borderRadius: 'var(--radius-sm)',
+                      border: '1px solid rgba(16, 185, 129, 0.15)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      justifyContent: 'space-between',
+                      gap: '4px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>{item.categoriaNome}</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: '0.92rem', color: '#34d399' }}>
+                        {item.mediaMensalEfetiva.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}/mês
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      <span>{item.qtdLancamentos} lançamentos</span>
+                      <span>Total: {item.totalPeriodoEfetivo.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</span>
+                    </div>
+
+                    {item.totalExcluido > 0 && (
+                      <div style={{ fontSize: '0.65rem', color: 'var(--status-yellow)' }}>
+                        Excluído por atipicidade: {item.totalExcluido.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                Nenhum gasto variável identificado na janela de extratos.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 3. VISÃO 2: GRÁFICO EMPILHADO DAS 3 CAMADAS E LINHA DE RENDA */}
       {abaVisao === 'grafico' && (
         <div className="card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

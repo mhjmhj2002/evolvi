@@ -5,15 +5,18 @@ import {
   ItemCronogramaVencimento,
   PrevisaoSeisMesesResponse,
   DecomposicaoCategoriasResponse,
+  CategoriaTreeItem,
   mockPrevisaoSeisMeses,
 } from '../api.ts';
-import { StatusBadge, ComponentePrevisao6M } from '../components/index.ts';
+import { formatarDataIso } from '../utils/data.ts';
+import { StatusBadge, ComponentePrevisao6M, GerenciadorRecorrencias } from '../components/index.ts';
 import {
   CheckCircle2,
   Circle,
   PlusCircle,
   TrendingUp,
   RefreshCw,
+  Repeat,
 } from 'lucide-react';
 
 interface TelaCompromissosProps {
@@ -21,6 +24,7 @@ interface TelaCompromissosProps {
   parcelamentos: ParcelamentosResponse;
   previsao?: PrevisaoSeisMesesResponse;
   decomposicao?: DecomposicaoCategoriasResponse;
+  categorias?: CategoriaTreeItem[];
   onRegistrarPagamento?: (item: ItemCronogramaVencimento) => void;
   onNovoCompromisso?: () => void;
   onAtualizarPrevisao?: () => void;
@@ -32,6 +36,7 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
   parcelamentos,
   previsao = mockPrevisaoSeisMeses,
   decomposicao,
+  categorias = [],
   onRegistrarPagamento,
   onNovoCompromisso,
   onAtualizarPrevisao,
@@ -39,7 +44,7 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
 }) => {
   // Controle local de checkboxes de contas já quitadas no mês
   const [pagos, setPagos] = useState<{ [id: string]: boolean }>({});
-  const [tabInterna, setTabInterna] = useState<'vencimentos' | 'dividas' | 'projecao'>('vencimentos');
+  const [tabInterna, setTabInterna] = useState<'vencimentos' | 'recorrencias' | 'dividas' | 'projecao'>('vencimentos');
   const [atualizando, setAtualizando] = useState(false);
 
   const handleAtualizar = async () => {
@@ -105,11 +110,11 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
         )}
       </div>
 
-      {/* 2. Switcher entre Vencimentos, Dívidas e Projeção 6M */}
+      {/* 2. Switcher entre Vencimentos, Recorrências, Dívidas e Projeção 6M */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr',
+          gridTemplateColumns: '1fr 1fr 1fr 1fr',
           gap: '6px',
           background: 'rgba(30, 41, 59, 0.6)',
           padding: '4px',
@@ -133,6 +138,27 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
           }}
         >
           Cronograma
+        </button>
+        <button
+          type="button"
+          onClick={() => setTabInterna('recorrencias')}
+          style={{
+            padding: '8px',
+            border: 'none',
+            borderRadius: 'var(--radius-sm)',
+            fontWeight: 700,
+            fontSize: '0.8rem',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+            backgroundColor: tabInterna === 'recorrencias' ? 'var(--brand-primary)' : 'transparent',
+            color: tabInterna === 'recorrencias' ? '#090d16' : 'var(--text-secondary)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '4px',
+          }}
+        >
+          <Repeat size={14} /> Recorrências
         </button>
         <button
           type="button"
@@ -305,9 +331,9 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
                               alignItems: 'center',
                               gap: '3px',
                             }}
-                            title={`Compra parcelada com início/primeiro vencimento em ${item.dataCompra || item.parcelamentoInfo?.dataCompra || item.parcelamentoInfo?.primeiroVencimento || item.dataVencimentoPrevista}`}
+                            title={`Compra parcelada com início/primeiro vencimento em ${formatarDataIso(item.dataCompra || item.parcelamentoInfo?.dataCompra || item.parcelamentoInfo?.primeiroVencimento || item.dataVencimentoPrevista)}`}
                           >
-                            📅 Compra: {item.dataCompra || item.parcelamentoInfo?.dataCompra || item.parcelamentoInfo?.primeiroVencimento || item.dataVencimentoPrevista}
+                            📅 Compra: {formatarDataIso(item.dataCompra || item.parcelamentoInfo?.dataCompra || item.parcelamentoInfo?.primeiroVencimento || item.dataVencimentoPrevista)}
                           </span>
                         )}
                       </div>
@@ -424,7 +450,15 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
         </div>
       )}
 
-      {/* CONTEÚDO 3: MOTOR DE PREVISÃO E PROJEÇÃO 6M (M-005 - TASK-14) */}
+      {/* CONTEÚDO 2: GESTÃO DE GASTOS RECORRENTES (CRUD & STATUS) */}
+      {tabInterna === 'recorrencias' && (
+        <GerenciadorRecorrencias
+          categorias={categorias}
+          onRecorrenciasAtualizadas={onAtualizarDados}
+        />
+      )}
+
+      {/* CONTEÚDO 4: MOTOR DE PREVISÃO E PROJEÇÃO 6M (M-005 - TASK-14) */}
       {tabInterna === 'projecao' && (
         <ComponentePrevisao6M
           previsao={previsao}

@@ -9,3 +9,5 @@ export * from './ProtectedRoute.tsx';
 export * from './ModalRegistroIa.tsx';
 export * from './ComponenteHistorico6M.tsx';
 export * from './ComponentePrevisao6M.tsx';
+export * from './LeitorNotaFiscalModal.tsx';
+export * from './GerenciadorRecorrencias.tsx';

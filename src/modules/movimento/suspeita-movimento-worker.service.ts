@@ -1,5 +1,9 @@
 import { prisma } from '../../infrastructure/database/prisma.js';
-import { extrairRaizComerciante } from './movimento.util.js';
+import {
+  extrairRaizComerciante,
+  extrairFavorecidoObservacao,
+  correspondemRegraVendedor,
+} from './movimento.util.js';
 import { REGEX_APORTES_INVESTIMENTOS } from './movimento-recalculo.service.js';
 import { classificadorCombinatorioService } from './classificador-combinatorio.service.js';
 import { env } from '../../config/env.js';
@@ -73,6 +77,14 @@ export class SuspeitaMovimentoWorkerService {
       (m) => m.natureza === 'APORTE_PATRIMONIAL'
     );
 
+    // Pré-carrega todas as regras de vendedor/favorecido do catálogo do usuário
+    const regrasVendedorUsuario = await prisma.regraVendedorCategoria.findMany({
+      where: { usuarioId },
+      include: {
+        categoria: { select: { id: true, nome: true } },
+      },
+    });
+
     for (const mov of todosMovimentos) {
       const dataStr = mov.dataMovimento.toISOString().slice(0, 10);
       const chave = `${dataStr}_${Number(mov.valor).toFixed(2)}_${mov.natureza}`;
@@ -127,18 +139,20 @@ export class SuspeitaMovimentoWorkerService {
 
         // Verifica se há regra prévia cadastrada pelo próprio usuário para esta loja/vendedor
         const raiz = extrairRaizComerciante(mov.descricao);
-        let regraVendedorEncontrada = null;
-        if (raiz && raiz.length >= 3) {
-          regraVendedorEncontrada = await prisma.regraVendedorCategoria.findFirst({
-            where: {
-              usuarioId,
-              termoVendedor: { equals: raiz, mode: 'insensitive' },
-            },
-            include: {
-              categoria: { select: { id: true, nome: true } },
-            },
-          });
-        }
+        const favorecidoObservacao = extrairFavorecidoObservacao(mov.observacao);
+
+        const regraVendedorEncontrada = regrasVendedorUsuario.find((regra) => {
+          if (raiz && correspondemRegraVendedor(raiz, regra.termoVendedor)) {
+            return true;
+          }
+          if (favorecidoObservacao && correspondemRegraVendedor(favorecidoObservacao, regra.termoVendedor)) {
+            return true;
+          }
+          if (correspondemRegraVendedor(mov.descricao, regra.termoVendedor)) {
+            return true;
+          }
+          return false;
+        });
 
         if (regraVendedorEncontrada) {
           suspeitasParaPersistir.push({
@@ -146,7 +160,7 @@ export class SuspeitaMovimentoWorkerService {
             tipo: 'SUSPEITA_CATEGORIZACAO',
             status: 'PENDENTE',
             confianca: 0.98,
-            motivo: `Lançamento de "${raiz}" correspondente à regra cadastrada no seu catálogo de lojas para a categoria "${regraVendedorEncontrada.categoria.nome}".`,
+            motivo: `Lançamento de "${raiz || mov.descricao}" correspondente à regra cadastrada no seu catálogo de lojas para a categoria "${regraVendedorEncontrada.categoria.nome}".`,
             movimentoId: mov.id,
             categoriaSugerida: regraVendedorEncontrada.categoria.nome,
           });
@@ -192,6 +206,17 @@ export class SuspeitaMovimentoWorkerService {
             mB.categoriaFixadaPeloUsuario && mB.validadoDedupe === 'S';
 
           if (ambosValidadosPeloUsuario) continue;
+
+          // Se um dos movimentos é uma projeção de parcelamento ainda não conciliada e o outro já foi
+          // soberanamente validado pelo usuário, a projeção é uma duplicação indevida e não deve ser apontada
+          const mAValidado = mA.validadoDedupe === 'S' && mA.categoriaFixadaPeloUsuario;
+          const mBValidado = mB.validadoDedupe === 'S' && mB.categoriaFixadaPeloUsuario;
+          const mAProjecao = mA.origemDocumento === 'PROJECAO_PARCELAMENTO' || mA.status === 'PREVISTO';
+          const mBProjecao = mB.origemDocumento === 'PROJECAO_PARCELAMENTO' || mB.status === 'PREVISTO';
+
+          if ((mAValidado && mBProjecao) || (mBValidado && mAProjecao)) {
+            continue;
+          }
 
           // Transferências entre contas distintas não são duplicatas
           if (mA.natureza === 'TRANSFERENCIA_PROPRIA' && mA.contaId !== mB.contaId) {

@@ -1,6 +1,10 @@
 import { prisma } from '../../infrastructure/database/prisma.js';
 import { classificadorCombinatorioService } from './classificador-combinatorio.service.js';
-import { extrairRaizComerciante } from './movimento.util.js';
+import {
+  extrairRaizComerciante,
+  extrairFavorecidoObservacao,
+  correspondemRegraVendedor,
+} from './movimento.util.js';
 import {
   ValidacaoDeduplicacaoService,
   ValidacaoDeduplicacaoResultado,
@@ -19,8 +23,9 @@ import {
  * Versão 8: Regras consolidadas de transferências próprias e reconciliação
  * Versão 9: Alinhamento determinístico da competência financeira de compras parceladas de cartão (Parcela X/Y) à fatura de cobrança
  * Versão 10: BUG-22 (Resolução automática de duplicatas óbvias R1 e R2, sem poluir a Central de Suspeitas)
+ * Versão 11: Correção de pagamentos de fatura que caíram como aportes patrimoniais (reclassificação determinística para TRANSFERENCIA_PROPRIA)
  */
-export const VERSAO_REGRAS_MOVIMENTOS_ATUAL = 10;
+export const VERSAO_REGRAS_MOVIMENTOS_ATUAL = 11;
 
 /**
  * Helper determinístico para inferir a competência (YYYY-MM) de cobrança da fatura
@@ -215,11 +220,11 @@ export class MovimentoRecalculoService {
     }
 
     const idsParaConverterTransferenciaPropria: string[] = [];
-    // Busca movimentos do usuário classificados como DESPESA ou RECEITA que não foram fixados manualmente pelo usuário
+    // Busca movimentos do usuário classificados erroneamente como DESPESA, RECEITA ou APORTE_PATRIMONIAL que não foram fixados manualmente pelo usuário
     const movimentosCandidatosTransf = await prisma.movimento.findMany({
       where: {
         usuarioId,
-        natureza: { in: ['DESPESA', 'RECEITA'] },
+        natureza: { in: ['DESPESA', 'RECEITA', 'APORTE_PATRIMONIAL'] },
         categoriaFixadaPeloUsuario: false,
       },
       select: {
@@ -267,21 +272,24 @@ export class MovimentoRecalculoService {
       }
     }
 
-    // 3. Inteligência Combinatória (TASK-43):
-    // Busca movimentos do usuário onde a categoria NÃO foi fixada manualmente pelo usuário
-    // e avalia se o classificador combinatório oferece sugestão refinada de alta confiança.
-    // TASK-45: Se o registro já foi validado pelo usuário soberanamente, não é alterado
+    // 3. Inteligência Combinatória e Regras de Vendedor (TASK-43 / TASK-48):
+    // Busca movimentos do usuário onde a categoria NÃO foi fixada manualmente pelo usuário.
+    // Lançamentos alocados em categorias genéricas ("Outros") ou sem categoria definida
+    // podem sempre ser catalogados pelas regras de vendedor salvas pelo usuário.
     const movimentosParaRefinar = await prisma.movimento.findMany({
       where: {
         usuarioId,
         categoriaFixadaPeloUsuario: false,
-        NOT: {
-          validadoDedupe: 'S',
-        },
+        OR: [
+          { validadoDedupe: { not: 'S' } },
+          { categoria: { nome: { in: ['Outros', 'outras despesas'], mode: 'insensitive' } } },
+          { categoriaId: null },
+        ],
       },
       select: {
         id: true,
         descricao: true,
+        observacao: true,
         dataMovimento: true,
         valor: true,
         categoriaId: true,
@@ -332,21 +340,31 @@ export class MovimentoRecalculoService {
     const regrasVendedorUsuario = await prisma.regraVendedorCategoria.findMany({
       where: { usuarioId },
     });
-    const mapaRegrasVendedor = new Map<string, string>();
-    for (const r of regrasVendedorUsuario) {
-      mapaRegrasVendedor.set(r.termoVendedor.toLowerCase().trim(), r.categoriaId);
-    }
 
     const atualizacoesCategoria: Array<{ id: string; categoriaId: string; fixada?: boolean }> = [];
 
     for (const mov of movimentosParaRefinar) {
-      const raiz = extrairRaizComerciante(mov.descricao)?.toLowerCase().trim();
+      const raiz = extrairRaizComerciante(mov.descricao);
+      const favorecidoObservacao = extrairFavorecidoObservacao(mov.observacao);
       let categoriaIdDestino: string | null = null;
       let fixadaPelaRegra = false;
 
-      // 1. Prioridade: Regra explícita de vendedor definida pelo usuário
-      if (raiz && mapaRegrasVendedor.has(raiz)) {
-        categoriaIdDestino = mapaRegrasVendedor.get(raiz)!;
+      // 1. Prioridade: Regra explícita de vendedor definida pelo usuário (com correspondência inteligente)
+      const regraEncontrada = regrasVendedorUsuario.find((regra) => {
+        if (raiz && correspondemRegraVendedor(raiz, regra.termoVendedor)) {
+          return true;
+        }
+        if (favorecidoObservacao && correspondemRegraVendedor(favorecidoObservacao, regra.termoVendedor)) {
+          return true;
+        }
+        if (correspondemRegraVendedor(mov.descricao, regra.termoVendedor)) {
+          return true;
+        }
+        return false;
+      });
+
+      if (regraEncontrada) {
+        categoriaIdDestino = regraEncontrada.categoriaId;
         fixadaPelaRegra = true;
       }
 

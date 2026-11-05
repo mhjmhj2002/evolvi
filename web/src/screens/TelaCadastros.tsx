@@ -28,9 +28,11 @@ import {
   X,
   Check,
   CreditCard,
+  Ban,
 } from 'lucide-react';
 import { GerenciadorConectoresBancarios } from '../components/GerenciadorConectoresBancarios.tsx';
 import { ConfiguracaoIaCard } from '../components/ConfiguracaoIaCard.tsx';
+import { GerenciadorMediaRegras } from '../components/GerenciadorMediaRegras.tsx';
 
 interface TelaCadastrosProps {
   perfil: UsuarioPerfil;
@@ -39,7 +41,7 @@ interface TelaCadastrosProps {
   onContasAtualizadas?: () => void;
   onRendaAtualizada?: (novaRenda: number) => void;
   onExtratoImportado?: () => void;
-  subAbaInicial?: 'renda' | 'contas' | 'categorias' | 'bancos' | 'ia' | 'configuracoes';
+  subAbaInicial?: 'renda' | 'contas' | 'categorias' | 'media' | 'bancos' | 'ia' | 'configuracoes';
 }
 
 export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
@@ -54,7 +56,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
   const { atualizarRendaBase } = useAuth();
 
   // Sub-abas do menu de cadastros
-  const [subAba, setSubAba] = useState<'renda' | 'contas' | 'categorias' | 'bancos' | 'ia' | 'configuracoes'>(subAbaInicial);
+  const [subAba, setSubAba] = useState<'renda' | 'contas' | 'categorias' | 'media' | 'bancos' | 'ia' | 'configuracoes'>(subAbaInicial);
 
   // Estados para CRUD de Contas e Resolução de Dependências
   const [modalContaAberto, setModalContaAberto] = useState(false);
@@ -427,6 +429,14 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
         </button>
         <button
           type="button"
+          className={`auth-tab-btn ${subAba === 'media' ? 'active' : ''}`}
+          onClick={() => setSubAba('media')}
+        >
+          <Ban size={16} />
+          <span>Gastos Únicos & Média</span>
+        </button>
+        <button
+          type="button"
           className={`auth-tab-btn ${subAba === 'bancos' ? 'active' : ''}`}
           onClick={() => setSubAba('bancos')}
           style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
@@ -480,6 +490,11 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
           <span>Parâmetros ({mesesConfigurados}M / {intervaloSyncConfigurado}h)</span>
         </button>
       </div>
+
+      {/* Sub-aba: Gastos Únicos & Regras de Média */}
+      {subAba === 'media' && (
+        <GerenciadorMediaRegras categorias={categorias} />
+      )}
 
       {/* Sub-aba: Configuração de IA & Modelos */}
       {subAba === 'ia' && (

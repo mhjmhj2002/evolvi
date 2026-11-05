@@ -21,7 +21,23 @@ import {
   Eye,
   X,
   Filter,
+  CreditCard,
+  ArrowUpDown,
 } from 'lucide-react';
+
+import { formatarDataIso, formatarDataHoraIso } from '../utils/data.ts';
+
+/** Exibe a competência como faixa (ex.: 2026-07 a 2026-10) quando o período cobre mais de um mês. */
+function formatarCompetenciaPeriodo(h: {
+  competencia: string;
+  periodoInicio?: string | null;
+  periodoFim?: string | null;
+}): string {
+  if (!h.periodoInicio || !h.periodoFim) return h.competencia;
+  const ini = new Date(h.periodoInicio).toISOString().substring(0, 7);
+  const fim = new Date(h.periodoFim).toISOString().substring(0, 7);
+  return ini === fim ? h.competencia : `${ini} a ${fim}`;
+}
 import {
   apiService,
   LoteImportacaoItem,
@@ -91,7 +107,14 @@ const SeletorModeloIa: React.FC<{
 
   return (
     <div
-      style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        flexWrap: 'wrap',
+        width: '100%',
+        maxWidth: '100%',
+      }}
       onClick={e => e.stopPropagation()}
     >
       <select
@@ -102,8 +125,11 @@ const SeletorModeloIa: React.FC<{
         }}
         style={{
           fontSize: compacto ? '0.72rem' : '0.78rem',
-          padding: compacto ? '3px 6px' : '5px 8px',
-          minWidth: '150px',
+          padding: compacto ? '3px 8px' : '6px 10px',
+          minHeight: compacto ? '28px' : '34px',
+          height: compacto ? '28px' : '34px',
+          flex: '1 1 130px',
+          maxWidth: '100%',
         }}
         title="Modelos conhecidos do provedor"
       >
@@ -116,7 +142,7 @@ const SeletorModeloIa: React.FC<{
       </select>
       <input
         id={inputId}
-        className="input"
+        className="form-input"
         type="text"
         value={modelo}
         onChange={e => onChange(e.target.value)}
@@ -125,8 +151,11 @@ const SeletorModeloIa: React.FC<{
         }
         style={{
           fontSize: compacto ? '0.72rem' : '0.78rem',
-          padding: compacto ? '3px 6px' : '5px 8px',
-          minWidth: '190px',
+          padding: compacto ? '3px 8px' : '6px 10px',
+          minHeight: compacto ? '28px' : '34px',
+          height: compacto ? '28px' : '34px',
+          flex: '1 1 150px',
+          maxWidth: '100%',
           fontFamily: 'var(--font-mono)',
         }}
         title={
@@ -190,6 +219,20 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
   const [filtroHistoricoTipo, setFiltroHistoricoTipo] = useState<string>('TODOS');
   const [abaModalLancamentos, setAbaModalLancamentos] = useState<'movimentos' | 'staging' | 'tentativas'>('movimentos');
 
+  // Estados dos novos blocos: Grid de Faturas de Cartão e Grid de Extratos por Instituição
+  const [qtdeMesesFaturas, setQtdeMesesFaturas] = useState<number>(6);
+  const [filtroGridFaturaInstituicao, setFiltroGridFaturaInstituicao] = useState<string>('TODAS');
+  const [filtroGridFaturaAnoMes, setFiltroGridFaturaAnoMes] = useState<string>('TODOS');
+  const [filtroGridFaturaImportado, setFiltroGridFaturaImportado] = useState<string>('TODOS');
+  const [ordenacaoGridFaturaCampo, setOrdenacaoGridFaturaCampo] = useState<'instituicao' | 'competencia' | 'importado'>('competencia');
+  const [ordenacaoGridFaturaDirecao, setOrdenacaoGridFaturaDirecao] = useState<'asc' | 'desc'>('desc');
+
+  const [qtdeMesesExtratos, setQtdeMesesExtratos] = useState<number>(6);
+  const [filtroGridExtratoInstituicao, setFiltroGridExtratoInstituicao] = useState<string>('TODAS');
+  const [filtroGridExtratoAnoMes, setFiltroGridExtratoAnoMes] = useState<string>('TODOS');
+  const [ordenacaoGridExtratoCampo, setOrdenacaoGridExtratoCampo] = useState<'instituicao' | 'competencia' | 'qtdLancamentos'>('competencia');
+  const [ordenacaoGridExtratoDirecao, setOrdenacaoGridExtratoDirecao] = useState<'asc' | 'desc'>('desc');
+
   // Validação prévia de configuração da IA e seleção no lote / reprocessamento
   const [statusIa, setStatusIa] = useState<StatusIaResponse | null>(null);
   const [mediasConsolidadasIa, setMediasConsolidadasIa] = useState<IaMediaConsolidadaItem[]>([]);
@@ -232,9 +275,11 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
   } | null>(null);
   const [reprocessandoArquivoId, setReprocessandoArquivoId] = useState<string | null>(null);
   const [excluindoArquivoId, setExcluindoArquivoId] = useState<string | null>(null);
+  const [excluindoFaturaArquivoId, setExcluindoFaturaArquivoId] = useState<string | null>(null);
 
   // TASK-50: Alerta de duplicidade no upload e histórico de tentativas por arquivo
   const [alertaDuplicidade, setAlertaDuplicidade] = useState<UploadImportacaoResponse | null>(null);
+  const [descartouAlertaLoteId, setDescartouAlertaLoteId] = useState<string | null>(null);
   const [confirmandoReprocessamento, setConfirmandoReprocessamento] = useState(false);
   const [arquivoTentativasAberto, setArquivoTentativasAberto] = useState<string | null>(null);
   const [tentativasPorArquivo, setTentativasPorArquivo] = useState<
@@ -312,6 +357,220 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       return true;
     });
   }, [historicoArquivos, filtroHistoricoTipo, filtroHistoricoBusca]);
+
+  // Lista de meses retroativos a partir estritamente do último mês encerrado antes do mês atual (exclui mês corrente em aberto)
+  const gerarListaMesesRetroativos = useCallback((qtd: number) => {
+    const meses: string[] = [];
+    const hoje = new Date();
+    let y = hoje.getFullYear();
+    let m = hoje.getMonth() + 1; // 1..12 (mês atual em aberto)
+
+    // Regra mandatória: Não conta o mês atual em aberto. O primeiro mês da janela é o último mês encerrado (m - 1).
+    m -= 1;
+    if (m < 1) {
+      m = 12;
+      y -= 1;
+    }
+
+    for (let i = 0; i < qtd; i++) {
+      const compStr = `${y}-${String(m).padStart(2, '0')}`;
+      meses.push(compStr);
+      m -= 1;
+      if (m < 1) {
+        m = 12;
+        y -= 1;
+      }
+    }
+    return meses;
+  }, []);
+
+  // Dados computados da Grid 1: Faturas de Cartão por Instituição e Mês
+  const {
+    itensGridFaturas,
+    instituicoesDisponiveisFaturas,
+    mesesDisponiveisFaturas,
+  } = useMemo(() => {
+    // 1. Instituições que possuem ao menos uma fatura catalogada
+    const faturas = historicoArquivos.filter((h) => h.tipoDocumento === 'FATURA_CARTAO');
+    const instSet = new Set<string>();
+    faturas.forEach((f) => {
+      if (f.instituicao) instSet.add(f.instituicao.trim());
+    });
+    const instituicoes = Array.from(instSet).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+    const meses = gerarListaMesesRetroativos(qtdeMesesFaturas);
+
+    // Mapa para consulta rápida: `${instituicao.toLowerCase()}_${competencia}` -> item de histórico
+    const mapaFaturas = new Map<string, HistoricoImportacaoArquivoItem>();
+    faturas.forEach((f) => {
+      const key = `${(f.instituicao || '').toLowerCase().trim()}_${f.competencia}`;
+      mapaFaturas.set(key, f);
+    });
+
+    interface ItemGridFatura {
+      instituicao: string;
+      competencia: string;
+      importado: boolean;
+      totalTransacoes?: number;
+      valorTotal?: number;
+      arquivoId?: string;
+      nomeArquivo?: string;
+    }
+
+    let itens: ItemGridFatura[] = [];
+    instituicoes.forEach((inst) => {
+      meses.forEach((mes) => {
+        const key = `${inst.toLowerCase().trim()}_${mes}`;
+        const faturaEncontrada = mapaFaturas.get(key);
+        itens.push({
+          instituicao: inst,
+          competencia: mes,
+          importado: !!faturaEncontrada,
+          totalTransacoes: faturaEncontrada?.totalTransacoes,
+          valorTotal: faturaEncontrada?.valorTotal ? Number(faturaEncontrada.valorTotal) : undefined,
+          arquivoId: faturaEncontrada?.arquivoId,
+          nomeArquivo: faturaEncontrada?.arquivo?.nomeArquivo,
+        });
+      });
+    });
+
+    // Filtros
+    if (filtroGridFaturaInstituicao !== 'TODAS') {
+      itens = itens.filter((item) => item.instituicao === filtroGridFaturaInstituicao);
+    }
+    if (filtroGridFaturaAnoMes !== 'TODOS') {
+      itens = itens.filter((item) => item.competencia === filtroGridFaturaAnoMes);
+    }
+    if (filtroGridFaturaImportado !== 'TODOS') {
+      const querImportado = filtroGridFaturaImportado === 'SIM';
+      itens = itens.filter((item) => item.importado === querImportado);
+    }
+
+    // Ordenação
+    itens.sort((a, b) => {
+      let comp = 0;
+      if (ordenacaoGridFaturaCampo === 'instituicao') {
+        comp = a.instituicao.localeCompare(b.instituicao, 'pt-BR');
+      } else if (ordenacaoGridFaturaCampo === 'competencia') {
+        comp = a.competencia.localeCompare(b.competencia);
+      } else if (ordenacaoGridFaturaCampo === 'importado') {
+        comp = (a.importado === b.importado ? 0 : a.importado ? 1 : -1);
+      }
+      return ordenacaoGridFaturaDirecao === 'asc' ? comp : -comp;
+    });
+
+    return {
+      itensGridFaturas: itens,
+      instituicoesDisponiveisFaturas: instituicoes,
+      mesesDisponiveisFaturas: meses,
+    };
+  }, [
+    historicoArquivos,
+    qtdeMesesFaturas,
+    gerarListaMesesRetroativos,
+    filtroGridFaturaInstituicao,
+    filtroGridFaturaAnoMes,
+    filtroGridFaturaImportado,
+    ordenacaoGridFaturaCampo,
+    ordenacaoGridFaturaDirecao,
+  ]);
+
+  // Dados computados da Grid 2: Lançamentos dos Extratos por Instituição e Mês
+  const {
+    itensGridExtratos,
+    instituicoesDisponiveisExtratos,
+    mesesDisponiveisExtratos,
+  } = useMemo(() => {
+    // Extratos de contas correntes ou investimentos
+    const extratos = historicoArquivos.filter((h) => h.tipoDocumento !== 'FATURA_CARTAO');
+    const instSet = new Set<string>();
+    extratos.forEach((e) => {
+      if (e.instituicao) instSet.add(e.instituicao.trim());
+    });
+    const instituicoes = Array.from(instSet).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+    const meses = gerarListaMesesRetroativos(qtdeMesesExtratos);
+
+    // Mapa agrupado por `${instituicao.toLowerCase()}_${competencia}`
+    const mapaExtratos = new Map<string, { totalTransacoes: number; valorTotal: number; arquivos: string[] }>();
+    extratos.forEach((e) => {
+      const dist = (e as any).distribuicaoMensal as
+        | { competencia: string; totalTransacoes: number; valorTotal: number }[]
+        | undefined;
+      const partes =
+        dist && dist.length > 0
+          ? dist
+          : [{ competencia: e.competencia, totalTransacoes: e.totalTransacoes || 0, valorTotal: Number(e.valorTotal || 0) }];
+      partes.forEach((p) => {
+        const key = `${(e.instituicao || '').toLowerCase().trim()}_${p.competencia}`;
+        const atual = mapaExtratos.get(key) || { totalTransacoes: 0, valorTotal: 0, arquivos: [] };
+        atual.totalTransacoes += p.totalTransacoes;
+        atual.valorTotal += p.valorTotal;
+        if (e.arquivo?.nomeArquivo && !atual.arquivos.includes(e.arquivo.nomeArquivo)) {
+          atual.arquivos.push(e.arquivo.nomeArquivo);
+        }
+        mapaExtratos.set(key, atual);
+      });
+    });
+
+    interface ItemGridExtrato {
+      instituicao: string;
+      competencia: string;
+      qtdLancamentos: number;
+      valorTotal: number;
+      arquivos: string[];
+    }
+
+    let itens: ItemGridExtrato[] = [];
+    instituicoes.forEach((inst) => {
+      meses.forEach((mes) => {
+        const key = `${inst.toLowerCase().trim()}_${mes}`;
+        const info = mapaExtratos.get(key);
+        itens.push({
+          instituicao: inst,
+          competencia: mes,
+          qtdLancamentos: info ? info.totalTransacoes : 0,
+          valorTotal: info ? info.valorTotal : 0,
+          arquivos: info ? info.arquivos : [],
+        });
+      });
+    });
+
+    // Filtros
+    if (filtroGridExtratoInstituicao !== 'TODAS') {
+      itens = itens.filter((item) => item.instituicao === filtroGridExtratoInstituicao);
+    }
+    if (filtroGridExtratoAnoMes !== 'TODOS') {
+      itens = itens.filter((item) => item.competencia === filtroGridExtratoAnoMes);
+    }
+
+    // Ordenação
+    itens.sort((a, b) => {
+      let comp = 0;
+      if (ordenacaoGridExtratoCampo === 'instituicao') {
+        comp = a.instituicao.localeCompare(b.instituicao, 'pt-BR');
+      } else if (ordenacaoGridExtratoCampo === 'competencia') {
+        comp = a.competencia.localeCompare(b.competencia);
+      } else if (ordenacaoGridExtratoCampo === 'qtdLancamentos') {
+        comp = a.qtdLancamentos - b.qtdLancamentos;
+      }
+      return ordenacaoGridExtratoDirecao === 'asc' ? comp : -comp;
+    });
+
+    return {
+      itensGridExtratos: itens,
+      instituicoesDisponiveisExtratos: instituicoes,
+      mesesDisponiveisExtratos: meses,
+    };
+  }, [
+    historicoArquivos,
+    qtdeMesesExtratos,
+    gerarListaMesesRetroativos,
+    filtroGridExtratoInstituicao,
+    filtroGridExtratoAnoMes,
+    ordenacaoGridExtratoCampo,
+    ordenacaoGridExtratoDirecao,
+  ]);
 
   // Carrega e abre o modal de lançamentos de um arquivo importado
   const abrirModalLancamentosArquivo = async (arquivoId: string) => {
@@ -831,6 +1090,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       );
       await carregarDetalhesLoteAtivo(loteId);
       await carregarLotes();
+      await carregarAlertasEHistorico();
       setMensagemSucesso(`Extração executada com sucesso usando ${provedorEscolhido || 'a IA configurada'}!`);
     } catch (err: any) {
       setMensagemErro(err.message || 'Erro ao processar extração por IA.');
@@ -861,6 +1121,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
         await carregarDetalhesLoteAtivo(loteAtivo.id);
       }
       await carregarLotes();
+      await carregarAlertasEHistorico();
       onNovasContasOuMovimentos?.();
 
       setMensagemSucesso(
@@ -898,22 +1159,34 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
 
   // TASK-50: confirma o reprocessamento dos arquivos apontados como já importados
   const handleConfirmarReprocessamento = async () => {
-    if (!alertaDuplicidade) return;
+    const arquivosDuplicados =
+      (alertaDuplicidade?.duplicados?.length ?? 0) > 0
+        ? alertaDuplicidade!.duplicados!.map(d => ({ arquivoId: d.arquivoId, nomeArquivo: d.nomeArquivo }))
+        : (loteAtivo?.arquivos || [])
+            .filter(a => a.jaImportadoAnteriormente || a.statusFinal === 'DUPLICADO')
+            .map(a => ({ arquivoId: a.id, nomeArquivo: a.nomeArquivo }));
+
+    if (arquivosDuplicados.length === 0) return;
+
     setConfirmandoReprocessamento(true);
     setMensagemErro(null);
     try {
-      const arquivosDuplicados = alertaDuplicidade.duplicados || [];
       for (const dup of arquivosDuplicados) {
         await apiService.confirmarReprocessamentoArquivo(dup.arquivoId);
       }
-      await carregarLotes();
-      if (alertaDuplicidade.loteId) {
-        await carregarDetalhesLoteAtivo(alertaDuplicidade.loteId);
+      const targetLoteId = alertaDuplicidade?.loteId || loteAtivo?.id;
+      if (targetLoteId) {
+        await carregarDetalhesLoteAtivo(targetLoteId);
       }
+      await carregarLotes();
+      await carregarAlertasEHistorico();
       setMensagemSucesso(
-        `Reprocessamento confirmado para ${arquivosDuplicados.length} arquivo(s). Eles já podem ser processados novamente pela IA.`
+        `Reprocessamento liberado para ${arquivosDuplicados.length} arquivo(s). O processamento foi iniciado.`
       );
       setAlertaDuplicidade(null);
+      if (targetLoteId) {
+        setDescartouAlertaLoteId(targetLoteId);
+      }
     } catch (err: any) {
       setMensagemErro(
         err.message || 'Erro ao confirmar o reprocessamento dos arquivos duplicados.'
@@ -925,6 +1198,9 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
 
   const handleDescartarAlertaDuplicidade = () => {
     setAlertaDuplicidade(null);
+    if (loteAtivo?.id) {
+      setDescartouAlertaLoteId(loteAtivo.id);
+    }
     setMensagemSucesso(
       'Lote mantido com os arquivos marcados como já importados. Nada será reprocessado sem sua confirmação.'
     );
@@ -954,6 +1230,38 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       setMensagemErro(err.message || 'Erro ao excluir o arquivo da importação.');
     } finally {
       setExcluindoArquivoId(null);
+    }
+  };
+
+  const handleExcluirImportacaoFatura = async (arquivoId: string, nomeArquivo?: string, competencia?: string) => {
+    const detalhe = competencia ? `da competência ${competencia}` : nomeArquivo ? `"${nomeArquivo}"` : '';
+    const confirmou = window.confirm(
+      `Deseja realmente excluir a importação desta fatura ${detalhe} e TODOS os seus lançamentos?\n\n` +
+      `Esta ação removerá todos os movimentos financeiros criados por esta fatura e liberará o documento para ser reimportado caso necessário.`
+    );
+    if (!confirmou) return;
+
+    setExcluindoFaturaArquivoId(arquivoId);
+    setMensagemErro(null);
+    setMensagemSucesso(null);
+
+    try {
+      const resp = await apiService.excluirImportacaoFatura(arquivoId);
+      if (arquivoLancamentosModal?.arquivo.id === arquivoId) {
+        setArquivoLancamentosModal(null);
+      }
+      if (loteAtivo?.id) {
+        await carregarDetalhesLoteAtivo(loteAtivo.id);
+      }
+      await carregarAlertasEHistorico();
+      await carregarLotes();
+      setMensagemSucesso(
+        resp.message || `Fatura e seus lançamentos foram excluídos com sucesso. O documento pode ser reimportado.`
+      );
+    } catch (err: any) {
+      setMensagemErro(err.message || 'Erro ao excluir importação da fatura e lançamentos.');
+    } finally {
+      setExcluindoFaturaArquivoId(null);
     }
   };
 
@@ -1028,6 +1336,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       const res = await apiService.consolidarLote(loteAtivo.id);
       await carregarDetalhesLoteAtivo(loteAtivo.id);
       await carregarLotes();
+      await carregarAlertasEHistorico();
       onNovasContasOuMovimentos?.();
       setMensagemSucesso(
         `Consolidação concluída! ${res.resultado.novosMovimentosInseridos} movimentos adicionados, ${res.resultado.contasCriadas} contas novas provisionadas.`
@@ -1124,7 +1433,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
               {t.duracaoMs} ms
             </span>
             <span style={{ color: 'var(--text-muted)', marginLeft: 'auto' }}>
-              {new Date(t.criadoEm).toLocaleString('pt-BR')}
+              {formatarDataHoraIso(t.criadoEm, true)}
             </span>
             {t.mensagemErro && (
               <div
@@ -1659,321 +1968,55 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       {/* Modal de Escolha de IA quando há mais de uma IA disponível (configurada ou suportada) */}
       {modalEscolhaIaAberto && (
         <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.75)',
-            backdropFilter: 'blur(4px)',
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '16px',
-          }}
+          className="modal-backdrop"
           onClick={(e) => {
-            if (e.target === e.currentTarget) setModalEscolhaIaAberto(false);
+            if (e.target === e.currentTarget && !processandoAcao) setModalEscolhaIaAberto(false);
           }}
         >
           <div
-            className="login-card"
-            style={{ width: '100%', maxWidth: '480px', margin: 0, display: 'flex', flexDirection: 'column', gap: '16px' }}
+            className="modal-dialog"
+            style={{ maxWidth: '540px' }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <Sparkles size={24} style={{ color: 'var(--brand-primary, #38bdf8)' }} />
-              <div>
-                <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700 }}>
-                  Qual IA você deseja usar neste lote?
-                </h3>
-                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                  Você possui mais de uma Inteligência Artificial configurada. Selecione a desejada:
-                </p>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {provedoresDisponiveis.map(prov => {
-                const isSelected = provedorIaSelecionado === prov.id;
-                const nomeAmigavel = nomeAmigavelDoProvedor(prov.id);
-                const suportado = ehProvedorSuportadoNoFluxo(prov);
-                const modeloEfetivo =
-                  prov.modeloConfigurado ||
-                  (isSelected ? modeloIaSelecionado : undefined) ||
-                  prov.modeloPadrao ||
-                  modeloPadraoDoProvedor(prov.id);
-
-                return (
-                  <div
-                    key={prov.id}
-                    role="button"
-                    tabIndex={suportado ? 0 : -1}
-                    aria-disabled={!suportado}
-                    onClick={() => {
-                      if (!suportado) return;
-                      salvarPreferenciaIa(prov.id, modeloEfetivo);
-                    }}
-                    onKeyDown={e => {
-                      if (!suportado) return;
-                      if (e.key === 'Enter' || e.key === ' ')
-                        salvarPreferenciaIa(prov.id, modeloEfetivo);
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: '10px',
-                      padding: '12px 14px',
-                      borderRadius: 'var(--radius-sm)',
-                      border: isSelected ? '2px solid var(--brand-primary)' : '1px solid var(--border-color)',
-                      background: isSelected ? 'rgba(56, 189, 248, 0.12)' : 'var(--bg-secondary)',
-                      cursor: suportado ? 'pointer' : 'not-allowed',
-                      opacity: suportado ? 1 : 0.5,
-                      textAlign: 'left',
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          flexWrap: 'wrap',
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontWeight: 700,
-                            fontSize: '0.9rem',
-                            color: 'var(--text-primary)',
-                          }}
-                        >
-                          {nomeAmigavel}
-                        </span>
-                        {!suportado ? (
-                          <span className="badge badge-amarelo" style={{ fontSize: '0.62rem' }}>
-                            Não suportado
-                          </span>
-                        ) : prov.configurado ? (
-                          <span className="badge badge-verde" style={{ fontSize: '0.62rem' }}>
-                            ✓ Configurada
-                          </span>
-                        ) : (
-                          <span className="badge badge-amarelo" style={{ fontSize: '0.62rem' }}>
-                            Sem chave
-                          </span>
-                        )}
-                      </div>
-                      {!suportado && (
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                          {AVISO_PROVEDOR_NAO_SUPORTADO}
-                        </div>
-                      )}
-                      <div
-                        style={{
-                          fontSize: '0.75rem',
-                          color: 'var(--text-muted)',
-                          marginTop: '2px',
-                        }}
-                      >
-                        Modelo: <code>{modeloEfetivo}</code>
-                        {prov.chaveMascarada ? (
-                          <>
-                            {' '}
-                            • Chave: <code>{prov.chaveMascarada}</code>
-                          </>
-                        ) : null}
-                      </div>
-                      {suportado && (
-                        <div style={{ marginTop: '6px' }}>
-                          <SeletorModeloIa
-                            provedor={prov.id}
-                            modelo={modeloEfetivo}
-                            modelos={prov.modelos}
-                            onChange={novo => salvarPreferenciaIa(prov.id, novo)}
-                            compacto
-                          />
-                        </div>
-                      )}
-                      {suportado && (() => {
-                        const m = mediasConsolidadasIa.find(
-                          item => item.provedor.toUpperCase() === prov.id.toUpperCase() && item.modelo.toLowerCase() === modeloEfetivo.toLowerCase()
-                        );
-                        if (!m) return null;
-                        return (
-                          <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '4px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                            <span><strong>Custo:</strong> ${m.custoUsdPor1kTokens.toFixed(5)} (~R$ {m.custoBrlPor1kTokens.toFixed(4)})/1k</span>
-                            <span>•</span>
-                            <span><strong>Tempo:</strong> {m.segundosPor1kTokens.toFixed(2)}s/1k</span>
-                            <span>•</span>
-                            <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>
-                              {m.isEstimativa ? 'estimativa' : `${m.totalChamadas} amostras`}
-                            </span>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                    {isSelected && suportado && (
-                      <CheckCircle2 size={18} style={{ color: 'var(--brand-primary)' }} />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {!provedorAtualSuportadoNoFluxo && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  flexWrap: 'wrap',
-                  padding: '10px 12px',
-                  borderRadius: 'var(--radius-sm)',
-                  background: 'rgba(148, 163, 184, 0.12)',
-                  border: '1px solid rgba(148, 163, 184, 0.3)',
-                  fontSize: '0.78rem',
-                  color: 'var(--text-muted)',
-                }}
-              >
-                <AlertTriangle size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
-                <span>
-                  <strong>{nomeProvedorAtual}</strong> • {AVISO_PROVEDOR_NAO_SUPORTADO}.
-                </span>
-              </div>
-            )}
-
-            {provedorAtualSuportadoNoFluxo && !provedorAtualConfigurado && (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '10px',
-                  flexWrap: 'wrap',
-                  padding: '10px 12px',
-                  borderRadius: 'var(--radius-sm)',
-                  background: 'rgba(234, 179, 8, 0.1)',
-                  border: '1px solid rgba(234, 179, 8, 0.3)',
-                  fontSize: '0.78rem',
-                  color: '#fef08a',
-                }}
-              >
-                <span>
-                  <strong>{nomeProvedorAtual}</strong> ainda não possui chave salva. Configure para
-                  processar este lote.
-                </span>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => abrirConfiguracaoDoProvedor(provedorIaSelecionado)}
-                  style={{ fontSize: '0.76rem', padding: '4px 10px', height: 'auto' }}
+            <div className="modal-dialog-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(56, 189, 248, 0.15)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'var(--brand-primary, #38bdf8)',
+                    flexShrink: 0,
+                  }}
                 >
-                  <Key size={13} /> Configurar
-                </button>
-              </div>
-            )}
-
-            <div
-              style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '4px' }}
-            >
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setModalEscolhaIaAberto(false)}
-                disabled={processandoAcao}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={
-                  processandoAcao ||
-                  !loteAtivo ||
-                  !provedorAtualConfigurado ||
-                  !provedorAtualSuportadoNoFluxo
-                }
-                onClick={() => {
-                  if (loteAtivo && provedorAtualConfigurado && provedorAtualSuportadoNoFluxo) {
-                    setEscolhaIaExplicita(true);
-                    executarExtracaoComProvedor(
-                      loteAtivo.id,
-                      provedorIaSelecionado,
-                      modeloIaSelecionado
-                    );
-                  }
-                }}
-              >
-                {processandoAcao ? 'Processando...' : `Iniciar Extração com ${nomeProvedorAtual}`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal de Reprocessamento Granular de Arquivo com Falha */}
-      {arquivoParaReprocessar && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.75)',
-            backdropFilter: 'blur(4px)',
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '16px',
-          }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget && !reprocessandoArquivoId) {
-              setArquivoParaReprocessar(null);
-            }
-          }}
-        >
-          <div
-            className="login-card"
-            style={{ width: '100%', maxWidth: '520px', margin: 0, display: 'flex', flexDirection: 'column', gap: '16px' }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <RefreshCw size={24} style={{ color: 'var(--brand-primary, #38bdf8)' }} />
-              <div>
-                <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700 }}>
-                  Reprocessar Arquivo com outra IA
-                </h3>
-                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                  Recupere apenas este arquivo sem perder os dados já consolidados do lote.
-                </p>
-              </div>
-            </div>
-
-            {/* Detalhes do arquivo e da falha */}
-            <div
-              style={{
-                background: 'rgba(15, 23, 42, 0.6)',
-                border: '1px solid var(--border-subtle)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '12px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '6px',
-              }}
-            >
-              <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                Arquivo: <code>{arquivoParaReprocessar.nomeArquivo}</code>
-              </div>
-              {arquivoParaReprocessar.mensagemErro && (
-                <div style={{ fontSize: '0.78rem', color: '#f87171', background: 'rgba(239, 68, 68, 0.1)', padding: '6px 8px', borderRadius: '4px' }}>
-                  <strong>Motivo da falha:</strong> {arquivoParaReprocessar.mensagemErro}
+                  <Sparkles size={20} />
                 </div>
-              )}
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                    Qual IA você deseja usar neste lote?
+                  </h3>
+                  <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                    Selecione o provedor e modelo desejados para o processamento:
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="bottom-sheet-close"
+                onClick={() => {
+                  if (!processandoAcao) setModalEscolhaIaAberto(false);
+                }}
+                disabled={processandoAcao}
+                title="Fechar"
+              >
+                <X size={18} />
+              </button>
             </div>
 
-            {/* Lista das IAs disponíveis para escolher para este arquivo */}
-            <div>
-              <label style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '8px' }}>
-                Selecione a IA para reprocessar este arquivo:
-              </label>
-
+            <div className="modal-dialog-body">
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {provedoresDisponiveis.map(prov => {
                   const isSelected = provedorIaSelecionado === prov.id;
@@ -2004,19 +2047,18 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
-                        gap: '8px',
+                        gap: '10px',
                         padding: '10px 12px',
                         borderRadius: 'var(--radius-sm)',
-                        border: isSelected
-                          ? '2px solid var(--brand-primary)'
-                          : '1px solid var(--border-color)',
+                        border: isSelected ? '2px solid var(--brand-primary)' : '1px solid var(--border-color, var(--border-subtle))',
                         background: isSelected ? 'rgba(56, 189, 248, 0.12)' : 'var(--bg-secondary)',
                         cursor: suportado ? 'pointer' : 'not-allowed',
                         opacity: suportado ? 1 : 0.5,
                         textAlign: 'left',
+                        transition: 'all 0.15s ease',
                       }}
                     >
-                      <div style={{ flex: 1 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
                         <div
                           style={{
                             display: 'flex',
@@ -2028,7 +2070,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                           <span
                             style={{
                               fontWeight: 700,
-                              fontSize: '0.88rem',
+                              fontSize: '0.9rem',
                               color: 'var(--text-primary)',
                             }}
                           >
@@ -2049,11 +2091,18 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                           )}
                         </div>
                         {!suportado && (
-                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
                             {AVISO_PROVEDOR_NAO_SUPORTADO}
                           </div>
                         )}
-                        <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                        <div
+                          style={{
+                            fontSize: '0.75rem',
+                            color: 'var(--text-muted)',
+                            marginTop: '2px',
+                            wordBreak: 'break-all',
+                          }}
+                        >
                           Modelo: <code>{modeloEfetivo}</code>
                           {prov.chaveMascarada ? (
                             <>
@@ -2063,7 +2112,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                           ) : null}
                         </div>
                         {suportado && (
-                          <div style={{ marginTop: '6px' }}>
+                          <div style={{ marginTop: '8px' }}>
                             <SeletorModeloIa
                               provedor={prov.id}
                               modelo={modeloEfetivo}
@@ -2073,9 +2122,26 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                             />
                           </div>
                         )}
+                        {suportado && (() => {
+                          const m = mediasConsolidadasIa.find(
+                            item => item.provedor.toUpperCase() === prov.id.toUpperCase() && item.modelo.toLowerCase() === modeloEfetivo.toLowerCase()
+                          );
+                          if (!m) return null;
+                          return (
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '4px', display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              <span><strong>Custo:</strong> ${m.custoUsdPor1kTokens.toFixed(5)} (~R$ {m.custoBrlPor1kTokens.toFixed(4)})/1k</span>
+                              <span>•</span>
+                              <span><strong>Tempo:</strong> {m.segundosPor1kTokens.toFixed(2)}s/1k</span>
+                              <span>•</span>
+                              <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>
+                                {m.isEstimativa ? 'estimativa' : `${m.totalChamadas} amostras`}
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </div>
                       {isSelected && suportado && (
-                        <CheckCircle2 size={16} style={{ color: 'var(--brand-primary)' }} />
+                        <CheckCircle2 size={18} style={{ color: 'var(--brand-primary)', flexShrink: 0 }} />
                       )}
                     </div>
                   );
@@ -2085,12 +2151,11 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
               {!provedorAtualSuportadoNoFluxo && (
                 <div
                   style={{
-                    marginTop: '8px',
                     display: 'flex',
                     alignItems: 'center',
                     gap: '8px',
                     flexWrap: 'wrap',
-                    padding: '8px 12px',
+                    padding: '10px 12px',
                     borderRadius: 'var(--radius-sm)',
                     background: 'rgba(148, 163, 184, 0.12)',
                     border: '1px solid rgba(148, 163, 184, 0.3)',
@@ -2108,13 +2173,12 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
               {provedorAtualSuportadoNoFluxo && !provedorAtualConfigurado && (
                 <div
                   style={{
-                    marginTop: '8px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'space-between',
                     gap: '10px',
                     flexWrap: 'wrap',
-                    padding: '8px 12px',
+                    padding: '10px 12px',
                     borderRadius: 'var(--radius-sm)',
                     background: 'rgba(234, 179, 8, 0.1)',
                     border: '1px solid rgba(234, 179, 8, 0.3)',
@@ -2123,14 +2187,14 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                   }}
                 >
                   <span>
-                    <strong>{nomeProvedorAtual}</strong> ainda não possui chave salva. Configure
-                    para reprocessar este arquivo.
+                    <strong>{nomeProvedorAtual}</strong> ainda não possui chave salva. Configure para
+                    processar este lote.
                   </span>
                   <button
                     type="button"
                     className="btn btn-secondary"
                     onClick={() => abrirConfiguracaoDoProvedor(provedorIaSelecionado)}
-                    style={{ fontSize: '0.76rem', padding: '4px 10px', height: 'auto' }}
+                    style={{ fontSize: '0.76rem', padding: '4px 10px', minHeight: '32px' }}
                   >
                     <Key size={13} /> Configurar
                   </button>
@@ -2138,23 +2202,316 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
               )}
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+            <div className="modal-dialog-footer">
+              <div />
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setModalEscolhaIaAberto(false)}
+                  disabled={processandoAcao}
+                  style={{ minHeight: '38px', padding: '8px 14px' }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={
+                    processandoAcao ||
+                    !loteAtivo ||
+                    !provedorAtualConfigurado ||
+                    !provedorAtualSuportadoNoFluxo
+                  }
+                  onClick={() => {
+                    if (loteAtivo && provedorAtualConfigurado && provedorAtualSuportadoNoFluxo) {
+                      setEscolhaIaExplicita(true);
+                      executarExtracaoComProvedor(
+                        loteAtivo.id,
+                        provedorIaSelecionado,
+                        modeloIaSelecionado
+                      );
+                    }
+                  }}
+                  style={{ minHeight: '38px', padding: '8px 16px' }}
+                >
+                  {processandoAcao ? 'Processando...' : `Iniciar Extração com ${nomeProvedorAtual}`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Reprocessamento Granular de Arquivo com Falha */}
+      {arquivoParaReprocessar && (
+        <div
+          className="modal-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !reprocessandoArquivoId) {
+              setArquivoParaReprocessar(null);
+            }
+          }}
+        >
+          <div
+            className="modal-dialog"
+            style={{ maxWidth: '560px' }}
+          >
+            {/* Cabeçalho Fixo do Modal */}
+            <div className="modal-dialog-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div
+                  style={{
+                    width: '36px',
+                    height: '36px',
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(56, 189, 248, 0.15)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: 'var(--brand-primary, #38bdf8)',
+                    flexShrink: 0,
+                  }}
+                >
+                  <RefreshCw size={20} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                    Reprocessar Arquivo com outra IA
+                  </h3>
+                  <p style={{ margin: 0, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                    Recupere este arquivo mantendo os dados consolidados do lote.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="bottom-sheet-close"
+                onClick={() => {
+                  if (!reprocessandoArquivoId) setArquivoParaReprocessar(null);
+                }}
+                disabled={Boolean(reprocessandoArquivoId)}
+                title="Fechar"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Corpo Rolável do Modal */}
+            <div className="modal-dialog-body">
+              {/* Detalhes do arquivo e da falha */}
+              <div
+                style={{
+                  background: 'rgba(15, 23, 42, 0.6)',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
+                }}
+              >
+                <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                  Arquivo: <code style={{ color: 'var(--brand-primary)' }}>{arquivoParaReprocessar.nomeArquivo}</code>
+                </div>
+                {arquivoParaReprocessar.mensagemErro && (
+                  <div style={{ fontSize: '0.78rem', color: '#f87171', background: 'rgba(239, 68, 68, 0.1)', padding: '6px 8px', borderRadius: '4px' }}>
+                    <strong>Motivo da falha:</strong> {arquivoParaReprocessar.mensagemErro}
+                  </div>
+                )}
+              </div>
+
+              {/* Lista das IAs disponíveis para escolher para este arquivo */}
+              <div>
+                <label style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '8px' }}>
+                  Selecione a IA para reprocessar este arquivo:
+                </label>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {provedoresDisponiveis.map(prov => {
+                    const isSelected = provedorIaSelecionado === prov.id;
+                    const nomeAmigavel = nomeAmigavelDoProvedor(prov.id);
+                    const suportado = ehProvedorSuportadoNoFluxo(prov);
+                    const modeloEfetivo =
+                      prov.modeloConfigurado ||
+                      (isSelected ? modeloIaSelecionado : undefined) ||
+                      prov.modeloPadrao ||
+                      modeloPadraoDoProvedor(prov.id);
+
+                    return (
+                      <div
+                        key={prov.id}
+                        role="button"
+                        tabIndex={suportado ? 0 : -1}
+                        aria-disabled={!suportado}
+                        onClick={() => {
+                          if (!suportado) return;
+                          salvarPreferenciaIa(prov.id, modeloEfetivo);
+                        }}
+                        onKeyDown={e => {
+                          if (!suportado) return;
+                          if (e.key === 'Enter' || e.key === ' ')
+                            salvarPreferenciaIa(prov.id, modeloEfetivo);
+                        }}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '10px',
+                          padding: '10px 12px',
+                          borderRadius: 'var(--radius-sm)',
+                          border: isSelected
+                            ? '2px solid var(--brand-primary)'
+                            : '1px solid var(--border-color, var(--border-subtle))',
+                          background: isSelected ? 'rgba(56, 189, 248, 0.12)' : 'var(--bg-secondary)',
+                          cursor: suportado ? 'pointer' : 'not-allowed',
+                          opacity: suportado ? 1 : 0.5,
+                          textAlign: 'left',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                              flexWrap: 'wrap',
+                            }}
+                          >
+                            <span
+                              style={{
+                                fontWeight: 700,
+                                fontSize: '0.88rem',
+                                color: 'var(--text-primary)',
+                              }}
+                            >
+                              {nomeAmigavel}
+                            </span>
+                            {!suportado ? (
+                              <span className="badge badge-amarelo" style={{ fontSize: '0.62rem' }}>
+                                Não suportado
+                              </span>
+                            ) : prov.configurado ? (
+                              <span className="badge badge-verde" style={{ fontSize: '0.62rem' }}>
+                                ✓ Configurada
+                              </span>
+                            ) : (
+                              <span className="badge badge-amarelo" style={{ fontSize: '0.62rem' }}>
+                                Sem chave
+                              </span>
+                            )}
+                          </div>
+                          {!suportado && (
+                            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                              {AVISO_PROVEDOR_NAO_SUPORTADO}
+                            </div>
+                          )}
+                          <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px', wordBreak: 'break-all' }}>
+                            Modelo: <code>{modeloEfetivo}</code>
+                            {prov.chaveMascarada ? (
+                              <>
+                                {' '}
+                                • Chave: <code>{prov.chaveMascarada}</code>
+                              </>
+                            ) : null}
+                          </div>
+                          {suportado && (
+                            <div style={{ marginTop: '8px' }}>
+                              <SeletorModeloIa
+                                provedor={prov.id}
+                                modelo={modeloEfetivo}
+                                modelos={prov.modelos}
+                                onChange={novo => salvarPreferenciaIa(prov.id, novo)}
+                                compacto
+                              />
+                            </div>
+                          )}
+                        </div>
+                        {isSelected && suportado && (
+                          <CheckCircle2 size={18} style={{ color: 'var(--brand-primary)', flexShrink: 0 }} />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {!provedorAtualSuportadoNoFluxo && (
+                  <div
+                    style={{
+                      marginTop: '8px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      flexWrap: 'wrap',
+                      padding: '8px 12px',
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'rgba(148, 163, 184, 0.12)',
+                      border: '1px solid rgba(148, 163, 184, 0.3)',
+                      fontSize: '0.78rem',
+                      color: 'var(--text-muted)',
+                    }}
+                  >
+                    <AlertTriangle size={14} style={{ color: '#94a3b8', flexShrink: 0 }} />
+                    <span>
+                      <strong>{nomeProvedorAtual}</strong> • {AVISO_PROVEDOR_NAO_SUPORTADO}.
+                    </span>
+                  </div>
+                )}
+
+                {provedorAtualSuportadoNoFluxo && !provedorAtualConfigurado && (
+                  <div
+                    style={{
+                      marginTop: '8px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '10px',
+                      flexWrap: 'wrap',
+                      padding: '8px 12px',
+                      borderRadius: 'var(--radius-sm)',
+                      background: 'rgba(234, 179, 8, 0.1)',
+                      border: '1px solid rgba(234, 179, 8, 0.3)',
+                      fontSize: '0.78rem',
+                      color: '#fef08a',
+                    }}
+                  >
+                    <span>
+                      <strong>{nomeProvedorAtual}</strong> ainda não possui chave salva. Configure
+                      para reprocessar este arquivo.
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => abrirConfiguracaoDoProvedor(provedorIaSelecionado)}
+                      style={{ fontSize: '0.76rem', padding: '4px 10px', minHeight: '32px' }}
+                    >
+                      <Key size={13} /> Configurar
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Rodapé Fixo com Ações Claramente Visíveis */}
+            <div className="modal-dialog-footer">
               <button
                 type="button"
                 disabled={Boolean(reprocessandoArquivoId) || Boolean(excluindoArquivoId)}
                 onClick={() => handleExcluirArquivo(arquivoParaReprocessar.id, arquivoParaReprocessar.nomeArquivo)}
                 style={{
-                  background: 'rgba(239, 68, 68, 0.1)',
-                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  background: 'rgba(239, 68, 68, 0.12)',
+                  border: '1px solid rgba(239, 68, 68, 0.35)',
                   color: '#f87171',
                   borderRadius: 'var(--radius-sm)',
-                  padding: '6px 12px',
-                  fontSize: '0.8rem',
+                  padding: '8px 14px',
+                  fontSize: '0.82rem',
                   fontWeight: 600,
                   cursor: 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '6px',
+                  minHeight: '38px',
                 }}
                 title="Excluir este arquivo do lote de importação"
               >
@@ -2162,12 +2519,13 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                 {excluindoArquivoId === arquivoParaReprocessar.id ? 'Excluindo...' : 'Excluir Arquivo'}
               </button>
 
-              <div style={{ display: 'flex', gap: '8px' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <button
                   type="button"
                   className="btn btn-secondary"
                   disabled={Boolean(reprocessandoArquivoId) || Boolean(excluindoArquivoId)}
                   onClick={() => setArquivoParaReprocessar(null)}
+                  style={{ minHeight: '38px', padding: '8px 14px' }}
                 >
                   Cancelar
                 </button>
@@ -2188,11 +2546,11 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                       modeloIaSelecionado
                     );
                   }}
+                  style={{ minHeight: '38px', padding: '8px 16px' }}
                 >
                   {reprocessandoArquivoId ? (
                     <>
-                      <RefreshCw size={14} className="spin" /> Reprocessando com {nomeProvedorAtual}
-                      ...
+                      <RefreshCw size={14} className="spin" /> Reprocessando...
                     </>
                   ) : (
                     `Reprocessar com ${nomeProvedorAtual}`
@@ -2253,113 +2611,135 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
         </div>
       )}
 
-      {/* 2.2 TASK-50: Alerta de Duplicidade no Upload (requer confirmação explícita) */}
-      {alertaDuplicidade && (alertaDuplicidade.duplicados?.length ?? 0) > 0 && (
-        <div
-          className="card"
-          style={{
-            border: '1px solid rgba(245, 158, 11, 0.45)',
-            backgroundColor: 'rgba(245, 158, 11, 0.08)',
-            padding: '16px 18px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px',
-          }}
-        >
+      {/* 2.2 TASK-50: Alerta de Duplicidade no Upload ou Lote Ativo (requer confirmação explícita) */}
+      {(() => {
+        const duplicadosExibir =
+          alertaDuplicidade && (alertaDuplicidade.duplicados?.length ?? 0) > 0
+            ? alertaDuplicidade.duplicados || []
+            : loteAtivo && descartouAlertaLoteId !== loteAtivo.id
+            ? (loteAtivo.arquivos || [])
+                .filter(a => a.jaImportadoAnteriormente || a.statusFinal === 'DUPLICADO')
+                .map(a => ({
+                  arquivoId: a.id,
+                  nomeArquivo: a.nomeArquivo,
+                  motivos: ['ARQUIVO_DUPLICADO'],
+                  ocorrencias: [] as Array<{ loteId: string; data: string; nomeLote?: string }>,
+                }))
+            : [];
+
+        if (duplicadosExibir.length === 0) return null;
+
+        return (
           <div
+            className="card"
             style={{
+              border: '1px solid rgba(245, 158, 11, 0.45)',
+              backgroundColor: 'rgba(245, 158, 11, 0.08)',
+              padding: '16px 18px',
               display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              color: '#fbbf24',
-              fontWeight: 700,
-              fontSize: '0.92rem',
+              flexDirection: 'column',
+              gap: '12px',
             }}
           >
-            <AlertTriangle size={18} />
-            <span>Arquivos já importados anteriormente</span>
-          </div>
-
-          <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            O lote foi criado, mas {alertaDuplicidade.duplicados?.length} arquivo(s) já existem no
-            seu histórico (mesmo nome ou mesmo conteúdo SHA-256). Eles{' '}
-            <strong>não serão reprocessados</strong> até que você confirme explicitamente.
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {(alertaDuplicidade.duplicados || []).map(dup => (
-              <div
-                key={dup.arquivoId}
-                style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '8px 12px',
-                  borderRadius: 'var(--radius-sm)',
-                  backgroundColor: 'rgba(15, 23, 42, 0.55)',
-                  border: '1px solid var(--border-subtle)',
-                  fontSize: '0.78rem',
-                }}
-              >
-                <FileText size={14} color="#fbbf24" />
-                <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                  {dup.nomeArquivo}
-                </span>
-                {dup.motivos?.map(m => (
-                  <span
-                    key={m}
-                    className="badge"
-                    style={{
-                      backgroundColor: 'rgba(245, 158, 11, 0.18)',
-                      color: '#fcd34d',
-                      border: '1px solid rgba(245, 158, 11, 0.35)',
-                    }}
-                  >
-                    {m === 'MESMO_NOME' ? 'Mesmo nome' : 'Mesmo conteúdo'}
-                  </span>
-                ))}
-                {dup.ocorrencias?.length > 0 && (
-                  <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
-                    {dup.ocorrencias.length} ocorrência(s) anterior(es)
-                  </span>
-                )}
-              </div>
-            ))}
-          </div>
-
-          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={confirmandoReprocessamento}
-              onClick={handleConfirmarReprocessamento}
-              style={{ fontSize: '0.82rem', minHeight: '38px', padding: '0 16px' }}
-            >
-              <RefreshCw size={14} className={confirmandoReprocessamento ? 'spin' : ''} />
-              {confirmandoReprocessamento ? 'Confirmando...' : 'Confirmar e reprocessar'}
-            </button>
-            <button
-              type="button"
-              disabled={confirmandoReprocessamento}
-              onClick={handleDescartarAlertaDuplicidade}
+            <div
               style={{
-                background: 'transparent',
-                border: '1px solid var(--border-subtle)',
-                color: 'var(--text-secondary)',
-                borderRadius: 'var(--radius-sm)',
-                fontWeight: 600,
-                fontSize: '0.82rem',
-                minHeight: '38px',
-                padding: '0 16px',
-                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                color: '#fbbf24',
+                fontWeight: 700,
+                fontSize: '0.92rem',
               }}
             >
-              Manter como duplicado
-            </button>
+              <AlertTriangle size={18} />
+              <span>Arquivos já importados anteriormente</span>
+            </div>
+
+            <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              O lote possui {duplicadosExibir.length} arquivo(s) já existente(s) no seu histórico
+              (mesmo nome ou conteúdo SHA-256). Eles <strong>não serão processados</strong> até que
+              você confirme explicitamente.
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {duplicadosExibir.map(dup => (
+                <div
+                  key={dup.arquivoId}
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '8px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    backgroundColor: 'rgba(15, 23, 42, 0.55)',
+                    border: '1px solid var(--border-subtle)',
+                    fontSize: '0.78rem',
+                  }}
+                >
+                  <FileText size={14} color="#fbbf24" />
+                  <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                    {dup.nomeArquivo}
+                  </span>
+                  {dup.motivos?.map(m => (
+                    <span
+                      key={m}
+                      className="badge"
+                      style={{
+                        backgroundColor: 'rgba(245, 158, 11, 0.18)',
+                        color: '#fcd34d',
+                        border: '1px solid rgba(245, 158, 11, 0.35)',
+                      }}
+                    >
+                      {m === 'MESMO_NOME'
+                        ? 'Mesmo nome'
+                        : m === 'MESMO_CONTEUDO'
+                        ? 'Mesmo conteúdo'
+                        : 'Já importado'}
+                    </span>
+                  ))}
+                  {dup.ocorrencias && dup.ocorrencias.length > 0 && (
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+                      {dup.ocorrencias.length} ocorrência(s) anterior(es)
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={confirmandoReprocessamento}
+                onClick={handleConfirmarReprocessamento}
+                style={{ fontSize: '0.82rem', minHeight: '38px', padding: '0 16px' }}
+              >
+                <RefreshCw size={14} className={confirmandoReprocessamento ? 'spin' : ''} />
+                {confirmandoReprocessamento ? 'Confirmando...' : 'Liberar e processar'}
+              </button>
+              <button
+                type="button"
+                disabled={confirmandoReprocessamento}
+                onClick={handleDescartarAlertaDuplicidade}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border-subtle)',
+                  color: 'var(--text-secondary)',
+                  borderRadius: 'var(--radius-sm)',
+                  fontWeight: 600,
+                  fontSize: '0.82rem',
+                  minHeight: '38px',
+                  padding: '0 16px',
+                  cursor: 'pointer',
+                }}
+              >
+                Manter como duplicado
+              </button>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 2.5 TASK-41: Alertas Inteligentes de Conciliação e Lacunas de Faturas/Extratos */}
       {alertasConciliacao.length > 0 && (
@@ -2408,7 +2788,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                     {alerta.descricao}
                   </div>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                    Competência: <strong>{alerta.competencia}</strong> • Criado em: {new Date(alerta.criadoEm).toLocaleDateString()}
+                    Competência: <strong>{alerta.competencia}</strong> • Criado em: {formatarDataIso(alerta.criadoEm)}
                   </div>
                 </div>
 
@@ -3231,20 +3611,35 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                             </div>
 
                             <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                              {stats && stats.totalLinhas > 0 && (
-                                <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', textAlign: 'right' }}>
-                                  <span>{stats.totalLinhas} linhas</span>
+                              {stats && stats.totalLinhas > 0 ? (
+                                <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', textAlign: 'right', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span
+                                    className="badge badge-blue"
+                                    style={{
+                                      fontFamily: 'var(--font-mono)',
+                                      fontWeight: 700,
+                                      fontSize: '0.74rem',
+                                      padding: '3px 8px',
+                                    }}
+                                    title="Lançamentos extraídos deste arquivo pela IA"
+                                  >
+                                    {stats.totalLinhas} {stats.totalLinhas === 1 ? 'lançamento' : 'lançamentos'}
+                                  </span>
                                   {stats.processado > 0 && (
-                                    <span style={{ color: 'var(--status-green)', marginLeft: '6px' }}>
-                                      • {stats.processado} consolidadas
+                                    <span style={{ color: 'var(--status-green)', marginLeft: '2px', fontWeight: 600 }}>
+                                      • {stats.processado} consolidados
                                     </span>
                                   )}
                                   {stats.ignorado > 0 && (
-                                    <span style={{ color: 'var(--status-yellow)', marginLeft: '6px' }}>
+                                    <span style={{ color: 'var(--status-yellow)', marginLeft: '2px', fontWeight: 600 }}>
                                       • {stats.ignorado} dup
                                     </span>
                                   )}
                                 </div>
+                              ) : (
+                                ['STAGING_CARREGADO', 'PROCESSADO_FINAL'].includes(arq.status) && (
+                                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>0 lançamentos</span>
+                                )
                               )}
                               <div>
                                 {arq.status === 'ERRO' ? (
@@ -3310,6 +3705,80 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                                       title="Excluir arquivo com erro do lote"
                                     >
                                       <Trash2 size={11} className={excluindoArquivoId === arq.id ? 'spin' : ''} />
+                                      {excluindoArquivoId === arq.id ? 'Excluindo...' : 'Excluir'}
+                                    </button>
+                                  </div>
+                                ) : arq.jaImportadoAnteriormente || arq.statusFinal === 'DUPLICADO' ? (
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                                    <span className="badge badge-amarelo">Já Importado</span>
+                                    <button
+                                      type="button"
+                                      disabled={
+                                        reprocessandoArquivoId === arq.id ||
+                                        excluindoArquivoId === arq.id
+                                      }
+                                      onClick={async () => {
+                                        try {
+                                          setReprocessandoArquivoId(arq.id);
+                                          await apiService.confirmarReprocessamentoArquivo(arq.id);
+                                          if (loteAtivo?.id) {
+                                            await carregarDetalhesLoteAtivo(loteAtivo.id);
+                                          }
+                                          await carregarLotes();
+                                          setMensagemSucesso(`Arquivo "${arq.nomeArquivo}" liberado e enviado para processamento.`);
+                                        } catch (err: any) {
+                                          setMensagemErro(err.message || 'Erro ao liberar arquivo para reprocessamento.');
+                                        } finally {
+                                          setReprocessandoArquivoId(null);
+                                        }
+                                      }}
+                                      style={{
+                                        background: 'rgba(56, 189, 248, 0.15)',
+                                        border: '1px solid rgba(56, 189, 248, 0.4)',
+                                        color: 'var(--brand-primary)',
+                                        borderRadius: 'var(--radius-sm)',
+                                        padding: '3px 7px',
+                                        fontSize: '0.72rem',
+                                        fontWeight: 600,
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                      }}
+                                      title="Liberar este arquivo e iniciar o processamento"
+                                    >
+                                      <RefreshCw
+                                        size={11}
+                                        className={reprocessandoArquivoId === arq.id ? 'spin' : ''}
+                                      />
+                                      {reprocessandoArquivoId === arq.id ? 'Liberando...' : 'Liberar e Processar'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={
+                                        reprocessandoArquivoId === arq.id ||
+                                        excluindoArquivoId === arq.id
+                                      }
+                                      onClick={() => handleExcluirArquivo(arq.id, arq.nomeArquivo)}
+                                      style={{
+                                        background: 'rgba(239, 68, 68, 0.1)',
+                                        border: '1px solid rgba(239, 68, 68, 0.25)',
+                                        color: '#fca5a5',
+                                        borderRadius: 'var(--radius-sm)',
+                                        padding: '3px 7px',
+                                        fontSize: '0.72rem',
+                                        fontWeight: 600,
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                      }}
+                                      title="Excluir arquivo do lote"
+                                    >
+                                      <Trash2
+                                        size={11}
+                                        className={excluindoArquivoId === arq.id ? 'spin' : ''}
+                                      />
                                       {excluindoArquivoId === arq.id ? 'Excluindo...' : 'Excluir'}
                                     </button>
                                   </div>
@@ -3522,7 +3991,79 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                                 </button>
                               </div>
                             ) : arq.jaImportadoAnteriormente ? (
-                              <span className="badge badge-amarelo">Já importado</span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <span className="badge badge-amarelo">Já importado</span>
+                                <button
+                                  type="button"
+                                  disabled={
+                                    reprocessandoArquivoId === arq.id ||
+                                    excluindoArquivoId === arq.id
+                                  }
+                                  onClick={async () => {
+                                    try {
+                                      setReprocessandoArquivoId(arq.id);
+                                      await apiService.confirmarReprocessamentoArquivo(arq.id);
+                                      if (loteAtivo?.id) {
+                                        await carregarDetalhesLoteAtivo(loteAtivo.id);
+                                      }
+                                      await carregarLotes();
+                                      setMensagemSucesso(`Arquivo "${arq.nomeArquivo}" liberado para ser processado.`);
+                                    } catch (err: any) {
+                                      setMensagemErro(err.message || 'Erro ao liberar arquivo para reprocessamento.');
+                                    } finally {
+                                      setReprocessandoArquivoId(null);
+                                    }
+                                  }}
+                                  style={{
+                                    background: 'rgba(56, 189, 248, 0.15)',
+                                    border: '1px solid rgba(56, 189, 248, 0.4)',
+                                    color: 'var(--brand-primary)',
+                                    borderRadius: 'var(--radius-sm)',
+                                    padding: '4px 8px',
+                                    fontSize: '0.74rem',
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                  }}
+                                  title="Liberar este arquivo para processamento no lote atual"
+                                >
+                                  <RefreshCw
+                                    size={12}
+                                    className={reprocessandoArquivoId === arq.id ? 'spin' : ''}
+                                  />
+                                  {reprocessandoArquivoId === arq.id ? 'Liberando...' : 'Liberar Processamento'}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={
+                                    reprocessandoArquivoId === arq.id ||
+                                    excluindoArquivoId === arq.id
+                                  }
+                                  onClick={() => handleExcluirArquivo(arq.id, arq.nomeArquivo)}
+                                  style={{
+                                    background: 'rgba(239, 68, 68, 0.1)',
+                                    border: '1px solid rgba(239, 68, 68, 0.25)',
+                                    color: '#fca5a5',
+                                    borderRadius: 'var(--radius-sm)',
+                                    padding: '4px 8px',
+                                    fontSize: '0.74rem',
+                                    fontWeight: 600,
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                  }}
+                                  title="Remover este arquivo do lote"
+                                >
+                                  <Trash2
+                                    size={12}
+                                    className={excluindoArquivoId === arq.id ? 'spin' : ''}
+                                  />
+                                  {excluindoArquivoId === arq.id ? 'Excluindo...' : 'Excluir'}
+                                </button>
+                              </div>
                             ) : (
                               <span className="badge badge-amarelo">Aguardando Fila</span>
                             )}
@@ -3766,7 +4307,12 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                         {lote.id}
                       </div>
                       <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                        Criado em: {new Date(lote.criadoEm).toLocaleString()} • {lote.totalArquivos} arquivo(s)
+                        Criado em: {formatarDataHoraIso(lote.criadoEm)} • {lote.totalArquivos} arquivo(s)
+                        {typeof lote.totalLancamentos === 'number' && (
+                          <span style={{ color: 'var(--brand-primary)', marginLeft: '6px', fontWeight: 600 }}>
+                            • {lote.totalLancamentos} lançamento(s)
+                          </span>
+                        )}
                       </div>
                     </div>
 
@@ -3875,6 +4421,558 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
               </div>
             );
           })()}
+
+          {/* Grid 1: Faturas de Cartão de Crédito por Instituição */}
+          <div className="card" style={{ padding: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+              <div>
+                <h3 style={{ fontSize: '0.98rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-primary)' }}>
+                  <CreditCard size={18} color="#a855f7" />
+                  Faturas de Cartão por Instituição e Competência
+                </h3>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  Acompanhamento de importação de faturas de cartão por mês e emissor (Sim / Não)
+                </span>
+              </div>
+
+              {/* Seletor de Quantidade de Meses e Botão Atualizar */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Janela temporal:</span>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {[3, 6, 12, 24].map((qtd) => (
+                    <button
+                      key={qtd}
+                      type="button"
+                      onClick={() => setQtdeMesesFaturas(qtd)}
+                      className={qtdeMesesFaturas === qtd ? 'btn-primary' : 'btn-secondary'}
+                      style={{
+                        fontSize: '0.74rem',
+                        padding: '4px 8px',
+                        borderRadius: 'var(--radius-sm)',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {qtd} meses
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={carregarAlertasEHistorico}
+                  className="btn-secondary"
+                  style={{
+                    fontSize: '0.74rem',
+                    padding: '4px 8px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    marginLeft: '4px',
+                  }}
+                  title="Atualizar lista de faturas"
+                >
+                  <RefreshCw size={12} /> Atualizar
+                </button>
+              </div>
+            </div>
+
+            {/* Barra de Filtros e Ordenação de Faturas */}
+            <div
+              style={{
+                display: 'flex',
+                gap: '10px',
+                marginBottom: '16px',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                backgroundColor: 'rgba(15, 23, 42, 0.4)',
+                padding: '10px 12px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-subtle)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Filter size={13} color="var(--text-muted)" />
+                <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Instituição:</span>
+                <select
+                  className="input"
+                  value={filtroGridFaturaInstituicao}
+                  onChange={(e) => setFiltroGridFaturaInstituicao(e.target.value)}
+                  style={{ fontSize: '0.78rem', padding: '4px 8px', minWidth: '130px' }}
+                >
+                  <option value="TODAS">Todas ({instituicoesDisponiveisFaturas.length})</option>
+                  {instituicoesDisponiveisFaturas.map((inst) => (
+                    <option key={inst} value={inst}>
+                      {inst}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Mês:</span>
+                <select
+                  className="input"
+                  value={filtroGridFaturaAnoMes}
+                  onChange={(e) => setFiltroGridFaturaAnoMes(e.target.value)}
+                  style={{ fontSize: '0.78rem', padding: '4px 8px', minWidth: '110px' }}
+                >
+                  <option value="TODOS">Todos</option>
+                  {mesesDisponiveisFaturas.map((mes) => (
+                    <option key={mes} value={mes}>
+                      {mes}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Importado:</span>
+                <select
+                  className="input"
+                  value={filtroGridFaturaImportado}
+                  onChange={(e) => setFiltroGridFaturaImportado(e.target.value)}
+                  style={{ fontSize: '0.78rem', padding: '4px 8px', minWidth: '100px' }}
+                >
+                  <option value="TODOS">Todos</option>
+                  <option value="SIM">Sim (Importado)</option>
+                  <option value="NAO">Não (Pendente)</option>
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: 'auto' }}>
+                <ArrowUpDown size={13} color="var(--text-muted)" />
+                <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Ordenar por:</span>
+                <select
+                  className="input"
+                  value={ordenacaoGridFaturaCampo}
+                  onChange={(e) => setOrdenacaoGridFaturaCampo(e.target.value as any)}
+                  style={{ fontSize: '0.78rem', padding: '4px 8px' }}
+                >
+                  <option value="competencia">Ano / Mês</option>
+                  <option value="instituicao">Instituição</option>
+                  <option value="importado">Importado?</option>
+                </select>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setOrdenacaoGridFaturaDirecao((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
+                  style={{ fontSize: '0.74rem', padding: '4px 8px' }}
+                  title="Alternar ordem Crescente/Decrescente"
+                >
+                  {ordenacaoGridFaturaDirecao === 'asc' ? '↑ Asc' : '↓ Desc'}
+                </button>
+              </div>
+            </div>
+
+            {/* Tabela da Grid de Faturas */}
+            {instituicoesDisponiveisFaturas.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                Nenhuma instituição de fatura de cartão identificada no histórico.
+              </div>
+            ) : itensGridFaturas.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '20px 16px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                Nenhum registro encontrado para os filtros selecionados.
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border-card)', color: 'var(--text-secondary)', textAlign: 'left' }}>
+                      <th
+                        style={{ padding: '8px 12px', cursor: 'pointer', userSelect: 'none' }}
+                        onClick={() => {
+                          if (ordenacaoGridFaturaCampo === 'instituicao') {
+                            setOrdenacaoGridFaturaDirecao((d) => (d === 'asc' ? 'desc' : 'asc'));
+                          } else {
+                            setOrdenacaoGridFaturaCampo('instituicao');
+                            setOrdenacaoGridFaturaDirecao('asc');
+                          }
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          Instituição {ordenacaoGridFaturaCampo === 'instituicao' && (ordenacaoGridFaturaDirecao === 'asc' ? '↑' : '↓')}
+                        </div>
+                      </th>
+                      <th
+                        style={{ padding: '8px 12px', cursor: 'pointer', userSelect: 'none' }}
+                        onClick={() => {
+                          if (ordenacaoGridFaturaCampo === 'competencia') {
+                            setOrdenacaoGridFaturaDirecao((d) => (d === 'asc' ? 'desc' : 'asc'));
+                          } else {
+                            setOrdenacaoGridFaturaCampo('competencia');
+                            setOrdenacaoGridFaturaDirecao('desc');
+                          }
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          Mês / Ano {ordenacaoGridFaturaCampo === 'competencia' && (ordenacaoGridFaturaDirecao === 'asc' ? '↑' : '↓')}
+                        </div>
+                      </th>
+                      <th
+                        style={{ padding: '8px 12px', cursor: 'pointer', userSelect: 'none', textAlign: 'center' }}
+                        onClick={() => {
+                          if (ordenacaoGridFaturaCampo === 'importado') {
+                            setOrdenacaoGridFaturaDirecao((d) => (d === 'asc' ? 'desc' : 'asc'));
+                          } else {
+                            setOrdenacaoGridFaturaCampo('importado');
+                            setOrdenacaoGridFaturaDirecao('desc');
+                          }
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
+                          Importado? {ordenacaoGridFaturaCampo === 'importado' && (ordenacaoGridFaturaDirecao === 'asc' ? '↑' : '↓')}
+                        </div>
+                      </th>
+                      <th style={{ padding: '8px 12px' }}>Arquivo Vinculado</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'right' }}>Qtd Lançamentos</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'right' }}>Valor Total</th>
+                      <th style={{ padding: '8px 12px', textAlign: 'center' }}>Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itensGridFaturas.map((item, idx) => (
+                      <tr
+                        key={`${item.instituicao}_${item.competencia}_${idx}`}
+                        style={{
+                          borderBottom: '1px solid var(--border-subtle)',
+                          backgroundColor: item.importado ? 'rgba(30, 41, 59, 0.25)' : 'rgba(239, 68, 68, 0.05)',
+                        }}
+                      >
+                        <td style={{ padding: '10px 12px', fontWeight: 700, color: '#f8fafc' }}>
+                          {item.instituicao}
+                        </td>
+                        <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                          {item.competencia}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                          {item.importado ? (
+                            <span className="badge badge-green" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                              <CheckCircle2 size={12} /> Sim
+                            </span>
+                          ) : (
+                            <span className="badge" style={{ backgroundColor: 'rgba(239, 68, 68, 0.2)', color: '#f87171', border: '1px solid rgba(239, 68, 68, 0.3)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                              <X size={12} /> Não
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ padding: '10px 12px', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                          {item.arquivoId ? (
+                            <button
+                              type="button"
+                              onClick={() => abrirModalLancamentosArquivo(item.arquivoId!)}
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: 'var(--brand-primary)',
+                                cursor: 'pointer',
+                                textDecoration: 'underline',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                fontSize: '0.78rem',
+                                padding: 0,
+                              }}
+                              title="Ver detalhes dos lançamentos"
+                            >
+                              <FileText size={13} />
+                              {item.nomeArquivo || 'Ver arquivo'}
+                            </button>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>Pendente de importação</span>
+                          )}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 600, color: item.importado ? '#38bdf8' : 'var(--text-muted)' }}>
+                          {item.importado && item.totalTransacoes !== undefined ? item.totalTransacoes : '—'}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 600, fontFamily: 'var(--font-mono)', color: item.importado ? '#f8fafc' : 'var(--text-muted)' }}>
+                          {item.importado && item.valorTotal !== undefined
+                            ? `R$ ${item.valorTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            : '—'}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'center' }}>
+                          {item.importado && item.arquivoId ? (
+                            <button
+                              type="button"
+                              onClick={() => handleExcluirImportacaoFatura(item.arquivoId!, item.nomeArquivo, item.competencia)}
+                              disabled={excluindoFaturaArquivoId === item.arquivoId}
+                              style={{
+                                background: 'rgba(239, 68, 68, 0.1)',
+                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                                color: '#f87171',
+                                borderRadius: 'var(--radius-sm)',
+                                padding: '4px 8px',
+                                fontSize: '0.74rem',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                              }}
+                              title="Excluir importação desta fatura e seus lançamentos para poder reimportar"
+                            >
+                              <Trash2 size={12} className={excluindoFaturaArquivoId === item.arquivoId ? 'spin' : ''} />
+                              {excluindoFaturaArquivoId === item.arquivoId ? 'Excluindo...' : 'Excluir'}
+                            </button>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)' }}>—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Grid 2: Lançamentos dos Extratos por Instituição e Competência */}
+          <div className="card" style={{ padding: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+              <div>
+                <h3 style={{ fontSize: '0.98rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-primary)' }}>
+                  <Database size={18} color="#10b981" />
+                  Lançamentos de Extratos por Instituição e Mês
+                </h3>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  Consolidado de movimentações e quantidade de lançamentos extraídos por instituição bancária
+                </span>
+              </div>
+
+              {/* Seletor de Quantidade de Meses e Botão Atualizar */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Janela temporal:</span>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {[3, 6, 12, 24].map((qtd) => (
+                    <button
+                      key={qtd}
+                      type="button"
+                      onClick={() => setQtdeMesesExtratos(qtd)}
+                      className={qtdeMesesExtratos === qtd ? 'btn-primary' : 'btn-secondary'}
+                      style={{
+                        fontSize: '0.74rem',
+                        padding: '4px 8px',
+                        borderRadius: 'var(--radius-sm)',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {qtd} meses
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={carregarAlertasEHistorico}
+                  className="btn-secondary"
+                  style={{
+                    fontSize: '0.74rem',
+                    padding: '4px 8px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    marginLeft: '4px',
+                  }}
+                  title="Atualizar lista de extratos"
+                >
+                  <RefreshCw size={12} /> Atualizar
+                </button>
+              </div>
+            </div>
+
+            {/* Barra de Filtros e Ordenação de Extratos */}
+            <div
+              style={{
+                display: 'flex',
+                gap: '10px',
+                marginBottom: '16px',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                backgroundColor: 'rgba(15, 23, 42, 0.4)',
+                padding: '10px 12px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-subtle)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Filter size={13} color="var(--text-muted)" />
+                <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Instituição:</span>
+                <select
+                  className="input"
+                  value={filtroGridExtratoInstituicao}
+                  onChange={(e) => setFiltroGridExtratoInstituicao(e.target.value)}
+                  style={{ fontSize: '0.78rem', padding: '4px 8px', minWidth: '130px' }}
+                >
+                  <option value="TODAS">Todas ({instituicoesDisponiveisExtratos.length})</option>
+                  {instituicoesDisponiveisExtratos.map((inst) => (
+                    <option key={inst} value={inst}>
+                      {inst}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Mês:</span>
+                <select
+                  className="input"
+                  value={filtroGridExtratoAnoMes}
+                  onChange={(e) => setFiltroGridExtratoAnoMes(e.target.value)}
+                  style={{ fontSize: '0.78rem', padding: '4px 8px', minWidth: '110px' }}
+                >
+                  <option value="TODOS">Todos</option>
+                  {mesesDisponiveisExtratos.map((mes) => (
+                    <option key={mes} value={mes}>
+                      {mes}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: 'auto' }}>
+                <ArrowUpDown size={13} color="var(--text-muted)" />
+                <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Ordenar por:</span>
+                <select
+                  className="input"
+                  value={ordenacaoGridExtratoCampo}
+                  onChange={(e) => setOrdenacaoGridExtratoCampo(e.target.value as any)}
+                  style={{ fontSize: '0.78rem', padding: '4px 8px' }}
+                >
+                  <option value="competencia">Ano / Mês</option>
+                  <option value="instituicao">Instituição</option>
+                  <option value="qtdLancamentos">Qtd Lançamentos</option>
+                </select>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => setOrdenacaoGridExtratoDirecao((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
+                  style={{ fontSize: '0.74rem', padding: '4px 8px' }}
+                  title="Alternar ordem Crescente/Decrescente"
+                >
+                  {ordenacaoGridExtratoDirecao === 'asc' ? '↑ Asc' : '↓ Desc'}
+                </button>
+              </div>
+            </div>
+
+            {/* Tabela da Grid de Extratos */}
+            {instituicoesDisponiveisExtratos.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '24px 16px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                Nenhuma instituição de extrato identificada no histórico catalogado.
+              </div>
+            ) : itensGridExtratos.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '20px 16px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                Nenhum registro encontrado para os filtros selecionados.
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border-card)', color: 'var(--text-secondary)', textAlign: 'left' }}>
+                      <th
+                        style={{ padding: '8px 12px', cursor: 'pointer', userSelect: 'none' }}
+                        onClick={() => {
+                          if (ordenacaoGridExtratoCampo === 'instituicao') {
+                            setOrdenacaoGridExtratoDirecao((d) => (d === 'asc' ? 'desc' : 'asc'));
+                          } else {
+                            setOrdenacaoGridExtratoCampo('instituicao');
+                            setOrdenacaoGridExtratoDirecao('asc');
+                          }
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          Instituição {ordenacaoGridExtratoCampo === 'instituicao' && (ordenacaoGridExtratoDirecao === 'asc' ? '↑' : '↓')}
+                        </div>
+                      </th>
+                      <th
+                        style={{ padding: '8px 12px', cursor: 'pointer', userSelect: 'none' }}
+                        onClick={() => {
+                          if (ordenacaoGridExtratoCampo === 'competencia') {
+                            setOrdenacaoGridExtratoDirecao((d) => (d === 'asc' ? 'desc' : 'asc'));
+                          } else {
+                            setOrdenacaoGridExtratoCampo('competencia');
+                            setOrdenacaoGridExtratoDirecao('desc');
+                          }
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          Ano / Mês {ordenacaoGridExtratoCampo === 'competencia' && (ordenacaoGridExtratoDirecao === 'asc' ? '↑' : '↓')}
+                        </div>
+                      </th>
+                      <th
+                        style={{ padding: '8px 12px', cursor: 'pointer', userSelect: 'none', textAlign: 'right' }}
+                        onClick={() => {
+                          if (ordenacaoGridExtratoCampo === 'qtdLancamentos') {
+                            setOrdenacaoGridExtratoDirecao((d) => (d === 'asc' ? 'desc' : 'asc'));
+                          } else {
+                            setOrdenacaoGridExtratoCampo('qtdLancamentos');
+                            setOrdenacaoGridExtratoDirecao('desc');
+                          }
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '4px' }}>
+                          Qtd Lançamentos {ordenacaoGridExtratoCampo === 'qtdLancamentos' && (ordenacaoGridExtratoDirecao === 'asc' ? '↑' : '↓')}
+                        </div>
+                      </th>
+                      <th style={{ padding: '8px 12px', textAlign: 'right' }}>Volume Movimentado</th>
+                      <th style={{ padding: '8px 12px' }}>Arquivos Consolidados</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {itensGridExtratos.map((item, idx) => (
+                      <tr
+                        key={`${item.instituicao}_${item.competencia}_${idx}`}
+                        style={{
+                          borderBottom: '1px solid var(--border-subtle)',
+                          backgroundColor: item.qtdLancamentos > 0 ? 'rgba(30, 41, 59, 0.25)' : 'rgba(239, 68, 68, 0.05)',
+                        }}
+                      >
+                        <td style={{ padding: '10px 12px', fontWeight: 700, color: '#f8fafc' }}>
+                          {item.instituicao}
+                        </td>
+                        <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                          {item.competencia}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 700, color: item.qtdLancamentos > 0 ? '#10b981' : 'var(--text-muted)' }}>
+                          {item.qtdLancamentos > 0 ? (
+                            <span>{item.qtdLancamentos.toLocaleString('pt-BR')} itens</span>
+                          ) : (
+                            <span style={{ color: '#f87171' }}>0 itens (sem extrato)</span>
+                          )}
+                        </td>
+                        <td style={{ padding: '10px 12px', textAlign: 'right', fontWeight: 600, fontFamily: 'var(--font-mono)', color: item.qtdLancamentos > 0 ? '#f8fafc' : 'var(--text-muted)' }}>
+                          {item.qtdLancamentos > 0
+                            ? `R$ ${item.valorTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            : '—'}
+                        </td>
+                        <td style={{ padding: '10px 12px', fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                          {item.arquivos.length > 0 ? (
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                              {item.arquivos.map((arq, aIdx) => (
+                                <span
+                                  key={aIdx}
+                                  style={{
+                                    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+                                    color: 'var(--brand-primary)',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                  }}
+                                >
+                                  {arq}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <span style={{ fontStyle: 'italic', color: 'var(--text-muted)' }}>Nenhum extrato importado</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
 
           {/* Card Principal: Tabela Consolidada com Filtros */}
           <div className="card" style={{ padding: '16px' }}>
@@ -4019,7 +5117,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                             {hist.arquivo?.tamanhoBytes ? (
                               <span>{(hist.arquivo.tamanhoBytes / 1024).toFixed(1)} KB</span>
                             ) : null}
-                            <span>• {new Date(hist.criadoEm).toLocaleDateString()}</span>
+                            <span>• {formatarDataIso(hist.criadoEm)}</span>
                             {hist.arquivo?.ultimoProvedor && (
                               <span style={{ color: 'var(--brand-primary)' }}>• IA: {hist.arquivo.ultimoProvedor}</span>
                             )}
@@ -4042,11 +5140,11 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                           </span>
                         </td>
                         <td style={{ padding: '12px 10px', fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                          {hist.competencia}
+                          {formatarCompetenciaPeriodo(hist)}
                         </td>
                         <td style={{ padding: '12px 10px', fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                          {hist.periodoInicio ? new Date(hist.periodoInicio).toLocaleDateString() : 'N/A'} até{' '}
-                          {hist.periodoFim ? new Date(hist.periodoFim).toLocaleDateString() : 'N/A'}
+                          {hist.periodoInicio ? formatarDataIso(hist.periodoInicio) : 'N/A'} até{' '}
+                          {hist.periodoFim ? formatarDataIso(hist.periodoFim) : 'N/A'}
                         </td>
                         <td style={{ padding: '12px 10px', color: hist.conta?.nome ? 'var(--brand-primary)' : 'var(--text-muted)', fontWeight: 500 }}>
                           {hist.conta?.nome || 'Não vinculada'}
@@ -4058,27 +5156,53 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                           R$ {Number(hist.valorTotal).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
                         <td style={{ padding: '12px 10px', textAlign: 'center' }}>
-                          <button
-                            type="button"
-                            onClick={() => abrirModalLancamentosArquivo(hist.arquivoId)}
-                            disabled={carregandoLancamentosArquivoId === hist.arquivoId}
-                            className="btn-primary"
-                            style={{
-                              fontSize: '0.75rem',
-                              padding: '5px 10px',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: '5px',
-                            }}
-                            title="Consultar lançamentos criados a partir deste arquivo"
-                          >
-                            {carregandoLancamentosArquivoId === hist.arquivoId ? (
-                              <RefreshCw size={13} className="spin" />
-                            ) : (
-                              <Eye size={13} />
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                            <button
+                              type="button"
+                              onClick={() => abrirModalLancamentosArquivo(hist.arquivoId)}
+                              disabled={carregandoLancamentosArquivoId === hist.arquivoId}
+                              className="btn-primary"
+                              style={{
+                                fontSize: '0.75rem',
+                                padding: '5px 10px',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '5px',
+                              }}
+                              title="Consultar lançamentos criados a partir deste arquivo"
+                            >
+                              {carregandoLancamentosArquivoId === hist.arquivoId ? (
+                                <RefreshCw size={13} className="spin" />
+                              ) : (
+                                <Eye size={13} />
+                              )}
+                              Ver Lançamentos
+                            </button>
+                            {hist.tipoDocumento === 'FATURA_CARTAO' && (
+                              <button
+                                type="button"
+                                onClick={() => handleExcluirImportacaoFatura(hist.arquivoId, hist.arquivo?.nomeArquivo, hist.competencia)}
+                                disabled={excluindoFaturaArquivoId === hist.arquivoId}
+                                style={{
+                                  background: 'rgba(239, 68, 68, 0.1)',
+                                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                                  color: '#f87171',
+                                  borderRadius: 'var(--radius-sm)',
+                                  padding: '5px 8px',
+                                  fontSize: '0.75rem',
+                                  fontWeight: 600,
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                }}
+                                title="Excluir importação desta fatura e todos os seus lançamentos"
+                              >
+                                <Trash2 size={12} className={excluindoFaturaArquivoId === hist.arquivoId ? 'spin' : ''} />
+                                {excluindoFaturaArquivoId === hist.arquivoId ? 'Excluindo...' : 'Excluir'}
+                              </button>
                             )}
-                            Ver Lançamentos
-                          </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -4138,7 +5262,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                     <span>Instituição: <strong>{arquivoLancamentosModal.arquivo.historico.instituicao}</strong></span>
                   )}
                   {arquivoLancamentosModal.arquivo.historico?.competencia && (
-                    <span>Competência: <strong>{arquivoLancamentosModal.arquivo.historico.competencia}</strong></span>
+                    <span>Competência: <strong>{formatarCompetenciaPeriodo(arquivoLancamentosModal.arquivo.historico)}</strong></span>
                   )}
                   {arquivoLancamentosModal.arquivo.ultimoProvedor && (
                     <span>IA: <strong>{arquivoLancamentosModal.arquivo.ultimoProvedor}</strong></span>
@@ -4276,7 +5400,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                         {arquivoLancamentosModal.movimentos.map((mov) => (
                           <tr key={mov.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                             <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
-                              {new Date(mov.dataMovimento).toLocaleDateString()}
+                              {formatarDataIso(mov.dataMovimento)}
                             </td>
                             <td style={{ padding: '8px 10px', fontWeight: 600, color: '#f8fafc' }}>
                               {mov.descricao}
@@ -4346,7 +5470,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                         {arquivoLancamentosModal.stagingItens.map((stg) => (
                           <tr key={stg.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
                             <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>
-                              {new Date(stg.dataMovimento).toLocaleDateString()}
+                              {formatarDataIso(stg.dataMovimento)}
                             </td>
                             <td style={{ padding: '8px 10px', color: '#f8fafc' }}>
                               {stg.descricao}
@@ -4405,7 +5529,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                           Tentativa #{t.numeroTentativa} • {t.provedor} ({t.modelo})
                         </div>
                         <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-                          Executado em {new Date(t.criadoEm).toLocaleString()} • Duração: {(t.duracaoMs / 1000).toFixed(1)}s
+                          Executado em {formatarDataHoraIso(t.criadoEm, true)} • Duração: {(t.duracaoMs / 1000).toFixed(1)}s
                         </div>
                         {t.mensagemErro && (
                           <div style={{ fontSize: '0.74rem', color: '#f87171', marginTop: '4px' }}>
@@ -4428,7 +5552,37 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
             </div>
 
             {/* Rodapé do Modal */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '1px solid var(--border-card)', paddingTop: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-card)', paddingTop: '12px' }}>
+              <div>
+                {(arquivoLancamentosModal.arquivo.eFaturaCartao || arquivoLancamentosModal.arquivo.historico?.tipoDocumento === 'FATURA_CARTAO') && (
+                  <button
+                    type="button"
+                    onClick={() => handleExcluirImportacaoFatura(
+                      arquivoLancamentosModal.arquivo.id,
+                      arquivoLancamentosModal.arquivo.nomeArquivo,
+                      arquivoLancamentosModal.arquivo.historico?.competencia
+                    )}
+                    disabled={excluindoFaturaArquivoId === arquivoLancamentosModal.arquivo.id}
+                    style={{
+                      background: 'rgba(239, 68, 68, 0.1)',
+                      border: '1px solid rgba(239, 68, 68, 0.3)',
+                      color: '#f87171',
+                      borderRadius: 'var(--radius-sm)',
+                      padding: '7px 14px',
+                      fontSize: '0.8rem',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                    }}
+                    title="Excluir importação desta fatura e seus lançamentos para permitir reimportação limpa"
+                  >
+                    <Trash2 size={13} className={excluindoFaturaArquivoId === arquivoLancamentosModal.arquivo.id ? 'spin' : ''} />
+                    {excluindoFaturaArquivoId === arquivoLancamentosModal.arquivo.id ? 'Excluindo...' : 'Excluir Importação Desta Fatura'}
+                  </button>
+                )}
+              </div>
               <button
                 type="button"
                 className="btn-secondary"

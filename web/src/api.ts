@@ -53,6 +53,9 @@ export interface CategoriaSemaforoItem {
   categoria_id: string;
   nome: string;
   ordem: number;
+  gasto_mes_atual?: number;
+  pct_mes_atual?: number;
+  valor_referencia_esperado?: number;
   gasto_medio_mensal: number;
   pct_gasto_atual: number;
   referencia_normalizada_pct: number;
@@ -63,8 +66,11 @@ export interface CategoriaSemaforoItem {
 export interface SemaforoResponse {
   total_categorias: number;
   renda_base: number;
+  competencia_analisada?: string;
+  total_mes_atual?: number;
   media_mensal_total: number;
   meses_analisados: string[];
+  meses_janela?: number;
   categorias: CategoriaSemaforoItem[];
 }
 
@@ -200,6 +206,76 @@ export interface DecomposicaoCategoriasResponse {
   categorias: DecomposicaoCategoriaItem[];
 }
 
+export interface ItemGastoRecorrente {
+  id: string;
+  descricao: string;
+  categoriaNome: string;
+  contaNome: string;
+  valorMensal: number;
+  diaVencimento?: number;
+  essencial: boolean;
+  origem: 'CADASTRO' | 'EXTRATO_DETECTADO';
+  ocorrenciasDetectadas?: number;
+}
+
+export interface ItemParcelamentoFuturo {
+  id: string;
+  descricao: string;
+  categoriaNome: string;
+  contaNome: string;
+  parcelaValor: number;
+  parcelaAtual: number;
+  totalParcelas: number;
+  parcelasRestantes: number;
+  saldoDevedorRestante: number;
+  primeiroVencimento: string;
+  ultimoVencimento: string;
+  impactoPeriodo: number;
+  mediaMensalNaJanela: number;
+}
+
+export interface ItemGastoVariavel {
+  categoriaId?: string | null;
+  categoriaNome: string;
+  mediaMensalEfetiva: number;
+  totalPeriodoEfetivo: number;
+  totalPeriodoBruto: number;
+  totalExcluido: number;
+  qtdLancamentos: number;
+}
+
+export interface ProjecaoTresCamadasResponse {
+  competenciaReferencia: string;
+  mesesJanela: number;
+  mesesProjetados: string[];
+  rendaBaseMensal: number;
+  recorrentes: {
+    itens: ItemGastoRecorrente[];
+    mediaMensal: number;
+    totalPeriodo: number;
+  };
+  parcelamentos: {
+    itens: ItemParcelamentoFuturo[];
+    mediaMensal: number;
+    totalPeriodo: number;
+  };
+  variaveis: {
+    itens: ItemGastoVariavel[];
+    mediaMensal: number;
+    totalPeriodo: number;
+  };
+  sintese: {
+    mediaRecorrentes: number;
+    mediaParcelados: number;
+    mediaVariaveis: number;
+    mediaTotalProjetada: number;
+    totalGeralPeriodo: number;
+    saldoMensalProjetado: number;
+    statusSaldo: 'SUPERAVIT' | 'DEFICIT' | 'ZERO_A_ZERO';
+    formulaExplicativa: string;
+  };
+}
+
 export interface MetaItemResponse {
   id?: string;
   categoria_id: string;
@@ -272,6 +348,27 @@ export interface ParcelamentosResponse {
   saldoDevedorTotalGeral: number;
   totalParcelamentosAtivos: number;
   parcelamentos: ParcelamentoItem[];
+}
+
+export interface RecorrenciaItem {
+  id: string;
+  usuarioId: string;
+  categoriaId?: string | null;
+  descricao: string;
+  valorReferencia: number;
+  diaPrevisto?: number | null;
+  formaPagamento?: string | null;
+  essencial: boolean;
+  status: 'ATIVA' | 'PAUSADA' | 'CANCELADA';
+  criadoEm: string;
+  categoria?: {
+    id: string;
+    nome: string;
+  } | null;
+}
+
+export interface RecorrenciasResponse {
+  recorrencias: RecorrenciaItem[];
 }
 
 export interface ContaItem {
@@ -348,6 +445,7 @@ export interface MovimentoItem {
   natureza: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
   status: 'PREVISTO' | 'PENDENTE' | 'CONCILIADO' | 'CANCELADO';
   chaveDedupe?: string;
+  chaveAcessoNfe?: string | null;
   idOrigem?: string | null;
   categoriaFixadaPeloUsuario?: boolean;
   validadoDedupe?: string;
@@ -394,12 +492,12 @@ export interface SuspeitasResponse {
 
 export interface VereditoPayload {
   acao:
-    | 'CONFIRMAR_DUPLICATA_DESCARTAR'
-    | 'CONFIRMAR_DISTINTOS_PRESERVAR'
-    | 'CONVERTER_APORTE_PATRIMONIAL'
-    | 'CONVERTER_TRANSFERENCIA_PROPRIA'
-    | 'CONFIRMAR_DESPESA_REGULAR'
-    | 'DEFINIR_CATEGORIA';
+  | 'CONFIRMAR_DUPLICATA_DESCARTAR'
+  | 'CONFIRMAR_DISTINTOS_PRESERVAR'
+  | 'CONVERTER_APORTE_PATRIMONIAL'
+  | 'CONVERTER_TRANSFERENCIA_PROPRIA'
+  | 'CONFIRMAR_DESPESA_REGULAR'
+  | 'DEFINIR_CATEGORIA';
   duplicataId?: string | null;
   categoriaId?: string | null;
   observacao?: string | null;
@@ -416,6 +514,81 @@ export interface RegraVendedorItem {
   totalAplicacoes: number;
   criadoEm: string;
   atualizadoEm: string;
+}
+
+export interface RegraExclusaoMediaItem {
+  id: string;
+  usuarioId: string;
+  categoriaId?: string | null;
+  descricaoPadrao?: string | null;
+  valorMinimo?: number | null;
+  apenasUmaVez: boolean;
+  ativo: boolean;
+  motivo?: string | null;
+  criadoEm: string;
+  categoria?: { id: string; nome: string } | null;
+}
+
+export interface ExclusaoMovimentoMediaItem {
+  id: string;
+  usuarioId: string;
+  movimentoId: string;
+  motivo: string;
+  origem: 'AUTOMATICA' | 'MANUAL';
+  ativo: boolean;
+  criadoEm: string;
+  movimento: {
+    id: string;
+    dataMovimento: string;
+    competencia: string;
+    descricao: string;
+    valor: number;
+    categoria?: { id: string; nome: string } | null;
+    conta?: { id: string; nome: string } | null;
+  };
+}
+
+export interface LancamentoPesquisaMediaItem {
+  id: string;
+  dataMovimento: string;
+  competencia: string;
+  descricao: string;
+  valor: number;
+  categoriaId?: string | null;
+  categoriaNome: string;
+  contaNome: string;
+  excluidoDaMedia: boolean;
+  exclusaoId?: string | null;
+  motivoExclusao?: string | null;
+  origemExclusao?: string | null;
+}
+
+export interface MediaConsolidadaCategoriaItem {
+  categoriaId: string;
+  nome: string;
+  ordem: number;
+  totalPeriodoBruto: number;
+  totalExcluido: number;
+  totalPeriodoEfetivo: number;
+  mediaMensalEfetiva: number;
+  qtdLancamentosTotais: number;
+  qtdLancamentosExcluidos: number;
+}
+
+export interface MediaConsolidadaResponse {
+  competenciaReferencia: string;
+  mesesJanela: number;
+  dadosInsuficientes?: boolean;
+  mensagem?: string;
+  global: {
+    totalPeriodoBruto: number;
+    totalExcluido: number;
+    totalPeriodoEfetivo: number;
+    mediaMensalEfetiva: number;
+    qtdLancamentosTotais: number;
+    qtdLancamentosExcluidos: number;
+  } | null;
+  categorias: MediaConsolidadaCategoriaItem[];
 }
 
 export interface AporteItem {
@@ -489,6 +662,7 @@ export interface FiltroMovimentosParams {
   busca?: string;
   contaId?: string;
   categoriaId?: string;
+  categoriaRaizId?: string;
   natureza?: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
   status?: 'PREVISTO' | 'CONCILIADO' | 'CANCELADO';
 }
@@ -1335,6 +1509,26 @@ export const emptyDecomposicaoCategorias: DecomposicaoCategoriasResponse = {
   categorias: [],
 };
 
+export const emptyProjecaoTresCamadas: ProjecaoTresCamadasResponse = {
+  competenciaReferencia: '',
+  mesesJanela: 6,
+  mesesProjetados: [],
+  rendaBaseMensal: 0,
+  recorrentes: { itens: [], mediaMensal: 0, totalPeriodo: 0 },
+  parcelamentos: { itens: [], mediaMensal: 0, totalPeriodo: 0 },
+  variaveis: { itens: [], mediaMensal: 0, totalPeriodo: 0 },
+  sintese: {
+    mediaRecorrentes: 0,
+    mediaParcelados: 0,
+    mediaVariaveis: 0,
+    mediaTotalProjetada: 0,
+    totalGeralPeriodo: 0,
+    saldoMensalProjetado: 0,
+    statusSaldo: 'ZERO_A_ZERO',
+    formulaExplicativa: '',
+  },
+};
+
 export const apiService = {
   async getPerfil(): Promise<UsuarioPerfil> {
     const data = await apiFetch<{ usuario: UsuarioPerfil }>(
@@ -1352,6 +1546,18 @@ export const apiService = {
       `/api/fase1/previsao/seis-meses${query}`,
       undefined,
       emptyPrevisaoSeisMeses
+    );
+  },
+
+  async getProjecaoTresCamadas(competencia?: string, mesesProjecao = 6): Promise<ProjecaoTresCamadasResponse> {
+    const params = new URLSearchParams();
+    if (competencia) params.append('competenciaReferencia', competencia);
+    if (mesesProjecao) params.append('mesesProjecao', String(mesesProjecao));
+    const query = params.toString() ? `?${params.toString()}` : '';
+    return apiFetch<ProjecaoTresCamadasResponse>(
+      `/api/fase1/previsao/tres-camadas${query}`,
+      undefined,
+      emptyProjecaoTresCamadas
     );
   },
 
@@ -1399,8 +1605,11 @@ export const apiService = {
     );
   },
 
-  async getSemaforo(competencia?: string): Promise<SemaforoResponse> {
-    const query = competencia ? `?competenciaReferencia=${competencia}` : '';
+  async getSemaforo(competenciaMes?: string, mesesJanela?: number): Promise<SemaforoResponse> {
+    const params = new URLSearchParams();
+    if (competenciaMes) params.append('competenciaMes', competenciaMes);
+    if (mesesJanela) params.append('mesesJanela', mesesJanela.toString());
+    const query = params.toString() ? `?${params.toString()}` : '';
     return apiFetch<SemaforoResponse>(`/api/fase1/semaforo${query}`, undefined, emptySemaforo);
   },
 
@@ -1430,6 +1639,53 @@ export const apiService = {
       undefined,
       emptyParcelamentos
     );
+  },
+
+  async getRecorrencias(): Promise<RecorrenciasResponse> {
+    return apiFetch<RecorrenciasResponse>(
+      '/api/recorrencias',
+      undefined,
+      { recorrencias: [] }
+    );
+  },
+
+  async criarRecorrencia(payload: {
+    descricao: string;
+    valorReferencia: number;
+    diaPrevisto?: number | null;
+    categoriaId?: string | null;
+    formaPagamento?: string | null;
+    essencial?: boolean;
+    status?: 'ATIVA' | 'PAUSADA' | 'CANCELADA';
+  }): Promise<{ message: string; recorrencia: RecorrenciaItem }> {
+    return apiFetch<{ message: string; recorrencia: RecorrenciaItem }>('/api/recorrencias', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async atualizarRecorrencia(
+    id: string,
+    payload: {
+      descricao?: string;
+      valorReferencia?: number;
+      diaPrevisto?: number | null;
+      categoriaId?: string | null;
+      formaPagamento?: string | null;
+      essencial?: boolean;
+      status?: 'ATIVA' | 'PAUSADA' | 'CANCELADA';
+    }
+  ): Promise<{ message: string; recorrencia: RecorrenciaItem }> {
+    return apiFetch<{ message: string; recorrencia: RecorrenciaItem }>(`/api/recorrencias/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async excluirRecorrencia(id: string): Promise<{ message: string }> {
+    return apiFetch<{ message: string }>(`/api/recorrencias/${id}`, {
+      method: 'DELETE',
+    });
   },
 
   async getContas(): Promise<ContaItem[]> {
@@ -1561,6 +1817,7 @@ export const apiService = {
     contaId: string;
     categoriaId?: string;
     dataMovimento: string;
+    competencia?: string;
     descricao: string;
     valor: number;
     natureza: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
@@ -1568,10 +1825,50 @@ export const apiService = {
     contaDestinoId?: string;
     isPagamentoFatura?: boolean;
     observacao?: string;
-  }): Promise<{ message: string; movimento: MovimentoItem }> {
-    return apiFetch<{ message: string; movimento: MovimentoItem }>('/api/movimentos', {
+    chaveAcessoNfe?: string | null;
+  }): Promise<{ message: string; movimento: MovimentoItem; duplicadaNfe?: boolean; movimentoExistente?: any }> {
+    return apiFetch<{ message: string; movimento: MovimentoItem; duplicadaNfe?: boolean; movimentoExistente?: any }>('/api/movimentos', {
       method: 'POST',
       body: JSON.stringify(payload),
+    });
+  },
+
+  async verificarNotaFiscal(chave: string): Promise<{
+    duplicada: boolean;
+    message: string;
+    chaveAcessoNfe?: string;
+    movimento?: MovimentoItem;
+  }> {
+    return apiFetch<{
+      duplicada: boolean;
+      message: string;
+      chaveAcessoNfe?: string;
+      movimento?: MovimentoItem;
+    }>(`/api/movimentos/nota-fiscal/verificar/${encodeURIComponent(chave)}`);
+  },
+
+  async consultarNotaFiscal(input: string): Promise<{
+    sucesso: boolean;
+    duplicada: boolean;
+    movimentoExistente?: MovimentoItem | null;
+    dadosNota: {
+      chaveAcesso: string;
+      cnpj?: string;
+      uf?: string;
+      modelo?: string;
+      numero?: string;
+      serie?: string;
+      valorTotal?: number | null;
+      dataEmissao?: string;
+      competencia?: string;
+      descricaoSugerida?: string;
+      categoriaSugeridaId?: string | null;
+      categoriaSugeridaNome?: string | null;
+    };
+  }> {
+    return apiFetch('/api/movimentos/nota-fiscal/consultar', {
+      method: 'POST',
+      body: JSON.stringify({ input }),
     });
   },
 
@@ -1586,6 +1883,7 @@ export const apiService = {
       natureza?: 'RECEITA' | 'DESPESA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL';
       status?: 'PREVISTO' | 'CONCILIADO' | 'CANCELADO';
       observacao?: string | null;
+      chaveAcessoNfe?: string | null;
       propagarMesmoVendedor?: boolean;
     }
   ): Promise<{ message: string; movimento: MovimentoItem; totalPropagados?: number; termoVendedor?: string | null }> {
@@ -1603,6 +1901,20 @@ export const apiService = {
     return apiFetch<{ message: string; id: string }>(`/api/movimentos/${id}`, {
       method: 'DELETE',
     });
+  },
+
+  async excluirMovimentosPorCompetencia(params: {
+    competencia: string;
+    incluirAnteriores?: boolean;
+    contaId?: string | null;
+  }): Promise<{ message: string; movimentosExcluidos: number; competencia: string; incluirAnteriores: boolean }> {
+    return apiFetch<{ message: string; movimentosExcluidos: number; competencia: string; incluirAnteriores: boolean }>(
+      '/api/movimentos/competencia',
+      {
+        method: 'DELETE',
+        body: JSON.stringify(params),
+      }
+    );
   },
 
   async splitMovimento(
@@ -2227,6 +2539,22 @@ export const apiService = {
     });
   },
 
+  async excluirImportacaoFatura(arquivoId: string): Promise<{
+    statusCode: number;
+    message: string;
+    resultado: {
+      sucesso: boolean;
+      arquivoId: string;
+      nomeArquivo: string;
+      movimentosExcluidos: number;
+      stagingExcluidos: number;
+    };
+  }> {
+    return apiFetch(`/api/importacao/arquivos/${arquivoId}/fatura`, {
+      method: 'DELETE',
+    });
+  },
+
   async carregarLoteStaging(loteId: string): Promise<{
     statusCode: number;
     message: string;
@@ -2298,6 +2626,103 @@ export const apiService = {
 
   async getLancamentosArquivoImportado(arquivoId: string): Promise<DetalhesLancamentosArquivoResponse> {
     return apiFetch(`/api/importacao/arquivos/${arquivoId}/lancamentos`);
+  },
+
+  // Módulo de Média Mensal, Regras de Exclusão e Gastos Únicos (TASK-53)
+  async getRegrasExclusaoMedia(): Promise<RegraExclusaoMediaItem[]> {
+    return apiFetch<RegraExclusaoMediaItem[]>('/api/media-mensal/regras', undefined, []);
+  },
+
+  async criarRegraExclusaoMedia(payload: {
+    categoriaId?: string | null;
+    descricaoPadrao?: string | null;
+    valorMinimo?: number | null;
+    apenasUmaVez?: boolean;
+    motivo?: string | null;
+  }): Promise<RegraExclusaoMediaItem> {
+    return apiFetch<RegraExclusaoMediaItem>('/api/media-mensal/regras', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async atualizarRegraExclusaoMedia(
+    id: string,
+    payload: {
+      categoriaId?: string | null;
+      descricaoPadrao?: string | null;
+      valorMinimo?: number | null;
+      apenasUmaVez?: boolean;
+      ativo?: boolean;
+      motivo?: string | null;
+    }
+  ): Promise<RegraExclusaoMediaItem> {
+    return apiFetch<RegraExclusaoMediaItem>(`/api/media-mensal/regras/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async excluirRegraExclusaoMedia(id: string): Promise<{ sucesso: boolean; id: string }> {
+    return apiFetch<{ sucesso: boolean; id: string }>(`/api/media-mensal/regras/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async getExclusoesMovimentoMedia(): Promise<ExclusaoMovimentoMediaItem[]> {
+    return apiFetch<ExclusaoMovimentoMediaItem[]>('/api/media-mensal/exclusoes', undefined, []);
+  },
+
+  async incluirExclusaoManualMedia(payload: {
+    movimentoId: string;
+    motivo: string;
+  }): Promise<ExclusaoMovimentoMediaItem> {
+    return apiFetch<ExclusaoMovimentoMediaItem>('/api/media-mensal/exclusoes', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async alternarStatusExclusaoMedia(id: string, ativo: boolean): Promise<ExclusaoMovimentoMediaItem> {
+    return apiFetch<ExclusaoMovimentoMediaItem>(`/api/media-mensal/exclusoes/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ ativo }),
+    });
+  },
+
+  async removerExclusaoMedia(id: string): Promise<{ sucesso: boolean; exclusaoId: string }> {
+    return apiFetch<{ sucesso: boolean; exclusaoId: string }>(`/api/media-mensal/exclusoes/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  async pesquisarLancamentosParaExclusao(params?: {
+    termo?: string;
+    competencia?: string;
+    categoriaId?: string;
+    apenasExcluidos?: boolean;
+  }): Promise<LancamentoPesquisaMediaItem[]> {
+    const q = new URLSearchParams();
+    if (params?.termo) q.append('termo', params.termo);
+    if (params?.competencia) q.append('competencia', params.competencia);
+    if (params?.categoriaId) q.append('categoriaId', params.categoriaId);
+    if (params?.apenasExcluidos !== undefined) q.append('apenasExcluidos', String(params.apenasExcluidos));
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return apiFetch<LancamentoPesquisaMediaItem[]>(`/api/media-mensal/pesquisa-lancamentos${qs}`, undefined, []);
+  },
+
+  async getMediaMensalConsolidada(competenciaReferencia?: string, mesesJanela?: number): Promise<MediaConsolidadaResponse> {
+    const q = new URLSearchParams();
+    if (competenciaReferencia) q.append('competenciaReferencia', competenciaReferencia);
+    if (mesesJanela) q.append('mesesJanela', String(mesesJanela));
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return apiFetch<MediaConsolidadaResponse>(`/api/media-mensal/consolidado${qs}`);
+  },
+
+  async recalcularMediaMensal(): Promise<{ mensagem: string; resultado: any }> {
+    return apiFetch<{ mensagem: string; resultado: any }>('/api/media-mensal/recalcular', {
+      method: 'POST',
+    });
   },
 };
 

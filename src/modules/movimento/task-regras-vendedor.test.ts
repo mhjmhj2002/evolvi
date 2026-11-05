@@ -358,4 +358,50 @@ describe('Funcionalidade: Catálogo de Lojas e Regras Automáticas de Categoriza
     });
     expect(regraAmazon).toBeNull();
   });
+
+  it('4. Deve reconhecer regras de vendedor/favorecido com truncamento divergente entre extratos bancários', async () => {
+    // 1. Cadastra regra com nome truncado em 21 caracteres: "Adilene De Oliveira A"
+    await prisma.regraVendedorCategoria.create({
+      data: {
+        usuarioId,
+        termoVendedor: 'Adilene De Oliveira A',
+        categoriaId: categoriaAlimentacaoId,
+      },
+    });
+
+    // 2. Cria movimento com outro truncamento em 25 caracteres ("Adilene de Oliveira Almei") e observação com nome completo
+    const movTruncado = await prisma.movimento.create({
+      data: {
+        usuarioId,
+        contaId,
+        descricao: 'PIX ENVIADO - Adilene de Oliveira Almei',
+        observacao: 'Favorecido: Adilene de Oliveira Almeida Pagotto',
+        valor: 300.0,
+        dataMovimento: new Date('2026-10-16'),
+        competencia: '2026-10',
+        natureza: 'DESPESA',
+        categoriaId: categoriaOutrosId,
+        categoriaFixadaPeloUsuario: false,
+        validadoDedupe: 'N',
+      },
+    });
+
+    // 3. Ao consultar suspeitas, o motor deve identificar a regra salva com precisão
+    const resGetSuspeitas = await app.inject({
+      method: 'GET',
+      url: '/api/movimentos/suspeitas',
+      headers: { authorization: `Bearer ${authToken}` },
+    });
+
+    expect(resGetSuspeitas.statusCode).toBe(200);
+    const bodySuspeitas = JSON.parse(resGetSuspeitas.body);
+    const suspeitaEncontrada = bodySuspeitas.suspeitasCategorizacao.find(
+      (s: any) => s.movimento?.id === movTruncado.id
+    );
+
+    expect(suspeitaEncontrada).toBeDefined();
+    expect(suspeitaEncontrada?.regraVendedorSalva).toBeDefined();
+    expect(suspeitaEncontrada?.regraVendedorSalva?.categoriaId).toBe(categoriaAlimentacaoId);
+  });
 });
+

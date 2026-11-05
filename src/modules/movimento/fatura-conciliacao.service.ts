@@ -163,6 +163,15 @@ export class FaturaConciliacaoService {
           },
         });
 
+        // Remove qualquer suspeita pré-existente referente a este movimento conciliado
+        await prisma.suspeitaMovimento.deleteMany({
+          where: {
+            usuarioId,
+            movimentoId: melhorCandidato.id,
+            status: 'PENDENTE',
+          },
+        });
+
         resultado.totalFaturasConciliadas++;
         resultado.detalhes.push({
           arquivoId: fatura.id,

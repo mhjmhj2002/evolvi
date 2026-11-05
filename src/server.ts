@@ -12,6 +12,7 @@ import { faturaConciliacaoWorkerService } from './modules/movimento/fatura-conci
 import { parcelamentoSincronizacaoWorkerService } from './modules/parcelamento/parcelamento-sincronizacao-worker.service.js';
 import { iaMediasConsolidadasWorkerService } from './modules/ia/ia-medias-consolidadas.service.js';
 import { mediaMensalWorkerService } from './modules/media-mensal/media-mensal-worker.service.js';
+import { recorrenciaSincronizacaoWorkerService } from './modules/recorrencia/recorrencia-sincronizacao-worker.service.js';
 
 // Inicializa formatação padronizada de logs (data/hora yyyy-mm-dd-hh:mm:ss.sss e app de origem)
 setupConsoleLogger('evolvi-backend');
@@ -30,6 +31,7 @@ async function bootstrap() {
     validacaoDeduplicacaoWorkerService.setupEventListener();
     faturaConciliacaoWorkerService.setupEventListener();
     parcelamentoSincronizacaoWorkerService.setupEventListener();
+    recorrenciaSincronizacaoWorkerService.setupEventListener();
     iaMediasConsolidadasWorkerService.setupEventListener();
     mediaMensalWorkerService.setupEventListener();
 
@@ -48,6 +50,7 @@ async function bootstrap() {
       validacaoDeduplicacaoWorkerService.removeEventListener();
       faturaConciliacaoWorkerService.removeEventListener();
       parcelamentoSincronizacaoWorkerService.removeEventListener();
+      recorrenciaSincronizacaoWorkerService.removeEventListener();
       iaMediasConsolidadasWorkerService.removeEventListener();
       mediaMensalWorkerService.removeEventListener();
       app.close().then(() => {

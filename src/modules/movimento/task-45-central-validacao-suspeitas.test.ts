@@ -92,6 +92,9 @@ describe('TASK-45: Central de Validação de Suspeitas do Usuário (Malha Fina &
   });
 
   afterAll(async () => {
+    await prisma.parcelamento.deleteMany({
+      where: { usuarioId: { in: [usuarioId, outroUsuarioId] } },
+    });
     await prisma.movimento.deleteMany({
       where: { usuarioId: { in: [usuarioId, outroUsuarioId] } },
     });
@@ -840,6 +843,150 @@ describe('TASK-45: Central de Validação de Suspeitas do Usuário (Malha Fina &
     });
 
     expect(suspeitaGerada).toBeNull();
+  });
+
+  it('14. POST /api/movimentos/suspeitas/:id/veredito - Descartar duplicata de projeção futura não deve recriar a parcela nem reabrir suspeita', async () => {
+    // 1. Cria duas contas do mesmo banco/instituição (ex: dois cartões C6)
+    const contaCartao1 = await prisma.conta.create({
+      data: {
+        usuarioId,
+        nome: 'C6 Carbon Final 3896 (MANUEL A H JARA)',
+        tipo: 'CARTAO_CREDITO',
+        diaVencimento: 10,
+      },
+    });
+
+    const contaCartao2 = await prisma.conta.create({
+      data: {
+        usuarioId,
+        nome: 'C6 Carbon Final 2458 (MANUEL A H JARA)',
+        tipo: 'CARTAO_CREDITO',
+        diaVencimento: 10,
+      },
+    });
+
+    // 2. Cria dois contratos de parcelamento ativos idênticos em contas irmãs
+    const parc1 = await prisma.parcelamento.create({
+      data: {
+        usuarioId,
+        contaId: contaCartao1.id,
+        descricao: 'Anuidade Diferenciada',
+        valorTotal: 1176.0,
+        parcelaValor: 98.0,
+        parcelaAtual: 11,
+        totalParcelas: 12,
+        primeiroVencimento: '2025-12',
+        ultimoVencimento: '2026-11',
+        status: 'ATIVO',
+      },
+    });
+
+    const parc2 = await prisma.parcelamento.create({
+      data: {
+        usuarioId,
+        contaId: contaCartao2.id,
+        descricao: 'Anuidade Diferenciada',
+        valorTotal: 1176.0,
+        parcelaValor: 98.0,
+        parcelaAtual: 11,
+        totalParcelas: 12,
+        primeiroVencimento: '2025-12',
+        ultimoVencimento: '2026-11',
+        status: 'ATIVO',
+      },
+    });
+
+    // 3. Cria os movimentos previstos projetados da parcela 12/12
+    const dataMov = new Date('2026-11-10T00:00:00.000Z');
+    const movProjetado1 = await prisma.movimento.create({
+      data: {
+        usuarioId,
+        contaId: contaCartao1.id,
+        dataMovimento: dataMov,
+        competencia: '2026-11',
+        descricao: 'Anuidade Diferenciada - Parcela 12/12',
+        valor: 98.0,
+        natureza: 'DESPESA',
+        status: 'PREVISTO',
+        origemDocumento: 'PROJECAO_PARCELAMENTO',
+        observacao: 'Parcela futura projetada (12/12) do contrato Anuidade Diferenciada',
+        validadoDedupe: 'N',
+      },
+    });
+
+    const movProjetado2 = await prisma.movimento.create({
+      data: {
+        usuarioId,
+        contaId: contaCartao2.id,
+        dataMovimento: dataMov,
+        competencia: '2026-11',
+        descricao: 'Anuidade Diferenciada - Parcela 12/12',
+        valor: 98.0,
+        natureza: 'DESPESA',
+        status: 'PREVISTO',
+        origemDocumento: 'PROJECAO_PARCELAMENTO',
+        observacao: 'Parcela futura projetada (12/12) do contrato Anuidade Diferenciada',
+        validadoDedupe: 'N',
+      },
+    });
+
+    // 4. Executa a catalogação fresca de suspeitas e consulta a Central
+    const { SuspeitaMovimentoWorkerService: worker } = await import('./suspeita-movimento-worker.service.js');
+    await worker.catalogarSuspeitasParaUsuario(usuarioId);
+
+    const resGet = await app.inject({
+      method: 'GET',
+      url: '/api/movimentos/suspeitas',
+      headers: { authorization: `Bearer ${usuarioToken}` },
+    });
+    expect(resGet.statusCode).toBe(200);
+    const bodyGet = JSON.parse(resGet.body);
+    const suspeitaDuplicata = bodyGet.suspeitasDuplicatas.find(
+      (s: any) =>
+        (s.movimentoA.id === movProjetado1.id && s.movimentoB.id === movProjetado2.id) ||
+        (s.movimentoA.id === movProjetado2.id && s.movimentoB.id === movProjetado1.id)
+    );
+    expect(suspeitaDuplicata).toBeDefined();
+
+    // 5. Usuário clica em "Descartar #2 e Manter Este (#1)"
+    const resVeredito = await app.inject({
+      method: 'POST',
+      url: `/api/movimentos/suspeitas/${suspeitaDuplicata.id}/veredito`,
+      headers: { authorization: `Bearer ${usuarioToken}` },
+      payload: {
+        acao: 'CONFIRMAR_DUPLICATA_DESCARTAR',
+        duplicataId: movProjetado2.id,
+      },
+    });
+    expect(resVeredito.statusCode).toBe(200);
+
+    // 6. Verifica que o registro #2 foi excluído e o contrato redundante cancelado
+    const mov2NoBanco = await prisma.movimento.findUnique({ where: { id: movProjetado2.id } });
+    expect(mov2NoBanco).toBeNull();
+
+    const parc2NoBanco = await prisma.parcelamento.findUnique({ where: { id: parc2.id } });
+    expect(parc2NoBanco?.status).toBe('CANCELADO');
+
+    // 7. Simula nova sincronização de parcelamentos e catalogação de suspeitas (ex: refresh na tela ou worker)
+    const { ParcelamentoSincronizacaoService } = await import('../parcelamento/parcelamento-sincronizacao.service.js');
+    await ParcelamentoSincronizacaoService.gerarParcelasFuturasPrevistas(usuarioId, '2026-10');
+
+    const { SuspeitaMovimentoWorkerService } = await import('./suspeita-movimento-worker.service.js');
+    await SuspeitaMovimentoWorkerService.catalogarSuspeitasParaUsuario(usuarioId);
+
+    // 8. Consulta novamente as suspeitas - a duplicata NÃO pode voltar!
+    const resGet2 = await app.inject({
+      method: 'GET',
+      url: '/api/movimentos/suspeitas',
+      headers: { authorization: `Bearer ${usuarioToken}` },
+    });
+    const bodyGet2 = JSON.parse(resGet2.body);
+    const duplicataVoltou = bodyGet2.suspeitasDuplicatas.find(
+      (s: any) =>
+        s.movimentoA.descricao.includes('Anuidade Diferenciada') ||
+        s.movimentoB?.descricao.includes('Anuidade Diferenciada')
+    );
+    expect(duplicataVoltou).toBeUndefined();
   });
 });
 
