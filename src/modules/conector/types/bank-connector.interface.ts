@@ -5,7 +5,7 @@
 export interface BankAccountRaw {
   idExterno: string;
   nome: string;
-  tipo: 'CONTA_CORRENTE' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO';
+  tipo: 'CONTA_CORRENTE' | 'POUPANCA' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO';
   saldoAtual?: number;
   diaFechamento?: number;
   diaVencimento?: number;

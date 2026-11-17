@@ -15,6 +15,7 @@ import {
   parseLocalDeterministic,
   callGeminiApi,
   callDeepSeekApi,
+  callOpenAIApi,
   callOpenRouterApi,
   ContextoUsuarioIA,
 } from './ia.service.js';
@@ -441,6 +442,14 @@ export const iaRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
 
         if (provedorParaFluxo === 'DEEPSEEK') {
           parsed = await callDeepSeekApi(
+            efetivaApiKey,
+            modeloParaFluxo,
+            prompt,
+            texto,
+            opcoesTelemetria
+          );
+        } else if (provedorParaFluxo === 'OPENAI') {
+          parsed = await callOpenAIApi(
             efetivaApiKey,
             modeloParaFluxo,
             prompt,

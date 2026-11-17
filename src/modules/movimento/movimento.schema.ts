@@ -92,6 +92,8 @@ export const vereditoSuspeitaSchema = z.object({
     'CONVERTER_TRANSFERENCIA_PROPRIA',
     'CONFIRMAR_DESPESA_REGULAR',
     'DEFINIR_CATEGORIA',
+    'CONFIRMAR_DATA',
+    'CORRIGIR_DATA',
   ], {
     message: 'Ação de veredito inválida',
   }),
@@ -100,6 +102,7 @@ export const vereditoSuspeitaSchema = z.object({
   observacao: z.string().max(500).optional().nullable(),
   propagarMesmoVendedor: z.boolean().optional(),
   memorizarRegraVendedor: z.boolean().optional(),
+  dataMovimento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
 export const excluirPorCompetenciaSchema = z.object({

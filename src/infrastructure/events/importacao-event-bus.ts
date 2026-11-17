@@ -13,6 +13,7 @@ export interface ImportacaoLoteRecepcionadoEvent {
 export interface ImportacaoArquivoProgressoEvent {
   loteId: string;
   arquivoId: string;
+  usuarioId: string;
   nomeArquivo: string;
   status: string;
   mensagem?: string;

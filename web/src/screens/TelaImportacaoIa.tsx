@@ -56,6 +56,7 @@ import {
   modeloPadraoDoProvedor,
   nomeAmigavelDoProvedor,
   IaMediaConsolidadaItem,
+  MetricasOperacionaisImportacao,
 } from '../api.ts';
 import { ConfiguracaoIaCard } from '../components/ConfiguracaoIaCard.tsx';
 
@@ -191,6 +192,10 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
   const [lotes, setLotes] = useState<LoteImportacaoItem[]>([]);
   const [loteAtivo, setLoteAtivo] = useState<LoteImportacaoItem | null>(null);
   const [itensStaging, setItensStaging] = useState<StagingLancamentoItem[]>([]);
+  const [stagingCursor, setStagingCursor] = useState<string | null>(null);
+  const [totalStaging, setTotalStaging] = useState(0);
+  const [metricasOperacionais, setMetricasOperacionais] = useState<MetricasOperacionaisImportacao | null>(null);
+  const requisicaoDetalhesAtivaRef = useRef(false);
   const [feedAoVivo, setFeedAoVivo] = useState<TransacaoAoVivo[]>([]);
   const [contasCriadasDetectadas, setContasCriadasDetectadas] = useState<string[]>([]);
 
@@ -217,7 +222,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
   const [carregandoLancamentosArquivoId, setCarregandoLancamentosArquivoId] = useState<string | null>(null);
   const [filtroHistoricoBusca, setFiltroHistoricoBusca] = useState<string>('');
   const [filtroHistoricoTipo, setFiltroHistoricoTipo] = useState<string>('TODOS');
-  const [abaModalLancamentos, setAbaModalLancamentos] = useState<'movimentos' | 'staging' | 'tentativas'>('movimentos');
+  const [abaModalLancamentos, setAbaModalLancamentos] = useState<'movimentos' | 'staging' | 'tentativas'>('staging');
 
   // Estados dos novos blocos: Grid de Faturas de Cartão e Grid de Extratos por Instituição
   const [qtdeMesesFaturas, setQtdeMesesFaturas] = useState<number>(6);
@@ -235,6 +240,8 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
 
   // Validação prévia de configuração da IA e seleção no lote / reprocessamento
   const [statusIa, setStatusIa] = useState<StatusIaResponse | null>(null);
+  const [statusIaCarregando, setStatusIaCarregando] = useState(true);
+  const [erroStatusIa, setErroStatusIa] = useState<string | null>(null);
   const [mediasConsolidadasIa, setMediasConsolidadasIa] = useState<IaMediaConsolidadaItem[]>([]);
   const [modalConfigIaAberto, setModalConfigIaAberto] = useState(false);
   const [modalEscolhaIaAberto, setModalEscolhaIaAberto] = useState(false);
@@ -576,7 +583,8 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
   const abrirModalLancamentosArquivo = async (arquivoId: string) => {
     try {
       setCarregandoLancamentosArquivoId(arquivoId);
-      setAbaModalLancamentos('movimentos');
+      // A importação abre na fonte bruta para não esconder linhas ainda não consolidadas.
+      setAbaModalLancamentos('staging');
       const dados = await apiService.getLancamentosArquivoImportado(arquivoId);
       setArquivoLancamentosModal(dados);
     } catch (err: any) {
@@ -593,6 +601,8 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
 
   // Consulta o status da IA no servidor e localmente, além das médias consolidadas (TASK-52)
   const verificarStatusIa = useCallback(async () => {
+    setStatusIaCarregando(true);
+    setErroStatusIa(null);
     try {
       const [res, resMedias] = await Promise.all([
         apiService.getStatusIa(),
@@ -624,8 +634,11 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
         setProvedorIaSelecionado('GEMINI');
         setModeloIaSelecionado(modeloPadraoDoProvedor('GEMINI'));
       }
-    } catch {
+    } catch (err: any) {
       setStatusIa(null);
+      setErroStatusIa(err?.message || 'Falha ao consultar as configurações de IA.');
+    } finally {
+      setStatusIaCarregando(false);
     }
   }, []);
 
@@ -761,19 +774,28 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
 
   // Carrega detalhes e staging do lote ativo
   const carregarDetalhesLoteAtivo = useCallback(async (loteId: string) => {
+    if (requisicaoDetalhesAtivaRef.current) return;
+    requisicaoDetalhesAtivaRef.current = true;
     try {
-      const [resLote, resStaging] = await Promise.all([
+      const [resLote, resStaging, resMetricas] = await Promise.all([
         apiService.getLoteImportacao(loteId),
         apiService.getStagingLote(loteId),
+        apiService.getMetricasOperacionaisLote(loteId),
       ]);
+      if (loteAtivoRef.current?.id !== loteId) return;
+      setMetricasOperacionais(resMetricas);
       if (resLote?.lote) {
         setLoteAtivo(resLote.lote);
       }
       if (resStaging?.itens) {
         setItensStaging(resStaging.itens);
+        setStagingCursor(resStaging.proximoCursor || null);
+        setTotalStaging(resStaging.totalItens || 0);
       }
     } catch (err: any) {
       console.warn('Erro ao sincronizar detalhes do lote:', err);
+    } finally {
+      requisicaoDetalhesAtivaRef.current = false;
     }
   }, []);
 
@@ -791,7 +813,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
     }
   }, []);
 
-  // Polling reativo e sincronização periódica a cada 3.5s enquanto o lote estiver em processamento
+  // Polling de reconciliação em intervalo maior; o SSE conduz as atualizações normais.
   useEffect(() => {
     carregarLotes();
     carregarAlertasEHistorico();
@@ -814,9 +836,8 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
     if (deveAtualizarPeriodicamente) {
       intervalId = setInterval(() => {
         carregarDetalhesLoteAtivo(loteAtivo.id);
-        carregarLotes();
-        carregarAlertasEHistorico();
-      }, 1500);
+        carregarLotes(loteAtivo.id);
+      }, 10000);
     }
 
     return () => {
@@ -1015,6 +1036,8 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
     // Limpa a tela da importação anterior para não ficar travada com dados antigos
     setLoteAtivo(null);
     setItensStaging([]);
+    setStagingCursor(null);
+    setTotalStaging(0);
     setFeedAoVivo([]);
     setContasCriadasDetectadas([]);
 
@@ -1275,6 +1298,11 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       : totalProvedoresSuportadosNoFluxo || (statusIa?.hasEnvKey ? 1 : 0);
 
     // Se não tiver nenhuma configurada, não permite e avisa que precisa configurar
+    if (erroStatusIa || statusIa === null) {
+      setMensagemErro(`Não foi possível confirmar suas configurações de IA. ${erroStatusIa || 'A consulta ainda não foi concluída.'}`);
+      return;
+    }
+
     if (totalConfiguradas === 0) {
       setMensagemErro(
         `Nenhuma Inteligência Artificial com chave salva. Configure ${nomeProvedorAtual} (ou outro provedor) antes de processar.`
@@ -1325,6 +1353,20 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       setMensagemErro(err.message || 'Erro ao carregar dados em staging.');
     } finally {
       setProcessandoAcao(false);
+    }
+  };
+
+  const carregarProximaPaginaStaging = async () => {
+    if (!loteAtivo?.id || !stagingCursor) return;
+    const loteId = loteAtivo.id;
+    try {
+      const pagina = await apiService.getStagingLote(loteId, { cursor: stagingCursor });
+      if (loteAtivoRef.current?.id !== loteId) return;
+      setItensStaging((atual) => [...atual, ...pagina.itens]);
+      setStagingCursor(pagina.proximoCursor || null);
+      setTotalStaging(pagina.totalItens || 0);
+    } catch (err) {
+      console.warn('Erro ao carregar próxima página de staging:', err);
     }
   };
 
@@ -1560,7 +1602,24 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
       </div>
 
       {/* 2. Banner de Status da IA (Informativo ou de Alerta de Configuração) */}
-      {!temIaConfigurada && (
+      {erroStatusIa && (
+        <div
+          role="alert"
+          style={{
+            background: 'rgba(239, 68, 68, 0.1)',
+            border: '1px solid rgba(239, 68, 68, 0.35)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '10px 14px',
+            color: 'var(--text-primary)',
+            fontSize: '0.82rem',
+          }}
+        >
+          Não foi possível carregar suas configurações de IA. Isso não confirma que elas foram removidas.
+          {' '}{erroStatusIa}
+        </div>
+      )}
+
+      {!erroStatusIa && statusIa !== null && !temIaConfigurada && (
         <div
           style={{
             background: 'rgba(234, 179, 8, 0.1)',
@@ -1644,7 +1703,22 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                 <code style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                   ({modeloIaSelecionado})
                 </code>
-                {!provedorAtualSuportadoNoFluxo ? (
+                {statusIaCarregando ? (
+                  <span
+                    className="badge badge-amarelo"
+                    style={{ fontSize: '0.65rem', marginLeft: '6px' }}
+                  >
+                    Carregando configurações…
+                  </span>
+                ) : erroStatusIa ? (
+                  <span
+                    className="badge badge-amarelo"
+                    style={{ fontSize: '0.65rem', marginLeft: '6px' }}
+                    title={erroStatusIa}
+                  >
+                    Falha ao carregar
+                  </span>
+                ) : !provedorAtualSuportadoNoFluxo ? (
                   <span
                     className="badge badge-amarelo"
                     style={{ fontSize: '0.65rem', marginLeft: '6px' }}
@@ -3291,6 +3365,26 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                       </div>
                     </div>
 
+                    {metricasOperacionais?.loteId === loteAtivo.id && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 8 }}>
+                        {[
+                          ['Espera na fila', `${metricasOperacionais.fila.aguardando} arquivos`],
+                          ['IA p50 / p95', `${metricasOperacionais.etapas.ia.p50 ?? '—'} / ${metricasOperacionais.etapas.ia.p95 ?? '—'} ms`],
+                          ['Staging p50 / p95', `${metricasOperacionais.etapas.staging.p50 ?? '—'} / ${metricasOperacionais.etapas.staging.p95 ?? '—'} ms`],
+                          ['Consolidação p50 / p95', `${metricasOperacionais.etapas.consolidacao.p50 ?? '—'} / ${metricasOperacionais.etapas.consolidacao.p95 ?? '—'} ms`],
+                          ['Falhas / retries', `${metricasOperacionais.ia.falhas} / ${metricasOperacionais.ia.retries}`],
+                          ['Tokens / custo', `${metricasOperacionais.ia.tokensTotal} / R$ ${Number(metricasOperacionais.ia.custoBrl).toFixed(2)}`],
+                          ['RSS do backend', `${(metricasOperacionais.processo.rssBytes / 1024 / 1024).toFixed(0)} MB`],
+                          ['Ritmo', `${metricasOperacionais.processamento.arquivosPorMinuto?.toFixed(1) ?? '—'} arq/min`],
+                        ].map(([titulo, valor]) => (
+                          <div key={titulo} style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-sm)', padding: 10 }}>
+                            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>{titulo}</div>
+                            <div style={{ fontSize: '0.78rem', color: 'var(--text-primary)', fontWeight: 700, marginTop: 4 }}>{valor}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {/* Botões de Ação de Contingência (Retentativa Manual) */}
                     <div style={{
                       display: 'flex',
@@ -3608,6 +3702,21 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                                   {(arq.tamanhoBytes / 1024).toFixed(1)} KB • {arq.caminhoRelativo}
                                 </div>
                               </div>
+                            </div>
+
+                            <div style={{ width: '100%', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '8px', padding: '8px 0 2px' }}>
+                              {[
+                                { nome: 'Upload', inicio: arq.uploadIniciadoEm, fim: arq.uploadFinalizadoEm },
+                                { nome: 'Extração IA', inicio: arq.extracaoIniciadaEm, fim: arq.extracaoFinalizadaEm },
+                                { nome: 'Carga staging', inicio: arq.stagingIniciadoEm, fim: arq.stagingFinalizadoEm },
+                                { nome: 'Consolidação', inicio: arq.consolidacaoIniciadaEm, fim: arq.consolidacaoFinalizadaEm },
+                              ].map((etapa) => (
+                                <div key={etapa.nome} style={{ borderLeft: '2px solid var(--border-subtle)', paddingLeft: '8px', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                                  <div style={{ fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '2px' }}>{etapa.nome}</div>
+                                  <div>Início: {etapa.inicio ? formatarDataHoraIso(etapa.inicio, true) : '—'}</div>
+                                  <div>Fim: {etapa.fim ? formatarDataHoraIso(etapa.fim, true) : '—'}</div>
+                                </div>
+                              ))}
                             </div>
 
                             <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
@@ -4083,7 +4192,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                     <h3 style={{ fontSize: '0.95rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <Database size={16} color="var(--brand-secondary)" />
-                      Registros Extraídos em Staging ({itensStaging.length})
+                      Registros Extraídos em Staging ({itensStaging.length} de {totalStaging})
                     </h3>
                   </div>
 
@@ -4130,6 +4239,11 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                           ))}
                         </tbody>
                       </table>
+                    </div>
+                  )}
+                  {stagingCursor && (
+                    <div style={{ textAlign: 'center', paddingTop: '12px' }}>
+                      <button className="btn-secondary" onClick={carregarProximaPaginaStaging}>Carregar mais registros</button>
                     </div>
                   )}
                 </div>
@@ -5214,27 +5328,28 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
         </div>
       )}
 
-      {/* Modal Detalhado de Consulta de Lançamentos Criados do Arquivo */}
+      {/* Tela dedicada de Consulta de Lançamentos Criados do Arquivo */}
       {arquivoLancamentosModal && (
         <div
           style={{
             position: 'fixed',
             inset: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.8)',
-            backdropFilter: 'blur(5px)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
             zIndex: 1000,
-            padding: '16px',
+            overflowY: 'auto',
+            background: 'var(--bg-primary)',
+            display: 'flex',
+            width: '100%',
+            justifyContent: 'center',
+            padding: '24px',
           }}
         >
           <div
             className="card"
             style={{
               width: '100%',
-              maxWidth: '960px',
-              maxHeight: '90vh',
+              maxWidth: '1180px',
+              minHeight: 'calc(100vh - 48px)',
+              maxHeight: 'none',
               padding: '24px',
               border: '1px solid var(--border-card)',
               display: 'flex',
@@ -5273,6 +5388,8 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
               <button
                 type="button"
                 onClick={() => setArquivoLancamentosModal(null)}
+                aria-label="Voltar para o histórico de importações"
+                title="Voltar para o histórico de importações"
                 style={{
                   background: 'none',
                   border: 'none',
@@ -5283,7 +5400,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                   alignItems: 'center',
                 }}
               >
-                <X size={20} />
+                  <X size={20} />
               </button>
             </div>
 
@@ -5309,7 +5426,41 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                   R$ {arquivoLancamentosModal.resumo.valorTotalMovimentos.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
               </div>
+
+              <div style={{ padding: '10px 14px', background: 'rgba(15, 23, 42, 0.4)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Entradas</div>
+                <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#10b981', marginTop: '2px', fontFamily: 'var(--font-mono)' }}>
+                  R$ {arquivoLancamentosModal.resumo.somaEntradas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </div>
+              </div>
+
+              <div style={{ padding: '10px 14px', background: 'rgba(15, 23, 42, 0.4)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Saídas</div>
+                <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#f87171', marginTop: '2px', fontFamily: 'var(--font-mono)' }}>
+                  R$ {arquivoLancamentosModal.resumo.somaSaidas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </div>
+              </div>
             </div>
+
+            {arquivoLancamentosModal.inventarioIa && (
+              <div style={{ padding: '12px 14px', background: 'rgba(56, 189, 248, 0.06)', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(56, 189, 248, 0.22)' }}>
+                <strong style={{ color: 'var(--text-primary)', display: 'block', fontSize: '0.9rem' }}>
+                  Inventário do documento — páginas e registros por página
+                </strong>
+                <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', marginTop: '7px', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                  <span>Páginas: <strong>{arquivoLancamentosModal.inventarioIa.paginasTotais ?? '—'}</strong></span>
+                  <span>Esperados: <strong>{arquivoLancamentosModal.inventarioIa.quantidadeEsperada ?? '—'}</strong></span>
+                  <span>Extraídos: <strong>{arquivoLancamentosModal.resumo.totalStagingItens}</strong></span>
+                  <span>Confiança: <strong>{(arquivoLancamentosModal.inventarioIa.confianca * 100).toFixed(0)}%</strong></span>
+                  <span>Tipo: <strong>{arquivoLancamentosModal.inventarioIa.tipoDocumento}</strong></span>
+                </div>
+                {arquivoLancamentosModal.inventarioIa.paginas.length > 0 && (
+                  <div style={{ marginTop: '8px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    Lançamentos extraídos por página: {arquivoLancamentosModal.inventarioIa.paginas.map((p) => `p${p.pagina}: ${p.quantidadeExtraida ?? 'não atribuído'}${p.quantidadeEsperada == null ? '' : ` (esperados ${p.quantidadeEsperada})`}`).join(' · ')}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Seletor de visualização do modal (Movimentos Oficiais vs Staging de Auditoria vs Tentativas de IA) */}
             <div style={{ display: 'flex', gap: '8px', borderBottom: '1px solid var(--border-card)', paddingBottom: '6px' }}>
@@ -5330,7 +5481,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                   gap: '6px',
                 }}
               >
-                <CheckCircle2 size={14} /> Movimentos no Sistema ({arquivoLancamentosModal.movimentos.length})
+                <CheckCircle2 size={14} /> Dados consolidados ({arquivoLancamentosModal.movimentos.length})
               </button>
 
               <button
@@ -5350,7 +5501,7 @@ export const TelaImportacaoIa: React.FC<TelaImportacaoIaProps> = ({
                   gap: '6px',
                 }}
               >
-                <Database size={14} /> Auditoria Staging ({arquivoLancamentosModal.stagingItens.length})
+                <Database size={14} /> Dados importados ({arquivoLancamentosModal.stagingItens.length})
               </button>
 
               {arquivoLancamentosModal.arquivo.tentativas && arquivoLancamentosModal.arquivo.tentativas.length > 0 && (

@@ -2,15 +2,21 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { FastifyInstance } from 'fastify';
 import fs from 'fs/promises';
 import path from 'path';
+import { createHash, randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { buildApp } from '../../app.js';
 import { prisma } from '../../infrastructure/database/prisma.js';
 import { env } from '../../config/env.js';
+import { importacaoDiagnosticoService } from './importacao-diagnostico.service.js';
 import { ImportacaoStorageService } from './importacao-storage.service.js';
 import {
   importacaoEventBus,
   ImportacaoEventBus,
   ImportacaoLoteRecepcionadoEvent,
 } from '../../infrastructure/events/importacao-event-bus.js';
+
+const execFileAsync = promisify(execFile);
 
 describe('TASK-32: Modelagem e Armazenamento Temporário de Upload em Lote (IMP-STORAGE)', () => {
   let app: FastifyInstance;
@@ -81,6 +87,12 @@ describe('TASK-32: Modelagem e Armazenamento Temporário de Upload em Lote (IMP-
         // ignora se já foi limpo
       }
     }
+
+    if (usuario1Id || usuario2Id) {
+      await Promise.all([usuario1Id, usuario2Id].filter(Boolean).map((usuarioId) =>
+        importacaoDiagnosticoService.limparTodosArtefatosUsuario(usuarioId)
+      ));
+    }
   });
 
   describe('1. Regras de Naming e Sanitização de Diretórios', () => {
@@ -88,16 +100,81 @@ describe('TASK-32: Modelagem e Armazenamento Temporário de Upload em Lote (IMP-
       const dataRef = new Date(2026, 9, 13, 15, 30, 45); // Mês 9 = Outubro (0-indexed)
       const caminho = storageService.gerarCaminhoDiretorioLote('uuid-teste-1234', dataRef);
 
-      expect(caminho).toBe(
-        path.join(env.UPLOADS_DIR, 'uuid-teste-1234', '2026-10-13-15-30-45-uuid-teste-1234')
-      );
+      expect(caminho).toMatch(new RegExp(`${path.join(env.UPLOADS_DIR, 'uuid-teste-1234', '2026-10-13-15-30-45-uuid-teste-1234')}-`));
+    });
+
+    it('limpa os artefatos e remove também a pasta vazia do usuário', async () => {
+      const raizUsuario = path.resolve(process.cwd(), env.UPLOADS_DIR, usuario1Id);
+      await fs.mkdir(raizUsuario, { recursive: true });
+      await fs.writeFile(path.join(raizUsuario, 'artefato-antigo.tmp'), 'teste');
+
+      await importacaoDiagnosticoService.limparTodosArtefatosUsuario(usuario1Id);
+
+      await expect(fs.stat(raizUsuario)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    it('preserva o pacote de uma importação ativa e arquiva original e extração ao finalizar', async () => {
+      const arquivoIdTeste = randomUUID();
+      const nomeArquivo = `diagnostico-${arquivoIdTeste}.pdf`;
+      const original = Buffer.from('%PDF-1.4 teste de evidência');
+      const hashConteudo = createHash('sha256').update(original).digest('hex');
+      const caminhoOrigem = path.resolve(process.cwd(), env.UPLOADS_DIR, `${arquivoIdTeste}.pdf`);
+      const lote = await prisma.loteImportacao.create({
+        data: {
+          usuarioId: usuario1Id,
+          caminhoDiretorio: path.join(env.UPLOADS_DIR, usuario1Id, `lote-${arquivoIdTeste}`),
+        },
+      });
+      const arquivo = await prisma.arquivoImportacao.create({
+        data: {
+          id: arquivoIdTeste,
+          loteId: lote.id,
+          usuarioId: usuario1Id,
+          nomeArquivo,
+          tamanhoBytes: BigInt(original.length),
+          mimeType: 'application/pdf',
+          caminhoRelativo: `${arquivoIdTeste}.pdf`,
+          hashConteudo,
+          status: 'ENVIADO_IA',
+        },
+      });
+      await fs.writeFile(caminhoOrigem, original);
+
+      try {
+        await importacaoDiagnosticoService.iniciarArquivo(arquivo.id, caminhoOrigem, 'DEEPSEEK', 'deepseek-chat');
+        const raizUsuario = path.resolve(process.cwd(), env.UPLOADS_DIR, usuario1Id);
+        const hashAntigo = path.join(raizUsuario, 'artefato-antigo.zip');
+        await fs.writeFile(hashAntigo, 'antigo');
+
+        await importacaoDiagnosticoService.limparTodosArtefatosUsuario(usuario1Id);
+
+        const pastaPacote = path.join(raizUsuario, hashConteudo);
+        await expect(fs.stat(path.join(pastaPacote, `original.pdf`))).resolves.toBeDefined();
+        await expect(fs.stat(hashAntigo)).rejects.toMatchObject({ code: 'ENOENT' });
+
+        const caminhoExtracao = path.resolve(process.cwd(), env.UPLOADS_DIR, `${arquivoIdTeste}.json`);
+        await fs.writeFile(caminhoExtracao, JSON.stringify({ totalTransacoes: 1, transacoes: [] }));
+        await importacaoDiagnosticoService.copiarJson(arquivo.id, caminhoExtracao);
+        await importacaoDiagnosticoService.finalizarArquivo(arquivo.id, 'SUCESSO');
+
+        const caminhoZip = path.join(raizUsuario, `${hashConteudo}.zip`);
+        const { stdout } = await execFileAsync('unzip', ['-Z1', caminhoZip]);
+        expect(stdout).toContain('original.pdf');
+        expect(stdout).toContain('extracao.json');
+        expect(stdout).toContain('estado-final.json');
+        await expect(fs.stat(path.join(raizUsuario, `.ativo-${arquivo.id}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        await fs.rm(caminhoOrigem, { force: true });
+        await fs.rm(path.resolve(process.cwd(), env.UPLOADS_DIR, `${arquivoIdTeste}.json`), { force: true });
+        await importacaoDiagnosticoService.limparTodosArtefatosUsuario(usuario1Id);
+      }
     });
 
     it('deve sanitizar o usuarioId para um único segmento de path (sem barras nem "..")', () => {
       const dataRef = new Date(2026, 9, 13, 15, 30, 45);
       const caminho = storageService.gerarCaminhoDiretorioLote('../../etc/passwd', dataRef);
 
-      expect(caminho).toBe(path.join(env.UPLOADS_DIR, 'etcpasswd', '2026-10-13-15-30-45-etcpasswd'));
+      expect(caminho).toMatch(new RegExp(`${path.join(env.UPLOADS_DIR, 'etcpasswd', '2026-10-13-15-30-45-etcpasswd')}-`));
       expect(caminho).not.toContain('..');
     });
 
@@ -142,25 +219,23 @@ describe('TASK-32: Modelagem e Armazenamento Temporário de Upload em Lote (IMP-
 
       pastasCriadasParaLimpeza.push(path.resolve(process.cwd(), resultado.caminhoDiretorio));
 
+      const diretoriosUsuario = (await fs.readdir(path.resolve(process.cwd(), env.UPLOADS_DIR, usuario1Id), { withFileTypes: true }))
+        .filter((entrada) => entrada.isDirectory())
+        .map((entrada) => entrada.name);
+      expect(diretoriosUsuario).toContain(path.basename(resultado.caminhoDiretorio));
+
       expect(resultado.loteId).toBeDefined();
       expect(resultado.status).toBe('RECEPCIONADO');
       expect(resultado.totalArquivos).toBe(2);
       expect(resultado.arquivos).toHaveLength(2);
-      expect(resultado.caminhoDiretorio).toContain(`uploads/${usuario1Id}/`);
+      expect(resultado.caminhoDiretorio).toContain(`${env.UPLOADS_DIR}/${usuario1Id}/`);
       expect(resultado.caminhoDiretorio).toContain(usuario1Id);
 
       // Validação física no disco
-      const arquivoFisico1 = path.join(
-        process.cwd(),
-        resultado.caminhoDiretorio,
-        'faturas',
-        'fatura_nubank_outubro.pdf'
-      );
-      const arquivoFisico2 = path.join(
-        process.cwd(),
-        resultado.caminhoDiretorio,
-        'extrato_inter.csv'
-      );
+      const registrosSalvos = await prisma.arquivoImportacao.findMany({ where: { loteId: resultado.loteId } });
+      const arquivoFisico1 = path.join(process.cwd(), resultado.caminhoDiretorio, registrosSalvos[0].caminhoRelativo);
+      const arquivoFisico2 = path.join(process.cwd(), resultado.caminhoDiretorio, registrosSalvos[1].caminhoRelativo);
+      expect(registrosSalvos[0].nomeArquivo).toBe('faturas/fatura_nubank_outubro.pdf');
 
       const stat1 = await fs.stat(arquivoFisico1);
       const stat2 = await fs.stat(arquivoFisico2);
@@ -174,6 +249,22 @@ describe('TASK-32: Modelagem e Armazenamento Temporário de Upload em Lote (IMP-
       expect((eventoCapturado as any).totalArquivos).toBe(2);
 
       importacaoEventBus.removeListener(ImportacaoEventBus.EVENT_LOTE_RECEPCIONADO, listener);
+    });
+
+    it('TASK-58: preserva bytes e identidade quando arquivos do lote compartilham o mesmo nome original', async () => {
+      const resultado = await storageService.recepcionarLote({
+        usuarioId: usuario1Id,
+        arquivos: [
+          { nomeOriginal: 'extratos/mesmo.csv', buffer: Buffer.from('entrada-a'), mimeType: 'text/csv' },
+          { nomeOriginal: 'extratos/mesmo.csv', buffer: Buffer.from('entrada-b'), mimeType: 'text/csv' },
+        ],
+      });
+      pastasCriadasParaLimpeza.push(path.resolve(process.cwd(), resultado.caminhoDiretorio));
+      const registros = await prisma.arquivoImportacao.findMany({ where: { loteId: resultado.loteId }, orderBy: { criadoEm: 'asc' } });
+      expect(registros).toHaveLength(2);
+      expect(new Set(registros.map((arquivo) => arquivo.caminhoRelativo)).size).toBe(2);
+      const conteudos = await Promise.all(registros.map((arquivo) => fs.readFile(path.join(process.cwd(), resultado.caminhoDiretorio, arquivo.caminhoRelativo), 'utf8')));
+      expect(conteudos.sort()).toEqual(['entrada-a', 'entrada-b']);
     });
   });
 
@@ -212,6 +303,8 @@ describe('TASK-32: Modelagem e Armazenamento Temporário de Upload em Lote (IMP-
       expect(body.totalArquivos).toBe(1);
       expect(body.caminhoDiretorio).toContain(usuario1Id);
       expect(body.arquivos).toHaveLength(1);
+      await expect(fs.stat(path.resolve(process.cwd(), env.UPLOADS_DIR, '.spool')))
+        .rejects.toMatchObject({ code: 'ENOENT' });
       expect(body.arquivos[0].nomeArquivo).toBe('extrato_viagem.csv');
 
       pastasCriadasParaLimpeza.push(path.resolve(process.cwd(), body.caminhoDiretorio));
@@ -288,6 +381,28 @@ describe('TASK-32: Modelagem e Armazenamento Temporário de Upload em Lote (IMP-
       expect(body.lote.id).toBe(loteUser1Id);
       expect(body.lote.usuarioId).toBe(usuario1Id);
       expect(body.lote.arquivos).toHaveLength(1);
+    });
+
+    it('deve expor métricas agregadas apenas ao usuário dono do lote', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/importacao/lotes/${loteUser1Id}/metricas`,
+        headers: { authorization: `Bearer ${token1}` },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.loteId).toBe(loteUser1Id);
+      expect(body.arquivos.total).toBe(1);
+      expect(body.ia.duracaoMs).toHaveProperty('p50');
+      expect(body.ia.duracaoMs).toHaveProperty('p95');
+      expect(body.processo.rssBytes).toBeGreaterThan(0);
+
+      const negada = await app.inject({
+        method: 'GET',
+        url: `/api/importacao/lotes/${loteUser1Id}/metricas`,
+        headers: { authorization: `Bearer ${token2}` },
+      });
+      expect(negada.statusCode).toBe(404);
     });
 
     it('outro usuário não deve conseguir acessar lote alheio, recebendo HTTP 404 (Isolamento Multi-Tenant)', async () => {

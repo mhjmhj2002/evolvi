@@ -11,6 +11,7 @@ import {
   montarUrlOpenRouter,
   normalizarModeloOpenRouter,
 } from './openrouter.config.js';
+import { descricaoIndicaPagamentoFatura, descricaoIndicaTransferenciaPropria } from '../movimento/natureza-movimento.util.js';
 
 /**
  * TASK-49 — Opções de telemetria aceitas pelos clientes de IA.
@@ -71,6 +72,7 @@ Selecione a categoria mais condizente e preencha "categoriaId" e "categoriaNomeS
 - "DESPESA": Compra, consumo, contas da casa, alimentação, combustível, etc.
 - "RECEITA": Salário, rendimentos, pix recebido, vendas.
 - "TRANSFERENCIA_PROPRIA": Transferência entre contas próprias ou pagamento de fatura de cartão de crédito.
+- Não infira titularidade própria só porque o nome do favorecido coincide, total ou parcialmente, com o nome do usuário ou de uma conta; exija indicação explícita de conta própria/mesma titularidade.
 - "APORTE_PATRIMONIAL": Aplicações financeiras, investimentos, depósitos em poupança, aportes em CDB/RDB/LCI/LCA/Tesouro Direto, compra de ações (NUNCA classifique como DESPESA!).
 - Se for pagamento de fatura de cartão, "isPagamentoFatura" DEVE ser true e "natureza" = "TRANSFERENCIA_PROPRIA".
 - Se houver parcelamento explícito (ex: "em 3x de R$ 50", "parcela 2 de 10"), preencha "parcelasTotal" e "parcelaAtual" se identificados.
@@ -139,20 +141,11 @@ export function parseLocalDeterministic(texto: string, contexto: ContextoUsuario
   }
 
   // 3. Detecção de Pagamento de Fatura / Transferência
-  const isPagamentoFatura =
-    lower.includes('fatura') ||
-    lower.includes('pagamento do cartao') ||
-    lower.includes('pagamento de cartao') ||
-    lower.includes('pagamento do cartão') ||
-    lower.includes('pagamento de cartão') ||
-    lower.includes('pagamento efetuado') ||
-    lower.includes('pagamento recebido') ||
-    ((lower.includes('pag boleto') || lower.includes('pagamento de boleto') || lower.includes('pagto boleto')) &&
-      (lower.includes('nu pagamentos') || lower.includes('nubank') || lower.includes('c6') || lower.includes('bradescard') || lower.includes('itaucard') || lower.includes('cartao') || lower.includes('cartão')));
+  const isPagamentoFatura = descricaoIndicaPagamentoFatura(textoLimpo);
 
 
   let natureza: 'DESPESA' | 'RECEITA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL' = 'DESPESA';
-  if (isPagamentoFatura || lower.includes('transferencia') || lower.includes('transferência') || lower.includes('transferi')) {
+  if (isPagamentoFatura || descricaoIndicaTransferenciaPropria(textoLimpo)) {
     natureza = 'TRANSFERENCIA_PROPRIA';
   } else if (
     lower.includes('aplicação') ||
@@ -384,6 +377,51 @@ export async function callDeepSeekApi(
       };
     },
   }).then((r) => r.parsed);
+}
+
+/** Chamada à API OpenAI-compatible com telemetria de uso. */
+export async function callOpenAIApi(
+  apiKey: string,
+  model: string = 'gpt-4o-mini',
+  promptSistema: string,
+  textoUsuario: string,
+  opcoes?: OpcoesTelemetriaIa
+): Promise<IaLancamentoParsed> {
+  const modeloEfetivo = model || 'gpt-4o-mini';
+  const body = {
+    model: modeloEfetivo,
+    messages: [
+      { role: 'system', content: promptSistema },
+      { role: 'user', content: `Texto a ser analisado:\n\"\"\"${textoUsuario}\"\"\"` },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.1,
+  };
+
+  return UsoIaService.registrarChamada({
+    usuarioId: opcoes?.usuarioId,
+    funcionalidade: opcoes?.funcionalidade || 'CATEGORIZACAO',
+    provedor: 'OPENAI',
+    modelo: modeloEfetivo,
+    loteId: opcoes?.loteId,
+    arquivoId: opcoes?.arquivoId,
+    extrairTokens: (r) => r.tokens,
+    execucao: async () => {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Erro na API OpenAI (${response.status}): ${errText}`);
+      }
+      const data = await response.json() as any;
+      const rawText = data.choices?.[0]?.message?.content;
+      if (!rawText) throw new Error('A resposta da OpenAI não continha texto de saída.');
+      return { parsed: JSON.parse(rawText) as IaLancamentoParsed, tokens: tokensDeUsageOpenAi(data.usage) };
+    },
+  }).then((resultado) => resultado.parsed);
 }
 
 /**

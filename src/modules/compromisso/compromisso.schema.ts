@@ -7,13 +7,14 @@ export const queryVencimentosSchema = z.object({
 export type QueryVencimentosInput = z.infer<typeof queryVencimentosSchema>;
 
 export interface ItemCronogramaVencimento {
-  tipo: 'RECORRENCIA' | 'PARCELAMENTO';
+  tipo: 'RECORRENCIA' | 'PARCELAMENTO' | 'CONTA_PAGAR';
   origemId: string;
   descricao: string;
   valor: number;
   diaVencimento: number;
   dataVencimentoPrevista: string; // YYYY-MM-DD
   essencial?: boolean;
+  status?: string;
   categoria?: {
     id: string;
     nome: string;
@@ -38,5 +39,6 @@ export interface CronogramaVencimentosResponse {
   totalPrevistoMes: number;
   totalRecorrencias: number;
   totalParcelamentos: number;
+  totalContasPagar?: number;
   itens: ItemCronogramaVencimento[];
 }

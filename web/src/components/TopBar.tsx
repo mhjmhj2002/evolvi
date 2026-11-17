@@ -1,14 +1,15 @@
 import React from 'react';
-import { Layers, ShieldAlert, Sparkles, LogOut, ShieldCheck, UserCheck, User, Eye, PiggyBank } from 'lucide-react';
+import { ShieldAlert, LogOut, ShieldCheck, UserCheck, User, Eye, PiggyBank, Bell } from 'lucide-react';
 import type { TopBarProps } from './types.ts';
 import { useAuth } from '../context/AuthContext.tsx';
 
 export const TopBar: React.FC<TopBarProps> = ({
-  faseAtiva,
-  onSelectFase,
+  onGoHome,
   totalSuspeitasPendentes,
+  totalAlertasPendentes,
   onOpenSuspeitas,
   onOpenInvestimentos,
+  onOpenAlertas,
 }) => {
   const { usuario, role, logout } = useAuth();
 
@@ -27,50 +28,16 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <header className="top-bar">
-      <div className="top-bar-brand">
+      <button
+        type="button"
+        className="top-bar-brand top-bar-home-button"
+        onClick={onGoHome}
+        aria-label="Voltar para o Dashboard"
+        title="Voltar para o Dashboard"
+      >
         <div className="top-bar-logo">E</div>
         <span className="top-bar-title">Evolvi</span>
-      </div>
-
-      <div className="phase-selector-container" role="tablist" aria-label="Seletor de Fases Evolutivas">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={faseAtiva === 'FASE_1'}
-          className={`phase-pill ${faseAtiva === 'FASE_1' ? 'active' : ''}`}
-          onClick={() => onSelectFase?.('FASE_1')}
-          title="Fase 1: Zero a Zero (Ativa)"
-        >
-          <Layers size={14} />
-          <span>Fase 1</span>
-        </button>
-
-        <button
-          type="button"
-          role="tab"
-          aria-selected={faseAtiva === 'FASE_2'}
-          className={`phase-pill disabled ${faseAtiva === 'FASE_2' ? 'active' : ''}`}
-          onClick={() => onSelectFase?.('FASE_2')}
-          title="Fase 2: Reserva de Emergência (Em Desenvolvimento)"
-        >
-          <ShieldAlert size={14} />
-          <span>Fase 2</span>
-          <span className="badge-dev">Dev</span>
-        </button>
-
-        <button
-          type="button"
-          role="tab"
-          aria-selected={faseAtiva === 'FASE_3'}
-          className={`phase-pill disabled ${faseAtiva === 'FASE_3' ? 'active' : ''}`}
-          onClick={() => onSelectFase?.('FASE_3')}
-          title="Fase 3: Investimentos (Em Desenvolvimento)"
-        >
-          <Sparkles size={14} />
-          <span>Fase 3</span>
-          <span className="badge-dev">Dev</span>
-        </button>
-      </div>
+      </button>
 
       {usuario && (
         <div className="top-bar-user-area">
@@ -112,10 +79,10 @@ export const TopBar: React.FC<TopBarProps> = ({
               onClick={onOpenSuspeitas}
               title={
                 totalSuspeitasPendentes && totalSuspeitasPendentes > 0
-                  ? `${totalSuspeitasPendentes} divergência(s) pendente(s) na Central de Validação`
-                  : 'Central de Validação de Suspeitas (Malha Fina)'
+                  ? `${totalSuspeitasPendentes} lançamento(s) com pendência(s)`
+                  : 'Lançamentos com pendências'
               }
-              aria-label="Central de Validação"
+              aria-label="Lançamentos com pendências"
               style={{
                 position: 'relative',
                 display: 'flex',
@@ -160,6 +127,66 @@ export const TopBar: React.FC<TopBarProps> = ({
                   }}
                 >
                   {totalSuspeitasPendentes}
+                </span>
+              )}
+            </button>
+          )}
+
+          {onOpenAlertas && (
+            <button
+              type="button"
+              className="btn-alertas-header"
+              onClick={onOpenAlertas}
+              title={
+                totalAlertasPendentes && totalAlertasPendentes > 0
+                  ? `${totalAlertasPendentes} alerta(s) pendente(s)`
+                  : 'Central de Alertas'
+              }
+              aria-label="Alertas"
+              style={{
+                position: 'relative',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background:
+                  totalAlertasPendentes && totalAlertasPendentes > 0
+                    ? 'rgba(234, 179, 8, 0.15)'
+                    : 'rgba(51, 65, 85, 0.4)',
+                border:
+                  totalAlertasPendentes && totalAlertasPendentes > 0
+                    ? '1px solid rgba(234, 179, 8, 0.4)'
+                    : '1px solid var(--border-subtle)',
+                color:
+                  totalAlertasPendentes && totalAlertasPendentes > 0
+                    ? 'var(--status-yellow)'
+                    : 'var(--text-secondary)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '6px 10px',
+                cursor: 'pointer',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                gap: '6px',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <Bell size={16} />
+              <span className="suspeitas-text" style={{ fontSize: '0.78rem' }}>
+                Alertas
+              </span>
+              {totalAlertasPendentes !== undefined && totalAlertasPendentes > 0 && (
+                <span
+                  style={{
+                    backgroundColor: 'var(--status-yellow)',
+                    color: '#000',
+                    borderRadius: '999px',
+                    padding: '1px 6px',
+                    fontSize: '0.7rem',
+                    fontWeight: 800,
+                    minWidth: '18px',
+                    textAlign: 'center',
+                  }}
+                >
+                  {totalAlertasPendentes}
                 </span>
               )}
             </button>

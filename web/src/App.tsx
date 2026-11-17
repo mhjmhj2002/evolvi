@@ -4,10 +4,10 @@ import {
   BottomNav,
   BottomSheet,
   ProtectedRoute,
-  FaseAtiva,
   NavTab,
   ModalRegistroIa,
   LeitorNotaFiscalModal,
+  CentralAlertasModal,
 } from './components/index.ts';
 import { useAuth } from './context/AuthContext.tsx';
 import {
@@ -15,6 +15,7 @@ import {
   TelaLancamentos,
   TelaDiagnostico,
   TelaCompromissos,
+  TelaProjecao,
   TelaCadastros,
   TelaFasesEducativas,
   TelaImportacaoIa,
@@ -40,6 +41,7 @@ import {
   CronogramaVencimentosResponse,
   ParcelamentosResponse,
   ContaItem,
+  ContaPagarItem,
   CategoriaTreeItem,
   ItemCronogramaVencimento,
   HistoricoResumoResponse,
@@ -47,12 +49,13 @@ import {
   PrevisaoSeisMesesResponse,
   DecomposicaoCategoriasResponse,
 } from './api.ts';
+import { getCompetenciaAtual } from './utils/data.ts';
 import { CheckCircle2, Sparkles, Bot, QrCode } from 'lucide-react';
 
 export const App: React.FC = () => {
   const { usuario: authUser, isAuthenticated } = useAuth();
-  const [faseAtiva, setFaseAtiva] = useState<FaseAtiva>('FASE_1');
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
+  const [abaCompromissosInicial, setAbaCompromissosInicial] = useState<'vencimentos' | 'contasPagar' | 'recorrencias' | 'dividas'>('vencimentos');
   const [isSheetOpen, setIsSheetOpen] = useState(false);
 
   // Estados carregados da API - inicializados zerados para cada usuário logado
@@ -63,6 +66,8 @@ export const App: React.FC = () => {
   const [cronograma, setCronograma] = useState<CronogramaVencimentosResponse>(emptyCronogramaVencimentos);
   const [parcelamentos, setParcelamentos] = useState<ParcelamentosResponse>(emptyParcelamentos);
   const [contas, setContas] = useState<ContaItem[]>([]);
+  const [contasPagar, setContasPagar] = useState<ContaPagarItem[]>([]);
+  const [dadosGraficoMensal, setDadosGraficoMensal] = useState<Array<{ competencia: string; totalReceitas: number; totalDespesas: number }>>([]);
   const [categorias, setCategorias] = useState<CategoriaTreeItem[]>([]);
   const [historicoResumo, setHistoricoResumo] = useState<HistoricoResumoResponse>(emptyHistoricoResumo);
   const [historicoCategorias, setHistoricoCategorias] = useState<HistoricoCategoriasResponse>(emptyHistoricoCategorias);
@@ -70,6 +75,8 @@ export const App: React.FC = () => {
   const [decomposicao6M, setDecomposicao6M] = useState<DecomposicaoCategoriasResponse>(emptyDecomposicaoCategorias);
   const [totalGastoMes, setTotalGastoMes] = useState<number>(0.0);
   const [totalSuspeitasPendentes, setTotalSuspeitasPendentes] = useState<number>(0);
+  const [totalAlertasPendentes, setTotalAlertasPendentes] = useState<number>(0);
+  const [isAlertasModalOpen, setIsAlertasModalOpen] = useState<boolean>(false);
 
   // Sincroniza perfil se authUser for atualizado
   useEffect(() => {
@@ -90,6 +97,18 @@ export const App: React.FC = () => {
     }
   };
 
+  // Função auxiliar para atualizar o contador de alertas do sistema
+  const atualizarContadorAlertas = async () => {
+    try {
+      const resAlertas = await apiService.getResumoAlertas();
+      if (resAlertas) {
+        setTotalAlertasPendentes(resAlertas.totalPendentes);
+      }
+    } catch (e) {
+      console.warn('Erro ao verificar alertas pendentes:', e);
+    }
+  };
+
   // Estado do formulário de novo lançamento
   const [formDataMovimento, setFormDataMovimento] = useState(new Date().toISOString().split('T')[0]);
   const [formDescricao, setFormDescricao] = useState('');
@@ -104,7 +123,7 @@ export const App: React.FC = () => {
   const ultimoRecarregamentoRef = useRef<number>(0);
 
   // Função centralizada para sincronizar todos os módulos (Semáforo, Metas, Vencimentos, Parcelamentos, Contas, Movimentos, etc.)
-  const recarregarDadosCompletos = useCallback(async (competenciaRef: string = '2026-10') => {
+  const recarregarDadosCompletos = useCallback(async (competenciaRef: string = getCompetenciaAtual()) => {
     if (!isAuthenticated || !authUser) return;
     ultimoRecarregamentoRef.current = Date.now();
 
@@ -117,6 +136,7 @@ export const App: React.FC = () => {
         resCronograma,
         resParcelamentos,
         resContas,
+        resContasPagar,
         resCategorias,
         resMovimentos,
         resHistResumo,
@@ -124,6 +144,7 @@ export const App: React.FC = () => {
         resPrevisao,
         resDecomposicao,
         resSuspeitas,
+        resAlertas,
       ] = await Promise.all([
         apiService.getPerfil(),
         apiService.getBaseline(),
@@ -132,6 +153,7 @@ export const App: React.FC = () => {
         apiService.getVencimentos(competenciaRef),
         apiService.getParcelamentos(),
         apiService.getContas(),
+        apiService.getContasPagar(),
         apiService.getCategorias(),
         apiService.getMovimentos(competenciaRef),
         apiService.getHistoricoResumo(),
@@ -139,6 +161,7 @@ export const App: React.FC = () => {
         apiService.getPrevisaoSeisMeses(),
         apiService.getDecomposicaoCategorias(competenciaRef),
         apiService.getSuspeitas().catch(() => null),
+        apiService.getResumoAlertas().catch(() => null),
       ]);
 
       if (resPerfil) setPerfil(resPerfil);
@@ -147,11 +170,26 @@ export const App: React.FC = () => {
       if (resMetas) setPlanoMetas(resMetas);
       if (resCronograma) setCronograma(resCronograma);
       if (resParcelamentos) setParcelamentos(resParcelamentos);
+      setContasPagar(resContasPagar?.contas || []);
       if (resHistResumo) setHistoricoResumo(resHistResumo);
+      if (resHistResumo?.fechamentos_mensais?.length) {
+        const resumosMensais = await Promise.all(
+          resHistResumo.fechamentos_mensais.map(async (mes) => {
+            const resMes = await apiService.getMovimentos({ competencia: mes.competencia });
+            return {
+              competencia: mes.competencia,
+              totalReceitas: resMes?.resumo?.totalReceitas || 0,
+              totalDespesas: resMes?.resumo?.totalDespesasConsumo || 0,
+            };
+          }),
+        );
+        setDadosGraficoMensal(resumosMensais);
+      }
       if (resHistCategorias) setHistoricoCategorias(resHistCategorias);
       if (resPrevisao) setPrevisao6M(resPrevisao);
       if (resDecomposicao) setDecomposicao6M(resDecomposicao);
       if (resSuspeitas) setTotalSuspeitasPendentes(resSuspeitas.totalPendentes);
+      if (resAlertas) setTotalAlertasPendentes(resAlertas.totalPendentes);
       if (resContas && resContas.length > 0) {
         setContas(resContas);
         setFormContaId((prev) => prev || resContas[0].id);
@@ -279,544 +317,564 @@ export const App: React.FC = () => {
   return (
     <ProtectedRoute>
       <div className="app-container">
-        {/* 1. Barra Superior com Seletor de Fases e Notificação de Suspeitas */}
+        {/* 1. Barra Superior com Alertas e Validação */}
         <TopBar
-          faseAtiva={faseAtiva}
-          onSelectFase={(fase) => {
-            setFaseAtiva(fase);
-            if (fase !== 'FASE_1') {
-              setActiveTab('fases');
-            }
-          }}
+          onGoHome={() => setActiveTab('dashboard')}
           totalSuspeitasPendentes={totalSuspeitasPendentes}
+          totalAlertasPendentes={totalAlertasPendentes}
           onOpenSuspeitas={() => setActiveTab('suspeitas')}
           onOpenInvestimentos={() => setActiveTab('investimentos')}
+          onOpenAlertas={() => setIsAlertasModalOpen(true)}
         />
 
-      {/* 2. Conteúdo Central Dinâmico de acordo com a aba */}
-      <main className="main-content">
-        {activeTab === 'dashboard' && (
-          <TelaDashboard
-            perfil={perfil}
-            baseline={baseline}
-            semaforo={semaforo}
-            cronograma={cronograma}
-            totalGastoMes={totalGastoMes}
-            totalSuspeitasPendentes={totalSuspeitasPendentes}
-            onNavigateTab={(tab) => setActiveTab(tab)}
-            onOpenNovaTransacao={() => setIsSheetOpen(true)}
-          />
-        )}
+        {/* 2. Conteúdo Central Dinâmico de acordo com a aba */}
+        <main className="main-content">
+          {activeTab === 'dashboard' && (
+            <TelaDashboard
+              perfil={perfil}
+              baseline={baseline}
+              totalGastoMes={totalGastoMes}
+              contasPagar={contasPagar}
+              dadosGraficoMensal={dadosGraficoMensal}
+              historicoResumo={historicoResumo}
+              totalSuspeitasPendentes={totalSuspeitasPendentes}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onOpenContasPagar={() => {
+                setAbaCompromissosInicial('contasPagar');
+                setActiveTab('compromissos');
+              }}
+              onOpenNovaTransacao={() => setIsSheetOpen(true)}
+            />
+          )}
 
-        {activeTab === 'investimentos' && (
-          <TelaInvestimentos
-            usuarioId={authUser?.id}
-            contas={contas}
-            onNavigateTab={(tab) => setActiveTab(tab)}
-            onAporteCriado={async () => {
-              try {
-                const [resMovimentos] = await Promise.all([
-                  apiService.getMovimentos('2026-10'),
-                  atualizarContadorSuspeitas(),
-                ]);
-                if (resMovimentos?.resumo) {
-                  setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
-                }
-              } catch (e) {
-                console.warn('Erro ao atualizar dados pós-aporte:', e);
-              }
-            }}
-          />
-        )}
-
-        {activeTab === 'suspeitas' && (
-          <TelaValidacaoSuspeitas
-            usuarioId={authUser?.id}
-            categorias={categorias}
-            onNavigateTab={(tab) => setActiveTab(tab)}
-            onVereditoAplicado={async () => {
-              await Promise.all([
-                atualizarContadorSuspeitas(),
-                (async () => {
-                  const resMovimentos = await apiService.getMovimentos('2026-10');
+          {activeTab === 'investimentos' && (
+            <TelaInvestimentos
+              usuarioId={authUser?.id}
+              contas={contas}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onAporteCriado={async () => {
+                try {
+                  const [resMovimentos] = await Promise.all([
+                    apiService.getMovimentos(getCompetenciaAtual()),
+                    atualizarContadorSuspeitas(),
+                  ]);
                   if (resMovimentos?.resumo) {
                     setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
                   }
-                })(),
-              ]);
-            }}
-          />
-        )}
+                } catch (e) {
+                  console.warn('Erro ao atualizar dados pós-aporte:', e);
+                }
+              }}
+            />
+          )}
 
-        {activeTab === 'lancamentos' && (
-          <TelaLancamentos
-            usuarioId={authUser?.id}
-            contas={contas}
-            categorias={categorias}
-            onOpenNovoLancamento={() => setIsSheetOpen(true)}
-            /* onOpenLeitorNotaFiscal={() => setIsNfeModalOpen(true)} - oculto da tela temporariamente a pedido do usuário */
-            onNavigateTab={(tab) => setActiveTab(tab)}
-            onMovimentoModificado={async () => {
-              try {
-                const [resMovimentos] = await Promise.all([
-                  apiService.getMovimentos('2026-10'),
+          {activeTab === 'suspeitas' && (
+            <TelaValidacaoSuspeitas
+              usuarioId={authUser?.id}
+              categorias={categorias}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onVereditoAplicado={async () => {
+                await Promise.all([
                   atualizarContadorSuspeitas(),
+                  (async () => {
+                    const resMovimentos = await apiService.getMovimentos(getCompetenciaAtual());
+                    if (resMovimentos?.resumo) {
+                      setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
+                    }
+                  })(),
                 ]);
-                if (resMovimentos?.resumo) {
-                  setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
+              }}
+            />
+          )}
+
+          {activeTab === 'lancamentos' && (
+            <TelaLancamentos
+              usuarioId={authUser?.id}
+              contas={contas}
+              categorias={categorias}
+              onOpenNovoLancamento={() => setIsSheetOpen(true)}
+              /* onOpenLeitorNotaFiscal={() => setIsNfeModalOpen(true)} - oculto da tela temporariamente a pedido do usuário */
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onMovimentoModificado={async () => {
+                try {
+                  const [resMovimentos] = await Promise.all([
+                    apiService.getMovimentos(getCompetenciaAtual()),
+                    atualizarContadorSuspeitas(),
+                  ]);
+                  if (resMovimentos?.resumo) {
+                    setTotalGastoMes(resMovimentos.resumo.totalDespesasConsumo);
+                  }
+                } catch (e) {
+                  console.warn('Erro ao atualizar resumo pós-modificação:', e);
                 }
-              } catch (e) {
-                console.warn('Erro ao atualizar resumo pós-modificação:', e);
-              }
-            }}
-          />
-        )}
+              }}
+            />
+          )}
 
-        {activeTab === 'importacao' && (
-          <TelaImportacaoIa
-            usuarioId={authUser?.id}
-            onNavigateTab={(tab) => setActiveTab(tab)}
-            onNovasContasOuMovimentos={async () => {
-              try {
-                await recarregarDadosCompletos();
-                // Pequeno retry após 2 segundos para sincronizar o fim de workers de consolidação/fatura
-                setTimeout(() => {
-                  recarregarDadosCompletos();
-                }, 2000);
-              } catch (e) {
-                console.warn('Erro ao atualizar dados pós-importação:', e);
-              }
-            }}
-          />
-        )}
-
-        {activeTab === 'semaforo' && (
-          <TelaDiagnostico
-            baseline={baseline}
-            semaforo={semaforo}
-            planoMetas={planoMetas}
-            historicoResumo={historicoResumo}
-            historicoCategorias={historicoCategorias}
-            onMetasAtualizadas={(novoPlano) => setPlanoMetas(novoPlano)}
-            onNavigateTab={(tab) => setActiveTab(tab)}
-          />
-        )}
-
-        {activeTab === 'compromissos' && (
-          <TelaCompromissos
-            cronograma={cronograma}
-            parcelamentos={parcelamentos}
-            previsao={previsao6M}
-            decomposicao={decomposicao6M}
-            categorias={categorias}
-            onRegistrarPagamento={handleRegistrarPagamentoCronograma}
-            onNovoCompromisso={() => setIsSheetOpen(true)}
-            onAtualizarDados={recarregarDadosCompletos}
-            onAtualizarPrevisao={async () => {
-              const [resPrev, resDec] = await Promise.all([
-                apiService.getPrevisaoSeisMeses(),
-                apiService.getDecomposicaoCategorias('2026-10'),
-              ]);
-              if (resPrev) setPrevisao6M(resPrev);
-              if (resDec) setDecomposicao6M(resDec);
-            }}
-          />
-        )}
-
-        {activeTab === 'cadastros' && (
-          <TelaCadastros
-            perfil={perfil}
-            contas={contas}
-            categorias={categorias}
-            onContasAtualizadas={async () => {
-              try {
-                const resContas = await apiService.getContas();
-                if (resContas) {
-                  setContas(resContas);
+          {activeTab === 'importacao' && (
+            <TelaImportacaoIa
+              usuarioId={authUser?.id}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+              onNovasContasOuMovimentos={async () => {
+                try {
+                  await recarregarDadosCompletos();
+                  // Pequeno retry após 2 segundos para sincronizar o fim de workers de consolidação/fatura
+                  setTimeout(() => {
+                    recarregarDadosCompletos();
+                  }, 2000);
+                } catch (e) {
+                  console.warn('Erro ao atualizar dados pós-importação:', e);
                 }
-              } catch (err) {
-                console.warn('Erro ao atualizar lista de contas:', err);
-              }
-            }}
-            onRendaAtualizada={async (novaRenda) => {
-              setPerfil((prev) => ({ ...prev, rendaBaseMensal: novaRenda }));
-              try {
-                const [resBaseline, resSemaforo, resMetas] = await Promise.all([
-                  apiService.getBaseline(),
-                  apiService.getSemaforo(),
-                  apiService.getPlanoMetas(),
+              }}
+            />
+          )}
+
+          {activeTab === 'semaforo' && (
+            <TelaDiagnostico
+              baseline={baseline}
+              semaforo={semaforo}
+              planoMetas={planoMetas}
+              historicoResumo={historicoResumo}
+              historicoCategorias={historicoCategorias}
+              onMetasAtualizadas={(novoPlano) => setPlanoMetas(novoPlano)}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+            />
+          )}
+
+          {activeTab === 'compromissos' && (
+            <TelaCompromissos
+              cronograma={cronograma}
+              parcelamentos={parcelamentos}
+              categorias={categorias}
+              contas={contas}
+              tabInicial={abaCompromissosInicial}
+              onRegistrarPagamento={handleRegistrarPagamentoCronograma}
+              onNovoCompromisso={() => setIsSheetOpen(true)}
+              onAtualizarDados={recarregarDadosCompletos}
+            />
+          )}
+
+          {activeTab === 'projecao' && (
+            <TelaProjecao
+              previsao={previsao6M}
+              decomposicao={decomposicao6M}
+              onAtualizar={async () => {
+                const [resPrev, resDec] = await Promise.all([
+                  apiService.getPrevisaoSeisMeses(),
+                  apiService.getDecomposicaoCategorias(getCompetenciaAtual()),
                 ]);
-                if (resBaseline) setBaseline(resBaseline);
-                if (resSemaforo) setSemaforo(resSemaforo);
-                if (resMetas) setPlanoMetas(resMetas);
-              } catch {
-                // Modo offline: atualiza baseline e semáforo localmente
-                setBaseline((prev) => ({
-                  ...prev,
-                  renda_base: novaRenda,
-                  gap_zero_a_zero: Number((prev.media_mensal - novaRenda).toFixed(2)),
-                  pct_excesso_renda: novaRenda > 0 ? Number((((prev.media_mensal - novaRenda) / novaRenda) * 100).toFixed(2)) : 0,
-                }));
-                setSemaforo((prev) => ({
-                  ...prev,
-                  renda_base: novaRenda,
-                }));
-              }
-            }}
-            onExtratoImportado={async () => {
-              try {
-                const [resMovimentos, resContas, resBaseline, resSemaforo] = await Promise.all([
-                  apiService.getMovimentos('2026-10'),
-                  apiService.getContas(),
-                  apiService.getBaseline(),
-                  apiService.getSemaforo(),
-                ]);
-                if (resContas) setContas(resContas);
-                if (resBaseline) setBaseline(resBaseline);
-                if (resSemaforo) setSemaforo(resSemaforo);
-                if (resMovimentos?.movimentos) {
-                  const totalGasto = resMovimentos.movimentos
-                    .filter((m) => m.natureza === 'DESPESA' && m.status === 'CONCILIADO')
-                    .reduce((acc, m) => acc + m.valor, 0);
-                  setTotalGastoMes(totalGasto);
+                if (resPrev) setPrevisao6M(resPrev);
+                if (resDec) setDecomposicao6M(resDec);
+              }}
+            />
+          )}
+
+          {activeTab === 'cadastros' && (
+            <TelaCadastros
+              perfil={perfil}
+              contas={contas}
+              categorias={categorias}
+              onContasAtualizadas={async () => {
+                try {
+                  const resContas = await apiService.getContas();
+                  if (resContas) {
+                    setContas(resContas);
+                  }
+                } catch (err) {
+                  console.warn('Erro ao atualizar lista de contas:', err);
                 }
-              } catch {
-                // Modo offline
-              }
-            }}
-          />
-        )}
+              }}
+              onRendaAtualizada={async (novaRenda) => {
+                setPerfil((prev) => ({ ...prev, rendaBaseMensal: novaRenda }));
+                try {
+                  const [resBaseline, resSemaforo, resMetas] = await Promise.all([
+                    apiService.getBaseline(),
+                    apiService.getSemaforo(),
+                    apiService.getPlanoMetas(),
+                  ]);
+                  if (resBaseline) setBaseline(resBaseline);
+                  if (resSemaforo) setSemaforo(resSemaforo);
+                  if (resMetas) setPlanoMetas(resMetas);
+                } catch {
+                  // Modo offline: atualiza baseline e semáforo localmente
+                  setBaseline((prev) => ({
+                    ...prev,
+                    renda_base: novaRenda,
+                    gap_zero_a_zero: Number((prev.media_mensal - novaRenda).toFixed(2)),
+                    pct_excesso_renda: novaRenda > 0 ? Number((((prev.media_mensal - novaRenda) / novaRenda) * 100).toFixed(2)) : 0,
+                  }));
+                  setSemaforo((prev) => ({
+                    ...prev,
+                    renda_base: novaRenda,
+                  }));
+                }
+              }}
+              onExtratoImportado={async () => {
+                try {
+                  const [resMovimentos, resContas, resBaseline, resSemaforo] = await Promise.all([
+                    apiService.getMovimentos(getCompetenciaAtual()),
+                    apiService.getContas(),
+                    apiService.getBaseline(),
+                    apiService.getSemaforo(),
+                  ]);
+                  if (resContas) setContas(resContas);
+                  if (resBaseline) setBaseline(resBaseline);
+                  if (resSemaforo) setSemaforo(resSemaforo);
+                  if (resMovimentos?.movimentos) {
+                    const totalGasto = resMovimentos.movimentos
+                      .filter((m) => m.natureza === 'DESPESA' && m.status === 'CONCILIADO')
+                      .reduce((acc, m) => acc + m.valor, 0);
+                    setTotalGastoMes(totalGasto);
+                  }
+                } catch {
+                  // Modo offline
+                }
+              }}
+            />
+          )}
 
-        {activeTab === 'fases' && <TelaFasesEducativas />}
-      </main>
+          {activeTab === 'fases' && <TelaFasesEducativas />}
+        </main>
 
-      {/* 3. Barra de Navegação Inferior Mobile Ergonômica */}
-      <BottomNav
-        activeTab={activeTab}
-        onSelectTab={(tab) => {
-          setActiveTab(tab);
-          if (tab !== 'fases') {
-            setFaseAtiva('FASE_1');
-          }
-        }}
-        onOpenNewTransaction={() => setIsSheetOpen(true)}
-      />
+        {/* 3. Barra de Navegação Inferior Mobile Ergonômica */}
+        <BottomNav
+          activeTab={activeTab}
+          onSelectTab={(tab) => {
+            setActiveTab(tab);
+          }}
+        />
 
-      {/* 4. Bottom Sheet para Registro Rápido de Movimento com Suporte a IA */}
-      <BottomSheet
-        isOpen={isSheetOpen}
-        onClose={() => {
-          setIsSheetOpen(false);
-          setIsIaModalOpen(false);
-          setFormAvisoIa(null);
-        }}
-        title={isIaModalOpen ? "Registro com Inteligência Artificial" : "Novo Lançamento Rápido"}
-      >
-        {isIaModalOpen ? (
-          <ModalRegistroIa
-            contas={contas}
-            categorias={categorias}
-            onParsedSucesso={(parsed) => {
-              // Preenche os campos do formulário para o usuário conferir (Human-in-the-loop)
-              setFormDescricao(parsed.descricao);
-              setFormValor(parsed.valor.toFixed(2));
-              setFormNatureza(
-                parsed.natureza === 'APORTE_PATRIMONIAL'
-                  ? 'TRANSFERENCIA_PROPRIA'
-                  : parsed.natureza
-              );
-              if (parsed.contaId) setFormContaId(parsed.contaId);
-              if (parsed.categoriaId) setFormCategoriaId(parsed.categoriaId);
-              setFormIsPagamentoFatura(parsed.isPagamentoFatura || false);
-              setFormAvisoIa('Dados preenchidos pela IA! Por favor, confira os campos antes de confirmar.');
-              setIsIaModalOpen(false);
-            }}
-            onCancelar={() => setIsIaModalOpen(false)}
-          />
-        ) : formMensagemSucesso ? (
-          <div
-            style={{
-              padding: '24px 16px',
-              textAlign: 'center',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '10px',
-              color: 'var(--status-green)',
-            }}
-          >
-            <CheckCircle2 size={36} />
-            <div style={{ fontWeight: 700, fontSize: '1rem' }}>{formMensagemSucesso}</div>
-          </div>
-        ) : (
-          <form
-            onSubmit={handleNovoLancamento}
-            style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
-          >
-            {/* Banner de atalho para IA e Nota Fiscal */}
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '10px 12px',
-              borderRadius: 'var(--radius-sm)',
-              background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.15) 0%, rgba(129, 140, 248, 0.15) 100%)',
-              border: '1px solid rgba(56, 189, 248, 0.3)',
-              gap: '8px',
-              flexWrap: 'wrap',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Sparkles size={18} color="var(--brand-primary)" />
-                <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Entrada Rápida Inteligente:</span>
-              </div>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <button
-                  type="button"
-                  onClick={() => setIsNfeModalOpen(true)}
-                  style={{
-                    background: 'rgba(52, 211, 153, 0.15)',
-                    color: '#34d399',
-                    border: '1px solid rgba(52, 211, 153, 0.4)',
-                    borderRadius: '6px',
-                    padding: '5px 10px',
-                    fontSize: '0.75rem',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                  }}
-                  title="Ler Nota Fiscal (NFC-e / QR Code / Chave 44 dígitos)"
-                >
-                  <QrCode size={13} /> Ler Nota Fiscal
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsIaModalOpen(true)}
-                  style={{
-                    background: 'var(--brand-primary)',
-                    color: 'var(--text-inverse)',
-                    border: 'none',
-                    borderRadius: '6px',
-                    padding: '5px 10px',
-                    fontSize: '0.75rem',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                  }}
-                >
-                  <Bot size={13} /> Usar IA
-                </button>
-              </div>
+        {/* 4. Bottom Sheet para Registro Rápido de Movimento com Suporte a IA */}
+        <BottomSheet
+          isOpen={isSheetOpen}
+          onClose={() => {
+            setIsSheetOpen(false);
+            setIsIaModalOpen(false);
+            setFormAvisoIa(null);
+          }}
+          title={isIaModalOpen ? "Registro com Inteligência Artificial" : "Novo Lançamento Rápido"}
+        >
+          {isIaModalOpen ? (
+            <ModalRegistroIa
+              contas={contas}
+              categorias={categorias}
+              onParsedSucesso={(parsed) => {
+                // Preenche os campos do formulário para o usuário conferir (Human-in-the-loop)
+                setFormDescricao(parsed.descricao);
+                setFormValor(parsed.valor.toFixed(2));
+                setFormNatureza(
+                  parsed.natureza === 'APORTE_PATRIMONIAL'
+                    ? 'TRANSFERENCIA_PROPRIA'
+                    : parsed.natureza
+                );
+                if (parsed.contaId) setFormContaId(parsed.contaId);
+                if (parsed.categoriaId) setFormCategoriaId(parsed.categoriaId);
+                setFormIsPagamentoFatura(parsed.isPagamentoFatura || false);
+                setFormAvisoIa('Dados preenchidos pela IA! Por favor, confira os campos antes de confirmar.');
+                setIsIaModalOpen(false);
+              }}
+              onCancelar={() => setIsIaModalOpen(false)}
+            />
+          ) : formMensagemSucesso ? (
+            <div
+              style={{
+                padding: '24px 16px',
+                textAlign: 'center',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '10px',
+                color: 'var(--status-green)',
+              }}
+            >
+              <CheckCircle2 size={36} />
+              <div style={{ fontWeight: 700, fontSize: '1rem' }}>{formMensagemSucesso}</div>
             </div>
-
-            {formAvisoIa && (
+          ) : (
+            <form
+              onSubmit={handleNovoLancamento}
+              style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}
+            >
+              {/* Banner de atalho para IA e Nota Fiscal */}
               <div style={{
-                padding: '8px 12px',
-                borderRadius: '6px',
-                backgroundColor: formChaveAcessoNfe ? 'rgba(52, 211, 153, 0.12)' : 'rgba(56, 189, 248, 0.12)',
-                border: formChaveAcessoNfe ? '1px solid rgba(52, 211, 153, 0.3)' : '1px solid rgba(56, 189, 248, 0.25)',
-                fontSize: '0.8rem',
-                color: formChaveAcessoNfe ? '#34d399' : 'var(--brand-primary)',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '6px',
+                justifyContent: 'space-between',
+                padding: '10px 12px',
+                borderRadius: 'var(--radius-sm)',
+                background: 'linear-gradient(135deg, rgba(56, 189, 248, 0.15) 0%, rgba(129, 140, 248, 0.15) 100%)',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+                gap: '8px',
+                flexWrap: 'wrap',
               }}>
-                {formChaveAcessoNfe ? <QrCode size={14} /> : <Sparkles size={14} />}
-                {formAvisoIa}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Sparkles size={18} color="var(--brand-primary)" />
+                  <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>Entrada Rápida Inteligente:</span>
+                </div>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setIsNfeModalOpen(true)}
+                    style={{
+                      background: 'rgba(52, 211, 153, 0.15)',
+                      color: '#34d399',
+                      border: '1px solid rgba(52, 211, 153, 0.4)',
+                      borderRadius: '6px',
+                      padding: '5px 10px',
+                      fontSize: '0.75rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                    }}
+                    title="Ler Nota Fiscal (NFC-e / QR Code / Chave 44 dígitos)"
+                  >
+                    <QrCode size={13} /> Ler Nota Fiscal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsIaModalOpen(true)}
+                    style={{
+                      background: 'var(--brand-primary)',
+                      color: 'var(--text-inverse)',
+                      border: 'none',
+                      borderRadius: '6px',
+                      padding: '5px 10px',
+                      fontSize: '0.75rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                    }}
+                  >
+                    <Bot size={13} /> Usar IA
+                  </button>
+                </div>
               </div>
-            )}
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '12px' }}>
+              {formAvisoIa && (
+                <div style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  backgroundColor: formChaveAcessoNfe ? 'rgba(52, 211, 153, 0.12)' : 'rgba(56, 189, 248, 0.12)',
+                  border: formChaveAcessoNfe ? '1px solid rgba(52, 211, 153, 0.3)' : '1px solid rgba(56, 189, 248, 0.25)',
+                  fontSize: '0.8rem',
+                  color: formChaveAcessoNfe ? '#34d399' : 'var(--brand-primary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}>
+                  {formChaveAcessoNfe ? <QrCode size={14} /> : <Sparkles size={14} />}
+                  {formAvisoIa}
+                </div>
+              )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '12px' }}>
+                <div className="form-group">
+                  <label className="form-label">Descrição</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Ex: Supermercado, Almoço, Gasolina"
+                    value={formDescricao}
+                    onChange={(e) => setFormDescricao(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Data</label>
+                  <input
+                    type="date"
+                    className="form-input"
+                    value={formDataMovimento}
+                    onChange={(e) => setFormDataMovimento(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div className="form-group">
+                  <label className="form-label">Valor (R$)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    className="form-input"
+                    placeholder="0,00"
+                    value={formValor}
+                    onChange={(e) => setFormValor(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Natureza</label>
+                  <select
+                    className="form-select"
+                    value={formNatureza}
+                    onChange={(e) =>
+                      setFormNatureza(
+                        e.target.value as 'DESPESA' | 'RECEITA' | 'TRANSFERENCIA_PROPRIA'
+                      )
+                    }
+                  >
+                    <option value="DESPESA">Despesa (Consumo)</option>
+                    <option value="RECEITA">Receita</option>
+                    <option value="TRANSFERENCIA_PROPRIA">Transferência / Fatura</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div className="form-group">
+                  <label className="form-label">Conta</label>
+                  <select
+                    className="form-select"
+                    value={formContaId}
+                    onChange={(e) => setFormContaId(e.target.value)}
+                  >
+                    {contas.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nome}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Categoria POF</label>
+                  <select
+                    className="form-select"
+                    value={formCategoriaId}
+                    onChange={(e) => setFormCategoriaId(e.target.value)}
+                  >
+                    {categorias.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.nome}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {formChaveAcessoNfe && (
+                <div
+                  style={{
+                    backgroundColor: 'rgba(52, 211, 153, 0.08)',
+                    border: '1px solid rgba(52, 211, 153, 0.3)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '10px 12px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '6px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.8rem', fontWeight: 600, color: '#34d399' }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                      <QrCode size={14} /> Cupom Fiscal NFC-e Vinculado
+                    </span>
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      Anti-duplicidade Ativo
+                    </span>
+                  </div>
+                  <div style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
+                    {formChaveAcessoNfe.replace(/(.{4})/g, '$1 ').trim()}
+                  </div>
+                  {!formValor && (
+                    <div style={{ fontSize: '0.78rem', color: 'var(--status-yellow)', fontWeight: 500, marginTop: '2px' }}>
+                      * O valor não constava no QR Code da SEFAZ. Por favor, confira e preencha o valor no campo acima.
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="form-group">
-                <label className="form-label">Descrição</label>
+                <label className="form-label">Observação (Opcional)</label>
                 <input
                   type="text"
                   className="form-input"
-                  placeholder="Ex: Supermercado, Almoço, Gasolina"
-                  value={formDescricao}
-                  onChange={(e) => setFormDescricao(e.target.value)}
-                  required
+                  placeholder="Ex: Itens da compra, detalhes, número do cupom"
+                  value={formObservacao}
+                  onChange={(e) => setFormObservacao(e.target.value)}
                 />
               </div>
-              <div className="form-group">
-                <label className="form-label">Data</label>
-                <input
-                  type="date"
-                  className="form-input"
-                  value={formDataMovimento}
-                  onChange={(e) => setFormDataMovimento(e.target.value)}
-                  required
-                />
-              </div>
-            </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <div className="form-group">
-                <label className="form-label">Valor (R$)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  className="form-input"
-                  placeholder="0,00"
-                  value={formValor}
-                  onChange={(e) => setFormValor(e.target.value)}
-                  required
-                />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Natureza</label>
-                <select
-                  className="form-select"
-                  value={formNatureza}
-                  onChange={(e) =>
-                    setFormNatureza(
-                      e.target.value as 'DESPESA' | 'RECEITA' | 'TRANSFERENCIA_PROPRIA'
-                    )
-                  }
+              {formNatureza === 'TRANSFERENCIA_PROPRIA' && (
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    fontSize: '0.82rem',
+                    color: 'var(--text-secondary)',
+                    cursor: 'pointer',
+                  }}
                 >
-                  <option value="DESPESA">Despesa (Consumo)</option>
-                  <option value="RECEITA">Receita</option>
-                  <option value="TRANSFERENCIA_PROPRIA">Transferência / Fatura</option>
-                </select>
-              </div>
-            </div>
+                  <input
+                    type="checkbox"
+                    checked={formIsPagamentoFatura}
+                    onChange={(e) => setFormIsPagamentoFatura(e.target.checked)}
+                  />
+                  Pagamento de fatura de cartão (Anti-dupla contagem)
+                </label>
+              )}
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <div className="form-group">
-                <label className="form-label">Conta</label>
-                <select
-                  className="form-select"
-                  value={formContaId}
-                  onChange={(e) => setFormContaId(e.target.value)}
-                >
-                  {contas.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.nome}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Categoria POF</label>
-                <select
-                  className="form-select"
-                  value={formCategoriaId}
-                  onChange={(e) => setFormCategoriaId(e.target.value)}
-                >
-                  {categorias.map((cat) => (
-                    <option key={cat.id} value={cat.id}>
-                      {cat.nome}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
+              <button type="submit" className="btn-primary" style={{ marginTop: '6px' }}>
+                Confirmar Lançamento
+              </button>
+            </form>
+          )}
+        </BottomSheet>
 
-            {formChaveAcessoNfe && (
-              <div
-                style={{
-                  backgroundColor: 'rgba(52, 211, 153, 0.08)',
-                  border: '1px solid rgba(52, 211, 153, 0.3)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '10px 12px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.8rem', fontWeight: 600, color: '#34d399' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                    <QrCode size={14} /> Cupom Fiscal NFC-e Vinculado
-                  </span>
-                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                    Anti-duplicidade Ativo
-                  </span>
-                </div>
-                <div style={{ fontFamily: 'monospace', fontSize: '0.72rem', color: 'var(--text-secondary)', wordBreak: 'break-all' }}>
-                  {formChaveAcessoNfe.replace(/(.{4})/g, '$1 ').trim()}
-                </div>
-                {!formValor && (
-                  <div style={{ fontSize: '0.78rem', color: 'var(--status-yellow)', fontWeight: 500, marginTop: '2px' }}>
-                    * O valor não constava no QR Code da SEFAZ. Por favor, confira e preencha o valor no campo acima.
-                  </div>
-                )}
-              </div>
-            )}
+        {/* 5. Modal de Leitura de Nota Fiscal (QR Code / Digitação 44 Dígitos / NFC-e) */}
+        <LeitorNotaFiscalModal
+          isOpen={isNfeModalOpen}
+          onClose={() => setIsNfeModalOpen(false)}
+          onNotaCapturada={(dadosNota) => {
+            setFormDescricao(dadosNota.descricaoSugerida || 'Compra NFC-e');
+            if (dadosNota.valorTotal && dadosNota.valorTotal > 0) {
+              setFormValor(dadosNota.valorTotal.toFixed(2));
+            } else {
+              setFormValor('');
+            }
+            if (dadosNota.dataEmissao) {
+              setFormDataMovimento(dadosNota.dataEmissao);
+            }
+            setFormNatureza('DESPESA');
+            if (dadosNota.categoriaSugeridaId) {
+              setFormCategoriaId(dadosNota.categoriaSugeridaId);
+            }
+            setFormChaveAcessoNfe(dadosNota.chaveAcesso);
+            setFormObservacao(`Cupom Fiscal NFC-e (${dadosNota.uf || 'BR'}) - Chave: ${dadosNota.chaveAcesso.replace(/(.{4})/g, '$1 ').trim()}`);
+            setFormAvisoIa(
+              `Nota Fiscal lida com sucesso! (${dadosNota.uf || 'BR'} - Modelo ${dadosNota.modelo || 'NFC-e'}). ${dadosNota.valorTotal ? 'Valor preenchido.' : 'Informe o valor total do cupom.'}`
+            );
+            setIsNfeModalOpen(false);
+            setIsSheetOpen(true);
+          }}
+          onAbrirMovimentoExistente={(_movimentoExistente) => {
+            setIsNfeModalOpen(false);
+            setActiveTab('lancamentos');
+          }}
+        />
 
-            <div className="form-group">
-              <label className="form-label">Observação (Opcional)</label>
-              <input
-                type="text"
-                className="form-input"
-                placeholder="Ex: Itens da compra, detalhes, número do cupom"
-                value={formObservacao}
-                onChange={(e) => setFormObservacao(e.target.value)}
-              />
-            </div>
-
-            {formNatureza === 'TRANSFERENCIA_PROPRIA' && (
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  fontSize: '0.82rem',
-                  color: 'var(--text-secondary)',
-                  cursor: 'pointer',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={formIsPagamentoFatura}
-                  onChange={(e) => setFormIsPagamentoFatura(e.target.checked)}
-                />
-                Pagamento de fatura de cartão (Anti-dupla contagem)
-              </label>
-            )}
-
-            <button type="submit" className="btn-primary" style={{ marginTop: '6px' }}>
-              Confirmar Lançamento
-            </button>
-          </form>
-        )}
-      </BottomSheet>
-
-      {/* 5. Modal de Leitura de Nota Fiscal (QR Code / Digitação 44 Dígitos / NFC-e) */}
-      <LeitorNotaFiscalModal
-        isOpen={isNfeModalOpen}
-        onClose={() => setIsNfeModalOpen(false)}
-        onNotaCapturada={(dadosNota) => {
-          setFormDescricao(dadosNota.descricaoSugerida || 'Compra NFC-e');
-          if (dadosNota.valorTotal && dadosNota.valorTotal > 0) {
-            setFormValor(dadosNota.valorTotal.toFixed(2));
-          } else {
-            setFormValor('');
-          }
-          if (dadosNota.dataEmissao) {
-            setFormDataMovimento(dadosNota.dataEmissao);
-          }
-          setFormNatureza('DESPESA');
-          if (dadosNota.categoriaSugeridaId) {
-            setFormCategoriaId(dadosNota.categoriaSugeridaId);
-          }
-          setFormChaveAcessoNfe(dadosNota.chaveAcesso);
-          setFormObservacao(`Cupom Fiscal NFC-e (${dadosNota.uf || 'BR'}) - Chave: ${dadosNota.chaveAcesso.replace(/(.{4})/g, '$1 ').trim()}`);
-          setFormAvisoIa(
-            `Nota Fiscal lida com sucesso! (${dadosNota.uf || 'BR'} - Modelo ${dadosNota.modelo || 'NFC-e'}). ${dadosNota.valorTotal ? 'Valor preenchido.' : 'Informe o valor total do cupom.'}`
-          );
-          setIsNfeModalOpen(false);
-          setIsSheetOpen(true);
-        }}
-        onAbrirMovimentoExistente={(_movimentoExistente) => {
-          setIsNfeModalOpen(false);
-          setActiveTab('lancamentos');
-        }}
-      />
-    </div>
+        {/* 6. Central de Alertas Modal */}
+        <CentralAlertasModal
+          isOpen={isAlertasModalOpen}
+          onClose={() => setIsAlertasModalOpen(false)}
+          onAlertaModificado={async () => {
+            await Promise.all([
+              atualizarContadorAlertas(),
+              recarregarDadosCompletos(),
+            ]);
+          }}
+          onNavigateTab={(tab) => {
+            setIsAlertasModalOpen(false);
+            setActiveTab(tab);
+          }}
+        />
+      </div>
     </ProtectedRoute>
   );
 };

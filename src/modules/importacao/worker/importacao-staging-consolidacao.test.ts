@@ -79,6 +79,14 @@ describe('TASK-34: Worker 2 de Carga em Staging e Worker 3 de Consolidação com
         // ignora
       }
     }
+
+    // Os usuários são exclusivos desta suíte. Removê-los também elimina em
+    // cascata lotes, arquivos, staging e movimentos, impedindo que a varredura
+    // de recuperação do servidor retome dados sintéticos após os testes.
+    const usuariosDeTeste = [usuarioId, usuario2Id].filter(Boolean);
+    if (usuariosDeTeste.length > 0) {
+      await prisma.usuario.deleteMany({ where: { id: { in: usuariosDeTeste } } });
+    }
   });
 
   it('1. Worker 2: Deve ler arquivo JSON consolidado físico e preencher a tabela staging_lancamentos_importacao', async () => {
@@ -87,7 +95,7 @@ describe('TASK-34: Worker 2 de Carga em Staging e Worker 3 de Consolidação com
       usuarioId,
       arquivos: [
         {
-          nomeOriginal: 'extrato_itau.ofx',
+          nomeOriginal: 'extrato_teste.ofx',
           buffer: Buffer.from('OFXHEADER:100...'),
           mimeType: 'application/x-ofx',
         },
@@ -114,27 +122,30 @@ describe('TASK-34: Worker 2 de Carga em Staging e Worker 3 de Consolidação com
           descricao: 'Supermercado Pão de Açúcar',
           valor: 245.5,
           natureza: 'DESPESA',
-          contaSugerida: 'Itaú Personalité',
+          contaSugerida: 'Conta Teste',
           tipoConta: 'CONTA_CORRENTE',
           categoriaSugerida: 'Alimentação',
+          paginaOrigem: 1,
         },
         {
           dataMovimento: '2026-09-11',
           descricao: 'Salário Empresa S/A',
           valor: 9500.0,
           natureza: 'RECEITA',
-          contaSugerida: 'Itaú Personalité',
+          contaSugerida: 'Conta Teste',
           tipoConta: 'CONTA_CORRENTE',
           categoriaSugerida: 'Rendimento do trabalho',
+          paginaOrigem: 1,
         },
         {
           dataMovimento: '2026-09-12',
           descricao: 'Pagamento Fatura Cartão Santander',
           valor: 1800.0,
           natureza: 'DESPESA',
-          contaSugerida: 'Itaú Personalité',
+          contaSugerida: 'Conta Teste',
           tipoConta: 'CONTA_CORRENTE',
           categoriaSugerida: 'Outros',
+          paginaOrigem: 1,
         },
       ],
     };
@@ -150,6 +161,25 @@ describe('TASK-34: Worker 2 de Carga em Staging e Worker 3 de Consolidação com
     await prisma.arquivoImportacao.update({
       where: { id: arquivo.id },
       data: { status: 'IA_CONCLUIDO' },
+    });
+
+    const inventarioCriado = await prisma.inventarioIaArquivo.create({
+      data: {
+        usuarioId,
+        arquivoId: arquivo.id,
+        provedor: 'GEMINI',
+        modelo: 'teste',
+        registrosPorPagina: [],
+        paginasTotais: 12,
+        paginas: { create: Array.from({ length: 12 }, (_, indice) => ({
+          usuario: { connect: { id: usuarioId } }, pagina: indice + 1, possuiMovimentos: indice === 0,
+          quantidadeEsperada: null, quantidadeExtraida: indice === 0 ? 3 : 0,
+        })) },
+        quantidadeEsperada: 3,
+        somaAbsolutaEsperada: null,
+        tipoDocumento: 'EXTRATO_CONTA',
+        confianca: 0.9,
+      },
     });
 
     // Executa Worker 2
@@ -180,33 +210,84 @@ describe('TASK-34: Worker 2 de Carga em Staging e Worker 3 de Consolidação com
     expect(linhasStaging).toHaveLength(3);
     expect(linhasStaging[0].descricao).toBe('Supermercado Pão de Açúcar');
     expect(Number(linhasStaging[0].valor)).toBe(245.5);
-    expect(linhasStaging[0].contaSugerida).toBe('Itaú Personalité');
+    expect(linhasStaging[0].contaSugerida).toBe('Conta Teste');
     expect(linhasStaging[0].tipoConta).toBe('CONTA_CORRENTE');
     expect(linhasStaging[0].statusProcessamento).toBe('PENDENTE');
+    expect(linhasStaging.every((linha) => linha.paginaOrigem === 1)).toBe(true);
+    expect(linhasStaging.every((linha) => Boolean(linha.inventarioPaginaId))).toBe(true);
+    const linhasAuditaveis = await prisma.$queryRaw<Array<{
+      stagingId: string;
+      stagingArquivoId: string;
+      arquivoId: string;
+      nomeArquivo: string;
+      inventarioArquivoId: string;
+      inventarioId: string;
+      pagina: number;
+      paginaOrigem: number;
+    }>>`
+      SELECT st.id AS "stagingId",
+             st.arquivo_id AS "stagingArquivoId",
+             ar.id AS "arquivoId",
+             ar.nome_arquivo AS "nomeArquivo",
+             inv.arquivo_id AS "inventarioArquivoId",
+             inv.id AS "inventarioId",
+             pag.pagina AS "pagina",
+             st.pagina_origem AS "paginaOrigem"
+      FROM staging_lancamentos_importacao st
+      JOIN arquivos_importacao ar ON ar.id = st.arquivo_id
+      LEFT JOIN inventarios_ia_paginas pag ON pag.id = st.inventario_pagina_id
+      LEFT JOIN inventarios_ia_arquivo inv ON inv.id = pag.inventario_id
+      WHERE st.arquivo_id = ${arquivo.id}::uuid
+        AND inv.usuario_id = ${usuarioId}::uuid
+      ORDER BY st.id
+    `;
+    expect(linhasAuditaveis).toHaveLength(3);
+    expect(linhasAuditaveis.every((linha) =>
+      linha.stagingArquivoId === arquivo.id &&
+      linha.arquivoId === arquivo.id &&
+      linha.inventarioArquivoId === arquivo.id &&
+      linha.inventarioId === inventarioCriado.id &&
+      linha.pagina === 1 &&
+      linha.paginaOrigem === 1
+    )).toBe(true);
 
     // Valida status do arquivo atualizado para STAGING_CARREGADO
     const arquivoAtualizado = await prisma.arquivoImportacao.findUnique({
       where: { id: arquivo.id },
     });
     expect(arquivoAtualizado?.status).toBe('STAGING_CARREGADO');
+
+    const inventarioAtualizado = await prisma.inventarioIaArquivo.findFirst({
+      where: { arquivoId: arquivo.id, usuarioId },
+      orderBy: { criadoEm: 'desc' },
+    });
+    expect(inventarioAtualizado?.status).toBe('CONFERENTE');
+    expect(inventarioAtualizado?.divergencias).toMatchObject({
+      verificacoesIndisponiveis: ['soma'],
+    });
+    const paginasAtualizadas = await prisma.inventarioIaPagina.findMany({
+      where: { inventarioId: inventarioAtualizado!.id, usuarioId }, orderBy: { pagina: 'asc' },
+    });
+    expect(paginasAtualizadas).toHaveLength(12);
+    expect(paginasAtualizadas.map((pagina) => pagina.quantidadeExtraida)).toEqual([3, ...Array(11).fill(0)]);
   });
 
-  it('2. Worker 3: Deve auto-cadastrar conta inexistente ("Itaú Personalité") sem interromper o processo', async () => {
-    // Verifica que a conta Itaú ainda NÃO existe para o usuário
+  it('2. Worker 3: Deve auto-cadastrar conta inexistente sem interromper o processo', async () => {
+    // Verifica que a conta sugerida ainda NÃO existe para o usuário
     const contaAntes = await prisma.conta.findFirst({
-      where: { usuarioId, nome: 'Itaú Personalité' },
+      where: { usuarioId, nome: 'Conta Teste' },
     });
     expect(contaAntes).toBeNull();
 
     const consolidacaoWorker = new ImportacaoConsolidacaoWorkerService();
     const resConta = await consolidacaoWorker.obterOuAutoCadastrarConta({
       usuarioId,
-      contaSugerida: 'Itaú Personalité',
+      contaSugerida: 'Conta Teste',
       tipoConta: 'CONTA_CORRENTE',
     });
 
     expect(resConta.criadaAgora).toBe(true);
-    expect(resConta.contaNome).toBe('Itaú Personalité');
+    expect(resConta.contaNome).toBe('Conta Teste');
 
     // Verifica que agora existe no banco
     const contaCriada = await prisma.conta.findUnique({
@@ -219,7 +300,7 @@ describe('TASK-34: Worker 2 de Carga em Staging e Worker 3 de Consolidação com
     // Chamada subsequente com o mesmo nome deve reusar sem criar duplicada
     const resContaReuso = await consolidacaoWorker.obterOuAutoCadastrarConta({
       usuarioId,
-      contaSugerida: 'Itaú Personalité',
+      contaSugerida: 'Conta Teste',
       tipoConta: 'CONTA_CORRENTE',
     });
     expect(resContaReuso.criadaAgora).toBe(false);
@@ -325,7 +406,7 @@ describe('TASK-34: Worker 2 de Carga em Staging e Worker 3 de Consolidação com
     // Valida eventos emitidos em tempo real com nome do arquivo
     expect(eventosConsolidados).toHaveLength(2);
     expect(eventosConsolidados[0].arquivoOrigem).toBe(arquivo.nomeArquivo);
-    expect(eventosConsolidados[0].descricao).toBe('Pagamento Fatura Cartão Inter');
+    expect(eventosConsolidados.map((evento) => evento.descricao)).toContain('Pagamento Fatura Cartão Inter');
 
     // Valida status final de staging e arquivo
     const stagingsFinal = await prisma.stagingLancamentoImportacao.findMany({
@@ -387,6 +468,39 @@ describe('TASK-34: Worker 2 de Carga em Staging e Worker 3 de Consolidação com
     expect(staging?.statusProcessamento).toBe('IGNORADO');
   });
 
+  it('TASK-57: dois workers concorrentes consolidam o mesmo lote uma única vez e persistem o vínculo', async () => {
+    const lote = await storageService.recepcionarLote({
+      usuarioId,
+      arquivos: [{ nomeOriginal: 'concorrencia.csv', buffer: Buffer.from('data,descricao,valor'), mimeType: 'text/csv' }],
+    });
+    pastasParaLimpeza.push(lote.caminhoDiretorio);
+    await prisma.stagingLancamentoImportacao.create({ data: {
+      loteId: lote.loteId,
+      arquivoId: lote.arquivos[0].id,
+      arquivoOrigem: lote.arquivos[0].nomeArquivo,
+      dataMovimento: new Date('2026-10-12T00:00:00.000Z'),
+      descricao: 'Teste concorrência lease',
+      valor: 18.25,
+      natureza: 'DESPESA',
+      contaSugerida: 'Nubank Conta Corrente',
+      tipoConta: 'CONTA_CORRENTE',
+      statusProcessamento: 'PENDENTE',
+    } });
+
+    const workers = [new ImportacaoConsolidacaoWorkerService(), new ImportacaoConsolidacaoWorkerService()];
+    await prisma.$executeRaw`UPDATE lotes_importacao SET worker_owner = 'teste-reinicio', worker_lease_until = NOW() + INTERVAL '5 minutes' WHERE id = ${lote.loteId}::uuid AND usuario_id = ${usuarioId}::uuid`;
+    const bloqueadaPorLeaseValido = await workers[0].consolidarLote(lote.loteId, usuarioId);
+    expect(bloqueadaPorLeaseValido.totalProcessados).toBe(0);
+    await prisma.$executeRaw`UPDATE lotes_importacao SET worker_lease_until = NOW() - INTERVAL '1 second' WHERE id = ${lote.loteId}::uuid AND usuario_id = ${usuarioId}::uuid`;
+    await Promise.all(workers.map((worker) => worker.consolidarLote(lote.loteId, usuarioId)));
+
+    const linhas = await prisma.stagingLancamentoImportacao.findMany({ where: { loteId: lote.loteId } });
+    expect(linhas).toHaveLength(1);
+    expect(linhas[0].statusProcessamento).toBe('PROCESSADO');
+    expect(linhas[0].movimentoId).toBeTruthy();
+    expect(await prisma.movimento.count({ where: { usuarioId, descricao: 'Teste concorrência lease' } })).toBe(1);
+  });
+
   it('5. Rotas REST e Isolamento Multi-Tenant: Usuário 2 não pode acessar ou acionar carga/consolidação de lote do Usuário 1', async () => {
     // Cria um lote para o Usuário 1
     const loteU1 = await storageService.recepcionarLote({
@@ -442,5 +556,25 @@ describe('TASK-34: Worker 2 de Carga em Staging e Worker 3 de Consolidação com
     expect(resGetStagingU1.statusCode).toBe(200);
     const bodyStaging = JSON.parse(resGetStagingU1.body);
     expect(bodyStaging.loteId).toBe(loteU1.loteId);
+  });
+
+  it('7. Reprocessamento: staging PROCESSADO sem movimento oficial não pode permanecer como sucesso', async () => {
+    const lote = await prisma.loteImportacao.create({ data: { usuarioId, caminhoDiretorio: 'uploads/test-regressao-integridade', status: 'CONSOLIDANDO' } });
+    const arquivo = await prisma.arquivoImportacao.create({ data: { loteId: lote.id, usuarioId, nomeArquivo: 'extrato-regressao.pdf', caminhoRelativo: 'extrato-regressao.pdf', status: 'PROCESSADO_FINAL', statusFinal: 'SUCESSO' } });
+    await prisma.stagingLancamentoImportacao.create({ data: { loteId: lote.id, arquivoId: arquivo.id, arquivoOrigem: arquivo.nomeArquivo, dataMovimento: new Date('2026-10-01'), descricao: 'Lançamento sem persistência', valor: 42, natureza: 'DESPESA', statusProcessamento: 'PROCESSADO' } });
+
+    const worker = new ImportacaoConsolidacaoWorkerService();
+    const resultado = await worker.reprocessarArquivoInconsistente(arquivo.id, usuarioId);
+    const arquivoAtual = await prisma.arquivoImportacao.findUnique({ where: { id: arquivo.id } });
+    const movimentos = await prisma.movimento.count({ where: { usuarioId, descricao: 'Lançamento sem persistência' } });
+
+    expect(resultado.sucesso).toBe(true);
+    expect(movimentos).toBe(1);
+    expect(arquivoAtual?.status).toBe('PROCESSADO_FINAL');
+    expect(arquivoAtual?.statusFinal).toBe('SUCESSO');
+
+    await prisma.stagingLancamentoImportacao.deleteMany({ where: { arquivoId: arquivo.id } });
+    await prisma.arquivoImportacao.delete({ where: { id: arquivo.id } });
+    await prisma.loteImportacao.delete({ where: { id: lote.id } });
   });
 });

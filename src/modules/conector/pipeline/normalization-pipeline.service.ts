@@ -5,6 +5,7 @@ import {
   extrairRaizComerciante,
   correspondemRegraVendedor,
 } from '../../movimento/movimento.util.js';
+import { descricaoIndicaPagamentoFatura } from '../../movimento/natureza-movimento.util.js';
 
 export interface IngestItemParams {
   contaId: string;
@@ -93,14 +94,7 @@ export class NormalizationPipelineService {
 
         // Regra anti-dupla contagem e aportes patrimoniais
         let naturezaFinal = tx.natureza;
-        if (
-          tx.isPagamentoFatura ||
-          /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|fatura\s*cart[aã]o|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
-            tx.descricao
-          ) ||
-          (/pag\s*boleto|pagamento\s*boleto|pagto\s*boleto/i.test(tx.descricao) &&
-            /nu\s*pagamentos|nubank|c6\s*bank|banco\s*c6|bradescard|itaucard|cart[aã]o|credicard|santander\s*cart[oõ]es/i.test(tx.descricao))
-        ) {
+        if (tx.isPagamentoFatura || descricaoIndicaPagamentoFatura(tx.descricao)) {
           naturezaFinal = 'TRANSFERENCIA_PROPRIA';
           result.pagamentosFaturaConvertidos++;
         } else if (

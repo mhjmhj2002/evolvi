@@ -222,8 +222,15 @@ export class MediaMensalService {
       throw new Error('Registro de exclusão não encontrado.');
     }
 
-    await this.prisma.exclusaoMovimentoMedia.delete({
+    // Ao invés de deletar (o que faria o motor recriar como automática se a compra for isolada/outlier),
+    // marca como inativa soberanamente ou deleta marcando ativo: false
+    await this.prisma.exclusaoMovimentoMedia.update({
       where: { id: exclusaoId },
+      data: {
+        ativo: false,
+        motivo: `${exclusao.motivo} (Restaurado pelo usuário)`,
+        atualizadoEm: new Date(),
+      },
     });
 
     await motorExclusaoMediaService.consolidarMedias(usuarioId);
@@ -318,6 +325,10 @@ export class MediaMensalService {
       compInicio = `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, '0')}`;
     }
 
+    // Recalcula antes da leitura para que restaurações/exclusões recentes não
+    // retornem uma linha consolidada stale (especialmente após ações manuais).
+    await motorExclusaoMediaService.consolidarMedias(usuarioId, nMeses, compInicio);
+
     // Busca tabela consolidada
     let itens = await this.prisma.mediaMensalConsolidada.findMany({
       where: {
@@ -335,9 +346,8 @@ export class MediaMensalService {
       ],
     });
 
-    // Se ainda não foi consolidado para este corte, executa consolidação imediatamente
+    // Compatibilidade para instalações onde a consolidação não criou linhas.
     if (itens.length === 0) {
-      await motorExclusaoMediaService.consolidarMedias(usuarioId, nMeses, compInicio);
       itens = await this.prisma.mediaMensalConsolidada.findMany({
         where: {
           usuarioId,

@@ -66,3 +66,12 @@ export function formatarDataHoraIso(valor?: Date | string | null, incluirSegundo
   return `${ano}-${mes}-${dia} ${hora}:${minuto}`;
 }
 
+/**
+ * Retorna a competência atual (ano-mês em andamento) no formato 'AAAA-MM' (YYYY-MM).
+ */
+export function getCompetenciaAtual(dataBase: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const ano = dataBase.getFullYear();
+  const mes = pad(dataBase.getMonth() + 1);
+  return `${ano}-${mes}`;
+}

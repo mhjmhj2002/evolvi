@@ -4,6 +4,7 @@ import { hashPassword, comparePassword } from './password.service.js';
 import { cadastroSchema, loginSchema } from './auth.schema.js';
 import { env } from '../../config/env.js';
 import { authEventBus } from '../../infrastructure/events/auth-event-bus.js';
+import { limpezaUploadsLoginWorkerService } from '../importacao/worker/limpeza-uploads-login-worker.service.js';
 
 export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   // POST /api/auth/cadastro
@@ -62,12 +63,21 @@ export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
       { expiresIn: env.JWT_EXPIRES_IN }
     );
 
+    await limpezaUploadsLoginWorkerService.limparParaUsuario(usuario.id);
+
     reply.setCookie('token', token, {
       path: '/',
       httpOnly: true,
       secure: env.NODE_ENV === 'production',
       sameSite: 'lax',
       maxAge: 24 * 60 * 60, // Padrão 24h
+    });
+
+    // Disparo assíncrono para Worker em segundo plano no cadastro também
+    authEventBus.emitUsuarioAutenticado({
+      usuarioId: usuario.id,
+      email: usuario.email,
+      timestamp: new Date(),
     });
 
     return reply.status(201).send({
@@ -113,6 +123,9 @@ export const authRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
         message: 'E-mail ou senha incorretos.',
       });
     }
+
+    // O login só responde depois de remover os artefatos antigos deste usuário.
+    await limpezaUploadsLoginWorkerService.limparParaUsuario(usuario.id);
 
     const token = app.jwt.sign(
       { sub: usuario.id, email: usuario.email, role: usuario.role },

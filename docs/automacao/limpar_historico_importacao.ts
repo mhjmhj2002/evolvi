@@ -148,6 +148,11 @@ async function main() {
   });
   console.log(`🛡️  HISTÓRIO DE GASTOS DE IA PRESERVADO: ${totalUsosIa} registros em uso_ia_logs.`);
 
+  // TASK-52: médias globais de custo/tempo por IA são independentes dos dados
+  // financeiros do usuário e nunca podem ser apagadas por este comando.
+  const totalMediasIa = await prisma.iaMediasConsolidadas.count();
+  console.log(`🛡️  MÉDIAS DE USO DAS IAs PRESERVADAS: ${totalMediasIa} registros em ia_medias_consolidadas.`);
+
   // Lotes precisam ser lidos ANTES da transação: ela os exclui. Guardamos o
   // caminhoDiretorio (layout antigo 'uploads/<folder>') para apagar o disco depois.
   const lotes = await prisma.loteImportacao.findMany({
@@ -179,7 +184,12 @@ async function main() {
       where: { usuarioId: usuario.id },
     });
 
-    // 5. Histórico e alertas de conciliação
+    // 5. Documentos de origem (BUG-29), após remover movimentos dependentes
+    const delFaturas = await tx.fatura.deleteMany({
+      where: { usuarioId: usuario.id },
+    });
+
+    // 6. Histórico e alertas de conciliação
     const delHistorico = await tx.historicoImportacaoArquivo.deleteMany({
       where: { usuarioId: usuario.id },
     });
@@ -187,44 +197,58 @@ async function main() {
       where: { usuarioId: usuario.id },
     });
 
-    // 6. Contratos de Parcelamento
+    // 7. Vencimentos/contas a pagar e seus ciclos de renovação
+    const delContasPagar = await tx.contaPagar.deleteMany({
+      where: { usuarioId: usuario.id },
+    });
+    const delCiclosContasPagar = await tx.controleCicloMensalContasPagar.deleteMany({
+      where: { usuarioId: usuario.id },
+    });
+    const delRecorrencias = await tx.recorrencia.deleteMany({
+      where: { usuarioId: usuario.id },
+    });
+    const delMetasZeroAZero = await tx.metaZeroAZero.deleteMany({
+      where: { usuarioId: usuario.id },
+    });
+
+    // 8. Contratos de Parcelamento (base da Projeção)
     const delParcelamentos = await tx.parcelamento.deleteMany({
       where: { usuarioId: usuario.id },
     });
 
-    // 7. Staging de lançamentos de importação
+    // 9. Staging de lançamentos de importação
     const delStaging = await tx.stagingLancamentoImportacao.deleteMany({
       where: { lote: { usuarioId: usuario.id } },
     });
 
-    // 7.1. TASK-50: tentativas de extração por arquivo (tentativas_arquivo_importacao).
+    // 9.1. TASK-50: tentativas de extração por arquivo (tentativas_arquivo_importacao).
     // Deve ocorrer ANTES da exclusão dos arquivos. `uso_ia_logs` (TASK-49) é preservado.
     const delTentativas = await tx.tentativaArquivoImportacao.deleteMany({
       where: { usuarioId: usuario.id },
     });
 
-    // 8. Desvincula reenvios (auto-relacionamento arquivoOriginalId) antes de excluir arquivos
+    // 10. Desvincula reenvios (auto-relacionamento arquivoOriginalId) antes de excluir arquivos
     await tx.arquivoImportacao.updateMany({
       where: { usuarioId: usuario.id },
       data: { arquivoOriginalId: null },
     });
 
-    // 9. Arquivos de importação
+    // 11. Arquivos de importação
     const delArquivos = await tx.arquivoImportacao.deleteMany({
       where: { usuarioId: usuario.id },
     });
 
-    // 10. Lotes de importação
+    // 12. Lotes de importação
     const delLotes = await tx.loteImportacao.deleteMany({
       where: { usuarioId: usuario.id },
     });
 
-    // 11. Dados brutos Open Finance (caso existam)
+    // 13. Dados brutos Open Finance (caso existam)
     const delDadosBrutos = await tx.dadoBrutoOpenFinance.deleteMany({
       where: { usuarioId: usuario.id },
     });
 
-    // 12. Médias consolidadas históricas e regras de exclusão da média
+    // 14. Médias consolidadas históricas e regras de exclusão da média
     const delMediasConsolidadas = await tx.mediaMensalConsolidada.deleteMany({
       where: { usuarioId: usuario.id },
     });
@@ -235,13 +259,35 @@ async function main() {
       where: { usuarioId: usuario.id },
     });
 
+    // Barreira de segurança: se qualquer tabela protegida diminuir, a transação
+    // inteira sofre rollback, inclusive todas as remoções acima.
+    const [configuracoesDepois, usosIaDepois, mediasIaDepois] = await Promise.all([
+      tx.configuracaoIaUsuario.count({ where: { usuarioId: usuario.id } }),
+      tx.usoIaLog.count({ where: { usuarioId: usuario.id } }),
+      tx.iaMediasConsolidadas.count(),
+    ]);
+    if (configuracoesDepois < totalIas) {
+      throw new Error(`Proteção de IA: configurações diminuíram de ${totalIas} para ${configuracoesDepois}; limpeza cancelada.`);
+    }
+    if (usosIaDepois < totalUsosIa) {
+      throw new Error(`Proteção de IA: registros de uso diminuíram de ${totalUsosIa} para ${usosIaDepois}; limpeza cancelada.`);
+    }
+    if (mediasIaDepois < totalMediasIa) {
+      throw new Error(`Proteção de IA: médias globais diminuíram de ${totalMediasIa} para ${mediasIaDepois}; limpeza cancelada.`);
+    }
+
     return {
       delSuspeitas: delSuspeitas.count,
       delRateios: delRateios.count,
       delMovimentos: delMovimentos.count,
+      delFaturas: delFaturas.count,
       delHistorico: delHistorico.count,
       delAlertas: delAlertas.count,
       delParcelamentos: delParcelamentos.count,
+      delContasPagar: delContasPagar.count,
+      delCiclosContasPagar: delCiclosContasPagar.count,
+      delRecorrencias: delRecorrencias.count,
+      delMetasZeroAZero: delMetasZeroAZero.count,
       delStaging: delStaging.count,
       delTentativas: delTentativas.count,
       delArquivos: delArquivos.count,
@@ -257,9 +303,14 @@ async function main() {
   console.log('                          RELATÓRIO DE LIMPEZA                                ');
   console.log('==============================================================================');
   console.log(`- Movimentos Financeiros excluídos:       ${resultado.delMovimentos}`);
+  console.log(`- Faturas e documentos de origem excluídos: ${resultado.delFaturas}`);
   console.log(`- Rateios de Movimentos excluídos:         ${resultado.delRateios}`);
   console.log(`- Suspeitas / Central Validação limpas:   ${resultado.delSuspeitas}`);
   console.log(`- Contratos de Parcelamento excluídos:    ${resultado.delParcelamentos}`);
+  console.log(`- Vencimentos/Contas a Pagar excluídos:   ${resultado.delContasPagar}`);
+  console.log(`- Ciclos de vencimentos excluídos:         ${resultado.delCiclosContasPagar}`);
+  console.log(`- Recorrências excluídas:                  ${resultado.delRecorrencias}`);
+  console.log(`- Metas Zero a Zero da Projeção excluídas: ${resultado.delMetasZeroAZero}`);
   console.log(`- Alertas de Conciliação limpos:           ${resultado.delAlertas}`);
   console.log(`- Histórico de Arquivos catalogados:      ${resultado.delHistorico}`);
   console.log(`- Registros na Tabela Staging excluídos:  ${resultado.delStaging}`);
@@ -280,6 +331,12 @@ async function main() {
   for (const ia of checagemIas) {
     console.log(`  * ${ia.provedor} (${ia.modelo})`);
   }
+  const [usosIaFinais, mediasIaFinais] = await Promise.all([
+    prisma.usoIaLog.count({ where: { usuarioId: usuario.id } }),
+    prisma.iaMediasConsolidadas.count(),
+  ]);
+  console.log(`✔ Registros de uso de IA preservados: ${usosIaFinais}.`);
+  console.log(`✔ Médias globais de IA preservadas: ${mediasIaFinais}.`);
 
   // ---------------------------------------------------------------------------
   // Remoção dos ARQUIVOS FÍSICOS — somente DEPOIS da transação: se ela falhasse e

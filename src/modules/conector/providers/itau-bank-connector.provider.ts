@@ -5,6 +5,7 @@ import {
   BankTransactionRaw,
   BankInvoiceRaw,
 } from '../types/bank-connector.interface.js';
+import { descricaoIndicaPagamentoFatura } from '../../movimento/natureza-movimento.util.js';
 
 export interface ItauCredentials {
   clientId?: string;
@@ -38,13 +39,7 @@ export class ItauBankConnectorProvider implements IBankConnectorProvider {
     const dUpper = desc.toUpperCase();
 
     // 1. Anti-Dupla Contagem: Pagamentos de fatura de cartão Itaú / outros bancos debitadas em conta corrente
-    if (
-      /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|itau\s*card|itaucard|fatura\s*cart[aã]o|debito\s*automatico\s*fatura|pagto\s*eletron\s*cobranca\s*itau|pag\s*fatura/i.test(
-        desc
-      ) ||
-      (/pag\s*boleto|pagamento\s*boleto|pagto\s*boleto/i.test(desc) &&
-        /nu\s*pagamentos|nubank|c6\s*bank|banco\s*c6|bradescard|itaucard|cart[aã]o|credicard|santander\s*cart[oõ]es/i.test(desc))
-    ) {
+    if (descricaoIndicaPagamentoFatura(desc)) {
       return {
         categoriaSugerida: 'Outras Despesas Correntes',
         natureza: 'TRANSFERENCIA_PROPRIA',

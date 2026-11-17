@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { prisma } from '../../infrastructure/database/prisma.js';
 import { TipoDocumentoImportado, TipoAlertaConciliacao, StatusAlertaConciliacao } from '@prisma/client';
-import { PdfTextExtractor } from '../conector/parsers/pdf-text-extractor.js';
+import { inferirTipoDocumentoImportado } from './classificacao-documento.util.js';
 
 export interface CatalogarArquivoInput {
   usuarioId: string;
@@ -19,128 +19,7 @@ export interface DispensarAlertaInput {
   motivoDispensa: string;
 }
 
-const MESES_MAP: Record<string, number> = {
-  janeiro: 1, jan: 1,
-  fevereiro: 2, fev: 2,
-  marco: 3, março: 3, mar: 3,
-  abril: 4, abr: 4,
-  maio: 5, mai: 5,
-  junho: 6, jun: 6,
-  julho: 7, jul: 7,
-  agosto: 8, ago: 8,
-  setembro: 9, set: 9,
-  outubro: 10, out: 10,
-  novembro: 11, nov: 11,
-  dezembro: 12, dez: 12,
-};
-
 export class ConciliacaoService {
-  /**
-   * Extrai o período coberto formalmente pelo documento a partir de cabeçalhos
-   * de texto (PDF/OFX/CSV) ou nomenclatura do arquivo (ex.: Extrato_Neon_2025-12_a_2026-09.pdf).
-   */
-  public extrairPeriodoDocumento(
-    texto?: string | null,
-    nomeArquivo?: string | null
-  ): { inicio: Date; fim: Date } | null {
-    const fontes = [texto, nomeArquivo].filter(Boolean) as string[];
-
-    for (const fonte of fontes) {
-      // 1. "Período de 31/12/2025 a 16/09/2026" ou "01/01/2026 até 30/06/2026"
-      const r1 = /(?:per[íi]odo[^\d\n\r]{0,35}|de\s+)?(\d{2})[\/\-](\d{2})[\/\-](\d{4})\s*(?:a|at[ée]|-)\s*(\d{2})[\/\-](\d{2})[\/\-](\d{4})/i;
-      const m1 = fonte.match(r1);
-      if (m1) {
-        return {
-          inicio: new Date(Date.UTC(+m1[3], +m1[2] - 1, +m1[1])),
-          fim: new Date(Date.UTC(+m1[6], +m1[5] - 1, +m1[4])),
-        };
-      }
-
-      // 2. "16 de setembro de 2025 até 16 de setembro de 2026"
-      const r2 = /(\d{1,2})\s+de\s+([a-zç]+)\s+de\s+(\d{4})\s*(?:a|at[ée]|-)\s*(\d{1,2})\s+de\s+([a-zç]+)\s+de\s+(\d{4})/i;
-      const m2 = fonte.match(r2);
-      if (m2) {
-        const mes1 = MESES_MAP[m2[2].toLowerCase()];
-        const mes2 = MESES_MAP[m2[5].toLowerCase()];
-        if (mes1 && mes2) {
-          return {
-            inicio: new Date(Date.UTC(+m2[3], mes1 - 1, +m2[1])),
-            fim: new Date(Date.UTC(+m2[6], mes2 - 1, +m2[4])),
-          };
-        }
-      }
-
-      // 3. "YYYY-MM a YYYY-MM" ou "YYYY-MM_a_YYYY-MM" (ex: Extrato_Neon_2025-12_a_2026-09.pdf)
-      const r3 = /(\d{4})-(\d{2})\s*(?:a|at[ée]|_a_|-)\s*(\d{4})-(\d{2})/i;
-      const m3 = fonte.match(r3);
-      if (m3) {
-        return {
-          inicio: new Date(Date.UTC(+m3[1], +m3[2] - 1, 1)),
-          fim: new Date(Date.UTC(+m3[3], +m3[4], 0)),
-        };
-      }
-
-      // 4. "DD-MM-YYYY a DD-MM-YYYY" (ex: Extrato-19-08-2026-a-19-09-2026-CSV.csv)
-      const r4 = /(\d{2})[-_](\d{2})[-_](\d{4})[-_ ]*(?:a|at[ée]|_a_)[-_ ]*(\d{2})[-_](\d{2})[-_](\d{4})/i;
-      const m4 = fonte.match(r4);
-      if (m4) {
-        return {
-          inicio: new Date(Date.UTC(+m4[3], +m4[2] - 1, +m4[1])),
-          fim: new Date(Date.UTC(+m4[6], +m4[5] - 1, +m4[4])),
-        };
-      }
-
-      // 5. "01JUN2026_30JUN2026" (Nubank CSV)
-      const r5 = /(\d{2})([A-Z]{3})(\d{4})_(\d{2})([A-Z]{3})(\d{4})/i;
-      const m5 = fonte.match(r5);
-      if (m5) {
-        const mes1 = MESES_MAP[m5[2].toLowerCase()];
-        const mes2 = MESES_MAP[m5[5].toLowerCase()];
-        if (mes1 && mes2) {
-          return {
-            inicio: new Date(Date.UTC(+m5[3], mes1 - 1, +m5[1])),
-            fim: new Date(Date.UTC(+m5[6], mes2 - 1, +m5[4])),
-          };
-        }
-      }
-      // 6. Fatura Nubank: "Período vigente: 09 SET a 09 OUT" acompanhado de "Data de vencimento: 16 OUT 2026" ou "FATURA 16 OUT 2026"
-      const rNubankVigente = /Per[íi]odo\s+vigente:\s*(\d{1,2})\s+([A-Za-zç]+)\s+a\s+(\d{1,2})\s+([A-Za-zç]+)/i;
-      const rNubankVenc = /(?:vencimento:\s*|FATURA\s+)(\d{1,2})\s+([A-Za-zç]+)\s+(\d{4})/i;
-      const mVig = fonte.match(rNubankVigente);
-      const mVenc = fonte.match(rNubankVenc);
-      if (mVig && mVenc) {
-        const anoVenc = +mVenc[3];
-        const mesFim = MESES_MAP[mVig[4].toLowerCase().slice(0, 3)];
-        const diaFim = +mVig[3];
-        const mesIni = MESES_MAP[mVig[2].toLowerCase().slice(0, 3)];
-        const diaIni = +mVig[1];
-        if (mesFim && mesIni) {
-          const anoIni = mesIni > mesFim ? anoVenc - 1 : anoVenc;
-          return {
-            inicio: new Date(Date.UTC(anoIni, mesIni - 1, diaIni)),
-            fim: new Date(Date.UTC(anoVenc, mesFim - 1, diaFim)),
-          };
-        }
-      }
-
-      // 7. Vencimento isolado em fatura (ex: "vencimento: 16 MAR 2026" ou "16-Nubank_2026-03-16.pdf")
-      if (mVenc) {
-        const mesVenc = MESES_MAP[mVenc[2].toLowerCase().slice(0, 3)];
-        if (mesVenc) {
-          const anoVenc = +mVenc[3];
-          const diaVenc = +mVenc[1];
-          // Competência é o mês/ano do vencimento da fatura
-          return {
-            inicio: new Date(Date.UTC(anoVenc, mesVenc - 2, diaVenc)),
-            fim: new Date(Date.UTC(anoVenc, mesVenc - 1, diaVenc)),
-          };
-        }
-      }
-    }
-
-    return null;
-  }
-
   /**
    * Cataloga metadados estruturados do arquivo em HistoricoImportacaoArquivo
    * após a consolidação completa de seus lançamentos staging.
@@ -167,128 +46,15 @@ export class ConciliacaoService {
       include: { lote: true },
     });
 
-    const nomeArquivo = arquivo?.nomeArquivo || '';
     const totalTransacoes = stagings.length;
 
-    // Determina o período do extrato:
-    // Prioridade 1: Período explícito fornecido no input
-    // Prioridade 2: Período extraído do arquivo físico (PDF/OFX/CSV) ou de seu nome
-    // Prioridade 3: Menor e maior dataMovimento dos lançamentos staging
+    // Usa datas explícitas já validadas ou o intervalo dos lançamentos extraídos.
     let periodoInicio: Date = input.periodoInicio || stagings[0].dataMovimento;
     let periodoFim: Date = input.periodoFim || stagings[stagings.length - 1].dataMovimento;
     let dataVencimentoDetectada: Date | null = arquivo?.faturaDataVencimento || null;
-
-    if (!input.periodoInicio || !input.periodoFim) {
-      let textoArquivo: string | null = null;
-      let caminhoResolvido: string | null = null;
-
-      if (arquivo?.caminhoRelativo) {
-        if (fs.existsSync(arquivo.caminhoRelativo)) {
-          caminhoResolvido = arquivo.caminhoRelativo;
-        } else if (arquivo.lote?.caminhoDiretorio) {
-          const candidatoDiretorio = path.resolve(arquivo.lote.caminhoDiretorio, arquivo.caminhoRelativo);
-          if (fs.existsSync(candidatoDiretorio)) {
-            caminhoResolvido = candidatoDiretorio;
-          }
-        }
-      }
-
-      if (caminhoResolvido) {
-        try {
-          if (caminhoResolvido.toLowerCase().endsWith('.pdf')) {
-            const buf = fs.readFileSync(caminhoResolvido);
-            textoArquivo = PdfTextExtractor.extrairTexto(buf);
-          } else {
-            textoArquivo = fs.readFileSync(caminhoResolvido, 'utf-8').slice(0, 5000);
-          }
-        } catch {
-          // Fallback silencioso para nomenclatura ou datas dos stagings
-        }
-      }
-
-      const periodoDetectado = this.extrairPeriodoDocumento(textoArquivo, nomeArquivo);
-      if (periodoDetectado) {
-        if (!input.periodoInicio) periodoInicio = periodoDetectado.inicio;
-        if (!input.periodoFim) periodoFim = periodoDetectado.fim;
-      }
-
-      if (textoArquivo) {
-        // Detecta vencimento específico de fatura Nubank ou geral por extenso (ex: "vencimento: 16 OUT 2026")
-        const rVenc = /(?:vencimento:\s*|FATURA\s+)(\d{1,2})\s+([A-Za-zç]+)\s+(\d{4})/i;
-        const mV = textoArquivo.match(rVenc);
-        if (mV) {
-          const mesV = MESES_MAP[mV[2].toLowerCase().slice(0, 3)];
-          if (mesV) {
-            dataVencimentoDetectada = new Date(Date.UTC(+mV[3], mesV - 1, +mV[1]));
-          }
-        }
-
-        // Detecta vencimento padrão Santander / boletos (ex: "Total a Pagar ... Vencimento ... R$ 566,51 15/03/2026")
-        if (!dataVencimentoDetectada) {
-          const rVencData = /(?:Vencimento|Total a Pagar)[\s\S]{1,250}?(?:R\$\s*[\d\.,]+)?\s+(\d{2})\/(\d{2})\/(20\d{2})/i;
-          const mVD = textoArquivo.match(rVencData);
-          if (mVD) {
-            dataVencimentoDetectada = new Date(Date.UTC(+mVD[3], +mVD[2] - 1, +mVD[1]));
-          }
-        }
-      }
-
-      // Se não encontrou vencimento no texto do arquivo, tenta extrair da nomenclatura
-      if (!dataVencimentoDetectada && nomeArquivo) {
-        // Ex: 04-Nubank_2026-04-16.pdf
-        const mNomeVenc = nomeArquivo.match(/(?:_|-)(\d{4})-(\d{2})-(\d{2})/);
-        if (mNomeVenc) {
-          dataVencimentoDetectada = new Date(Date.UTC(+mNomeVenc[1], +mNomeVenc[2] - 1, +mNomeVenc[3]));
-        } else {
-          // Ex: Fatura_032026_MANUEL_... (MMYYYY)
-          const mNomeMesAno = nomeArquivo.match(/(?:Fatura_|^)(\d{2})(20\d{2})/i);
-          if (mNomeMesAno) {
-            dataVencimentoDetectada = new Date(Date.UTC(+mNomeMesAno[2], +mNomeMesAno[1] - 1, 15));
-          } else {
-            // Ex: 09-Fatura_Santander_2026-09.pdf (YYYY-MM)
-            const mNomeAnoMes = nomeArquivo.match(/(?:_|-)(\d{4})-(\d{2})/);
-            if (mNomeAnoMes) {
-              dataVencimentoDetectada = new Date(Date.UTC(+mNomeAnoMes[1], +mNomeAnoMes[2] - 1, 10));
-            }
-          }
-        }
-      }
-    }
-
-    // Heurística de TipoDocumento e Instituição
-    let tipoDocumento: TipoDocumentoImportado = TipoDocumentoImportado.OUTRO;
-    const nomeLower = (nomeArquivo + ' ' + (stagings[0].contaSugerida || '')).toLowerCase();
-
-    const ehExtratoPorNome = nomeLower.includes('extrato') || nomeLower.includes('statement');
-    const todosStagingsCC = stagings.length > 0 && stagings.every((s) => s.tipoConta === 'CONTA_CORRENTE' && s.parcelaAtual === null);
-
-    const ehFaturaPorMetaOuStaging =
-      arquivo?.eFaturaCartao === true ||
-      stagings.some((s) => s.tipoConta === 'CARTAO_CREDITO' || s.parcelaAtual !== null);
-
-    if (ehExtratoPorNome && (todosStagingsCC || !ehFaturaPorMetaOuStaging)) {
-      tipoDocumento = TipoDocumentoImportado.EXTRATO_CONTA_CORRENTE;
-    } else if (
-      ehFaturaPorMetaOuStaging ||
-      nomeLower.includes('fatura') ||
-      nomeLower.includes('card') ||
-      nomeLower.includes('cartao') ||
-      nomeLower.includes('credit')
-    ) {
-      tipoDocumento = TipoDocumentoImportado.FATURA_CARTAO;
-    } else if (
-      nomeLower.includes('invest') ||
-      nomeLower.includes('cdb') ||
-      nomeLower.includes('renda fixa')
-    ) {
-      tipoDocumento = TipoDocumentoImportado.EXTRATO_INVESTIMENTO;
-    } else if (
-      nomeLower.includes('extrato') ||
-      nomeLower.includes('conta') ||
-      nomeLower.includes('statement')
-    ) {
-      tipoDocumento = TipoDocumentoImportado.EXTRATO_CONTA_CORRENTE;
-    }
+    // O tipo é definido pelo padrão predominante. Metadados antigos e sinais
+    // isolados (tipoConta/parcela) não podem reclassificar um extrato inteiro.
+    const tipoDocumento = inferirTipoDocumentoImportado(stagings) as TipoDocumentoImportado;
 
     // Determina valorTotal para catálogo e grid de faturas:
     // Para Fatura de Cartão:
@@ -315,18 +81,11 @@ export class ConciliacaoService {
       valorTotal = stagings.reduce((acc, s) => acc + Math.abs(Number(s.valor)), 0);
     }
 
-    // Instituição
-    let instituicao = 'Outros';
-    if (nomeLower.includes('nubank')) instituicao = 'Nubank';
-    else if (nomeLower.includes('c6')) instituicao = 'C6 Bank';
-    else if (nomeLower.includes('inter')) instituicao = 'Banco Inter';
-    else if (nomeLower.includes('itau')) instituicao = 'Itaú';
-    else if (nomeLower.includes('santander')) instituicao = 'Santander';
-    else if (nomeLower.includes('pagbank') || nomeLower.includes('pagseguro')) instituicao = 'PagBank';
-    else if (nomeLower.includes('mercado pago')) instituicao = 'Mercado Pago';
-    else if (stagings[0].contaSugerida) {
-      instituicao = stagings[0].contaSugerida.replace(/Conta\s+|Cartão\s+/gi, '').trim() || 'Outros';
-    }
+    // A instituição só pode vir do contexto estruturado extraído do documento.
+    // O nome do arquivo não é evidência confiável e não deve acionar regras por marca.
+    const instituicao = stagings[0].contaSugerida
+      ?.replace(/^(?:Conta|Cartão)\s+/i, '')
+      .trim() || 'Outros';
 
     // Competência de referência (YYYY-MM baseada na data de vencimento se fatura, ou data final do período)
     const dataRefCompetencia = (tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO && dataVencimentoDetectada)
@@ -339,7 +98,7 @@ export class ConciliacaoService {
     // Conta vinculada:
     // 1. Usa contaId fornecido diretamente no input
     // 2. Se não fornecido, busca a conta mais frequente nos movimentos criados a partir deste arquivo
-    // 3. Caso contrário, busca por identificadores (numeroConta / digitosCartao) ou correspondência com o nome da instituição
+    // 3. Caso contrário, busca por identificadores ou pelo nome de conta extraído.
     let contaId: string | null = input.contaId || null;
     if (!contaId) {
       const primeiroStaging = stagings[0];
@@ -368,11 +127,11 @@ export class ConciliacaoService {
         }
       }
 
-      if (!contaId) {
+      if (!contaId && stagings[0].contaSugerida) {
         const conta = await prisma.conta.findFirst({
           where: {
             usuarioId,
-            nome: { contains: instituicao, mode: 'insensitive' },
+            nome: { contains: stagings[0].contaSugerida, mode: 'insensitive' },
           },
         });
         if (conta) {
@@ -391,7 +150,7 @@ export class ConciliacaoService {
         tipoDocumento,
         instituicao,
         competencia,
-        dataVencimento: tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO ? (dataVencimentoDetectada || periodoFim) : null,
+        dataVencimento: tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO ? dataVencimentoDetectada : null,
         periodoInicio,
         periodoFim,
         totalTransacoes,
@@ -402,7 +161,7 @@ export class ConciliacaoService {
         tipoDocumento,
         instituicao,
         competencia,
-        dataVencimento: tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO ? (dataVencimentoDetectada || periodoFim) : null,
+        dataVencimento: tipoDocumento === TipoDocumentoImportado.FATURA_CARTAO ? dataVencimentoDetectada : null,
         periodoInicio,
         periodoFim,
         totalTransacoes,
@@ -490,29 +249,6 @@ export class ConciliacaoService {
         },
       });
       movsConsolidados.forEach((m) => competenciasSet.add(m.competencia));
-
-      // Extrai períodos de extratos formalmente cobertos presentes em origemDocumento dos movimentos
-      const origensDocumento = await prisma.movimento.findMany({
-        where: {
-          usuarioId,
-          contaId: { in: contaIdsEquivalentes },
-          origemDocumento: { not: null },
-        },
-        select: { origemDocumento: true },
-        distinct: ['origemDocumento'],
-      });
-
-      for (const item of origensDocumento) {
-        if (!item.origemDocumento) continue;
-        const periodoOrigem = this.extrairPeriodoDocumento(null, item.origemDocumento);
-        if (periodoOrigem) {
-          const compsIntervalo = this.extrairCompetenciasPeriodo(
-            periodoOrigem.inicio,
-            periodoOrigem.fim
-          );
-          compsIntervalo.forEach((c) => competenciasSet.add(c));
-        }
-      }
 
       // 4. Resolve automaticamente alertas pendentes para competências atendidas
       const alertasPendentes = await prisma.alertaConciliacao.findMany({
@@ -767,6 +503,12 @@ export class ConciliacaoService {
           where: { usuarioId },
           orderBy: { numeroTentativa: 'desc' },
         },
+        inventariosIa: {
+          where: { usuarioId },
+          orderBy: { criadoEm: 'desc' },
+          take: 1,
+          include: { paginas: { orderBy: { pagina: 'asc' } } },
+        },
       },
     });
 
@@ -817,7 +559,29 @@ export class ConciliacaoService {
         totalMovimentosOficiais: movimentos.length,
         totalStagingItens: stagingItens.length,
         valorTotalMovimentos: movimentos.reduce((acc, m) => acc + Math.abs(Number(m.valor)), 0),
+        somaEntradas: stagingItens.filter((s) => s.natureza === 'RECEITA').reduce((acc, s) => acc + Math.abs(Number(s.valor)), 0),
+        somaSaidas: stagingItens.filter((s) => s.natureza !== 'RECEITA').reduce((acc, s) => acc + Math.abs(Number(s.valor)), 0),
       },
+      inventarioIa: arquivo.inventariosIa[0] ? {
+        paginasTotais: arquivo.inventariosIa[0].paginasTotais,
+        paginasComMovimentos: arquivo.inventariosIa[0].paginasComMovimentos,
+        registrosPorPagina: arquivo.inventariosIa[0].registrosPorPagina,
+        quantidadeEsperada: arquivo.inventariosIa[0].quantidadeEsperada,
+        dataInicial: arquivo.inventariosIa[0].dataInicial,
+        dataFinal: arquivo.inventariosIa[0].dataFinal,
+        somaAbsolutaEsperada: arquivo.inventariosIa[0].somaAbsolutaEsperada ? Number(arquivo.inventariosIa[0].somaAbsolutaEsperada) : null,
+        tipoDocumento: arquivo.inventariosIa[0].tipoDocumento,
+        confianca: Number(arquivo.inventariosIa[0].confianca),
+        observacoes: arquivo.inventariosIa[0].observacoes,
+        divergencias: arquivo.inventariosIa[0].divergencias,
+        paginas: arquivo.inventariosIa[0].paginas.map((pagina) => ({
+          pagina: pagina.pagina, possuiMovimentos: pagina.possuiMovimentos,
+          quantidadeEsperada: pagina.quantidadeEsperada, quantidadeExtraida: pagina.quantidadeExtraida,
+          somaAbsolutaEsperada: pagina.somaAbsolutaEsperada ? Number(pagina.somaAbsolutaEsperada) : null,
+          somaAbsolutaExtraida: pagina.somaAbsolutaExtraida ? Number(pagina.somaAbsolutaExtraida) : null,
+          divergencias: pagina.divergencias,
+        })),
+      } : null,
       movimentos,
       stagingItens,
     };

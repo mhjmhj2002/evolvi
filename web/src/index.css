@@ -156,6 +156,14 @@ body::before {
   gap: 10px;
 }
 
+.top-bar-home-button {
+  border: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
 .top-bar-logo {
   width: 32px;
   height: 32px;
@@ -1039,4 +1047,119 @@ body::before {
   background: var(--status-red-bg);
   border-color: var(--status-red-border);
   color: var(--status-red);
+}
+
+/* --------------------------------------------------------------------------
+   Responsive layout safeguards
+   Keep grid/flex children shrinkable so long descriptions and monetary values
+   do not force the viewport wider than the device.
+   -------------------------------------------------------------------------- */
+img, svg, video, canvas { max-width: 100%; }
+
+button, input, select, textarea { max-width: 100%; }
+
+.main-content > *, .card, .modal-dialog, .bottom-sheet,
+.top-bar > *, .top-bar-user-area > * { min-width: 0; }
+
+table { width: 100%; border-collapse: collapse; }
+
+/* Tables remain readable on small screens without cutting the page itself. */
+.table-responsive, [class*="table-wrapper"], .card:has(table) {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 768px) {
+  :root {
+    --top-bar-height: 58px;
+    --bottom-nav-height: calc(68px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .main-content {
+    padding: calc(var(--top-bar-height) + 12px) 12px calc(var(--bottom-nav-height) + 18px);
+    gap: 14px;
+  }
+
+  .top-bar {
+    height: var(--top-bar-height);
+    padding: 6px 10px;
+    gap: 6px;
+  }
+
+  .top-bar-brand { gap: 7px; flex: 0 0 auto; }
+  .top-bar-logo { width: 30px; height: 30px; }
+  .top-bar-title { font-size: 1rem; }
+
+  .phase-selector-container {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: center;
+  }
+
+  .phase-pill { padding: 5px 7px; font-size: 0.68rem; gap: 3px; }
+  .phase-pill .badge-dev { display: none; }
+  .top-bar-user-area { gap: 4px; flex: 0 0 auto; }
+  .top-bar-user-info, .top-bar-user-area .suspeitas-text, .user-role-badge { display: none; }
+  .btn-investimentos-header, .btn-suspeitas-badge, .btn-alertas-header { padding: 7px !important; }
+
+  .bottom-nav {
+    height: var(--bottom-nav-height);
+    padding: 0 4px env(safe-area-inset-bottom, 0px);
+    justify-content: space-between;
+    overflow: hidden;
+  }
+  .bottom-nav-item {
+    flex: 1 1 0;
+    min-width: 0;
+    height: var(--touch-target-min);
+    gap: 1px;
+    padding: 3px 1px;
+  }
+  .bottom-nav-item span {
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: center;
+    font-size: 0.58rem;
+    letter-spacing: -0.03em;
+  }
+  .nav-icon-wrapper { width: 28px; height: 25px; }
+  .bottom-nav-action-btn {
+    flex: 0 0 40px;
+    width: 40px;
+    height: 40px;
+    margin: 0 1px;
+    border-width: 2px;
+  }
+
+  .card { padding: 14px; }
+  .modal-backdrop { padding: 8px; align-items: flex-end; }
+  .modal-dialog { max-height: 94vh; border-radius: var(--radius-md) var(--radius-md) 0 0; }
+  .modal-dialog-header, .modal-dialog-body, .modal-dialog-footer { padding-left: 14px; padding-right: 14px; }
+  .modal-dialog-footer { justify-content: stretch; }
+  .modal-dialog-footer > * { flex: 1 1 140px; }
+  .bottom-sheet { padding-left: 14px; padding-right: 14px; }
+
+  /* Inline two-column form grids collapse at the phone breakpoint. */
+  .bottom-sheet [style*="grid-template-columns"],
+  .modal-dialog [style*="grid-template-columns"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  /* Prevent headings/actions from competing for the same narrow row. */
+  .main-content h1, .main-content h2, .main-content h3 { overflow-wrap: anywhere; }
+  .main-content [style*="justify-content: space-between"] { gap: 10px; flex-wrap: wrap; }
+}
+
+@media (max-width: 380px) {
+  .top-bar-title { display: none; }
+  .phase-pill span:not(.badge-dev) { display: none; }
+  .phase-pill { padding: 6px 8px; }
+  .bottom-nav { padding-left: 2px; padding-right: 2px; }
+  .bottom-nav-item span { font-size: 0.52rem; }
+  .nav-icon-wrapper { width: 25px; }
+  .bottom-nav-action-btn { flex-basis: 36px; width: 36px; height: 36px; }
 }

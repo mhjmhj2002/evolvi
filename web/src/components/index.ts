@@ -11,3 +11,5 @@ export * from './ComponenteHistorico6M.tsx';
 export * from './ComponentePrevisao6M.tsx';
 export * from './LeitorNotaFiscalModal.tsx';
 export * from './GerenciadorRecorrencias.tsx';
+export * from './CentralAlertasModal.tsx';
+export * from './GerenciadorContasPagar.tsx';

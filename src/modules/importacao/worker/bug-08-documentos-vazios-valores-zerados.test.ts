@@ -101,6 +101,49 @@ describe('BUG-08: Rejeição Indevida de Documentos Válidos Sem Lançamentos ou
     expect(arqAtualizado?.mensagemErro).toBeNull();
   });
 
+  it('não marca o arquivo inteiro como fatura por uma linha isolada classificada como cartão', async () => {
+    const transacao = (tipoConta: string, descricao: string) => ({
+      dataMovimento: '2026-07-10',
+      descricao,
+      valor: 25,
+      natureza: 'DESPESA' as const,
+      contaSugerida: 'Conta principal',
+      tipoConta: tipoConta as 'CONTA_CORRENTE' | 'CARTAO_CREDITO',
+      categoriaSugerida: 'Outros',
+      parcelaAtual: null,
+      totalParcelas: null,
+      isPagamentoFatura: false,
+      observacao: null,
+      confianca: 1,
+    });
+    const mockClient: IIaExtratorClient = {
+      async extrairTransacoes() {
+        return [
+          transacao('CONTA_CORRENTE', 'Pix recebido'),
+          transacao('CONTA_CORRENTE', 'Pagamento'),
+          transacao('CARTAO_CREDITO', 'Transferência classificada incorretamente'),
+        ];
+      },
+    };
+    const nomeArquivo = `extrato-conta-misto-${Date.now()}.txt`;
+    await fs.writeFile(path.join(pastaLote, nomeArquivo), 'Extrato de conta com três linhas.', 'utf-8');
+    const arquivo = await prisma.arquivoImportacao.create({
+      data: { loteId, nomeArquivo, caminhoRelativo: nomeArquivo, mimeType: 'text/plain', status: 'RECEPCIONADO' },
+    });
+
+    const resultado = await new ImportacaoIaWorkerService(mockClient).processarArquivoIndividual({
+      lote: { id: loteId, usuarioId, caminhoDiretorio: 'uploads/test-bug-08' },
+      arquivo: { id: arquivo.id, nomeArquivo, caminhoRelativo: nomeArquivo, mimeType: 'text/plain' },
+      contexto: { contas: [], categorias: [], dataReferencia: '2026-07-10' },
+    });
+
+    expect(resultado.sucesso).toBe(true);
+    const arquivoAtualizado = await prisma.arquivoImportacao.findUnique({ where: { id: arquivo.id } });
+    expect(arquivoAtualizado?.eFaturaCartao).toBe(false);
+    expect(arquivoAtualizado?.faturaStatusValidacao).toBeNull();
+    expect(arquivoAtualizado?.faturaValorTotal).toBeNull();
+  });
+
   it('2. Reconhecimento de Documento Vazio (CSV sem movimentação apenas com cabeçalho): conclui como PROCESSADO_FINAL sem erro', async () => {
     const nomeCsvVazio = 'NU_44719326_01MAI2026_31MAI2026.csv';
     const csvContent = 'Data,Valor,Identificador,Descrição\n';

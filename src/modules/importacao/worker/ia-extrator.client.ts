@@ -1,5 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { prisma } from '../../../infrastructure/database/prisma.js';
 import { env } from '../../../config/env.js';
 import {
@@ -11,11 +13,14 @@ import {
   ArquivoConsolidadoIa,
   LancamentoConsolidadoIa,
   arquivoConsolidadoIaSchema,
+  lancamentoConsolidadoIaSchema,
 } from './ia-extrator.schema.js';
+import { descricaoIndicaPagamentoFatura, descricaoIndicaTransferenciaPropria } from '../../movimento/natureza-movimento.util.js';
 
 import { PdfTextExtractor } from '../../conector/parsers/pdf-text-extractor.js';
-import { C6InvoicePdfParser } from '../../conector/parsers/c6-invoice-pdf.parser.js';
-import { SantanderStatementPdfParser } from '../../conector/parsers/santander-statement-pdf.parser.js';
+import { dividirDocumentoEmPaginas, dividirPaginaEmChunks } from './ia-paginas.util.js';
+import { obterInstrucoesSkillDocumento } from './ia-document-skills.js';
+import { ClassificacaoDocumentoWorker, classificarDocumentoWorker } from './classificador-documento-worker.js';
 import { CryptoService } from '../../../infrastructure/security/crypto.service.js';
 import {
   TokensIa,
@@ -38,11 +43,124 @@ import {
   provedorSuportadoNoFluxo,
 } from '../../ia/openrouter.config.js';
 
+const timeoutChamadaIaMs = Math.max(1000, Number(process.env.IMPORTACAO_IA_TIMEOUT_MS) || 60_000);
+const timeoutArquivoIaMs = Math.max(timeoutChamadaIaMs, Number(process.env.IMPORTACAO_IA_TIMEOUT_ARQUIVO_MS) || 15 * 60_000);
+const maxTentativasIa = Math.max(1, Math.min(5, Number(process.env.IMPORTACAO_IA_MAX_TENTATIVAS) || 3));
+const concorrenciaIa = Math.max(1, Math.min(8, Number(process.env.IMPORTACAO_IA_CONCORRENCIA) || 2));
+const concorrenciaChunksIa = concorrenciaIa;
+const concorrenciaGlobalIa = concorrenciaIa;
+const concorrenciaUsuarioIa = concorrenciaIa;
+const deadlineArquivoIa = new AsyncLocalStorage<number>();
+
+class SemaphoreIa {
+  private active = 0;
+  private queue: Array<() => void> = [];
+  constructor(private readonly limit: number) {}
+  async acquire(): Promise<() => void> {
+    if (this.active < this.limit && this.queue.length === 0) {
+      this.active += 1;
+    } else {
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const proximo = this.queue.shift();
+      if (proximo) proximo();
+      else this.active = Math.max(0, this.active - 1);
+    };
+  }
+}
+
+// Um único limite protege o provedor e permite paralelizar chunks do mesmo arquivo.
+const semaforoGlobalIa = new SemaphoreIa(concorrenciaGlobalIa);
+const semaforosUsuarioIa = new Map<string, SemaphoreIa>();
+async function executarChamadaComLimite<T>(provedor: string, usuarioId: string | undefined, execucao: () => Promise<T>): Promise<T> {
+  const porUsuarioKey = `${provedor}:${usuarioId || 'sem-usuario'}`;
+  const porUsuario = semaforosUsuarioIa.get(porUsuarioKey) || new SemaphoreIa(concorrenciaUsuarioIa);
+  semaforosUsuarioIa.set(porUsuarioKey, porUsuario);
+  const liberarUsuario = await porUsuario.acquire();
+  try {
+    const liberarGlobal = await semaforoGlobalIa.acquire();
+    try { return await execucao(); }
+    finally { liberarGlobal(); }
+  } finally {
+    liberarUsuario();
+  }
+}
+
+function validarTransacoesDoChunk(transacoes: LancamentoConsolidadoIa[]): LancamentoConsolidadoIa[] {
+  return transacoes.map((transacao, indice) => {
+    const validacao = lancamentoConsolidadoIaSchema.safeParse(transacao);
+    if (!validacao.success) {
+      throw new Error(`Lançamento ${indice + 1} retornado pela IA não passou na validação de schema: ${validacao.error.issues[0]?.message || 'estrutura inválida'}`);
+    }
+    return validacao.data;
+  });
+}
+
+async function fetchIaResiliente(url: string, init: RequestInit): Promise<Response> {
+  let ultimoErro: unknown;
+  for (let tentativa = 1; tentativa <= maxTentativasIa; tentativa += 1) {
+    const restanteArquivo = deadlineArquivoIa.getStore();
+    const prazo = restanteArquivo == null ? timeoutChamadaIaMs : Math.min(timeoutChamadaIaMs, restanteArquivo - Date.now());
+    if (prazo <= 0) throw new Error(`Tempo limite total da extração excedido (${timeoutArquivoIaMs}ms).`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), prazo);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      let metadataErro: any;
+      if (response.status === 402) {
+        metadataErro = await response.clone().json().catch(() => null);
+      }
+      const retryBudgetEsgotado = metadataErro?.error?.metadata?.reason === 'in_flight_budget_exhausted';
+      const retentavel = response.status === 429 || response.status >= 500 || retryBudgetEsgotado;
+      if (!retentavel) return response;
+      if (tentativa === maxTentativasIa) return response;
+      const retryAfter = response.headers.get('retry-after')
+        || metadataErro?.error?.metadata?.headers?.['Retry-After']
+        || metadataErro?.error?.metadata?.headers?.['retry-after'];
+      const segundosRetry = retryAfter ? Number(retryAfter) : NaN;
+      const dataRetry = retryAfter ? Date.parse(retryAfter) : NaN;
+      const atrasoRetryMs = Number.isFinite(segundosRetry) && segundosRetry > 0
+        ? segundosRetry * 1000
+        : (retryAfter && Number.isFinite(dataRetry) ? Math.max(0, dataRetry - Date.now()) : NaN);
+      const esperaSugeridaMs = Number.isFinite(atrasoRetryMs)
+        ? atrasoRetryMs
+        : Math.min(500 * (2 ** (tentativa - 1)) + Math.random() * 300, 10_000);
+      const deadline = deadlineArquivoIa.getStore();
+      const janelaDisponivelMs = deadline == null
+        ? timeoutArquivoIaMs
+        : Math.max(0, deadline - Date.now());
+      const esperaMs = Math.min(esperaSugeridaMs, janelaDisponivelMs);
+      await response.body?.cancel().catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, esperaMs));
+    } catch (err) {
+      ultimoErro = err;
+      if (tentativa === maxTentativasIa) break;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(500 * (2 ** (tentativa - 1)) + Math.random() * 300, 10_000)));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  const detalhe = ultimoErro instanceof Error && ultimoErro.name === 'AbortError'
+    ? `Timeout da chamada após ${timeoutChamadaIaMs}ms`
+    : (ultimoErro instanceof Error ? ultimoErro.message : String(ultimoErro));
+  throw new Error(`Falha transitória na chamada de IA após ${maxTentativasIa} tentativas: ${detalhe}`);
+}
+
 // Reexportado para preservar a API pública histórica do módulo.
 export type { IaCapacidadeMedia };
 export { IA_CAPACIDADES_MEDIA };
 
 export interface IIaExtratorClient {
+  inventariarDocumento?(params: {
+    nomeArquivo: string; mimeType?: string | null; conteudoBuffer: Buffer;
+    usuarioId?: string; provedorIa?: string; modeloIa?: string;
+    contexto: { dataReferencia: string; nomeTitular?: string | null };
+    classificacao?: ClassificacaoDocumentoWorker;
+  }): Promise<InventarioDocumentoIa>;
   extrairTransacoes(params: {
     nomeArquivo: string;
     mimeType?: string | null;
@@ -60,6 +178,7 @@ export interface IIaExtratorClient {
      * correlacionar de forma determinística a tentativa do arquivo ao log de telemetria.
      */
     aoRegistrarUsoIa?: (usoIaLogId: string | null) => void;
+    classificacao?: ClassificacaoDocumentoWorker;
     contexto: {
       contas: { id: string; nome: string; tipo: string }[];
       categorias: { id: string; nome: string }[];
@@ -67,6 +186,19 @@ export interface IIaExtratorClient {
       nomeTitular?: string | null;
     };
   }): Promise<LancamentoConsolidadoIa[]>;
+}
+
+export interface InventarioDocumentoIa {
+  paginasTotais?: number | null;
+  paginaAtribuicaoDisponivel?: boolean;
+  paginasSemTexto?: number[];
+  paginasComMovimentos?: number[];
+  registrosPorPagina: { pagina: number; quantidade: number }[];
+  quantidadeEsperada?: number | null;
+  dataInicial?: string | null; dataFinal?: string | null;
+  somaAbsolutaEsperada?: number | null;
+  tipoDocumento: 'EXTRATO_CONTA' | 'FATURA_CARTAO' | 'OUTRO';
+  confianca: number; observacoes?: string | null;
 }
 
 export class GeminiIaExtratorClient implements IIaExtratorClient {
@@ -97,6 +229,56 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     this.universalParser = new UniversalStatementParser();
   }
 
+  /**
+   * Inventário estrutural universal. A contagem de páginas é obtida do próprio
+   * PDF, sem heurística por instituição. O inventário anterior ficava vazio
+   * porque a interface já declarava o método, mas a classe não o implementava.
+   */
+  public async inventariarDocumento(params: {
+    nomeArquivo: string;
+    mimeType?: string | null;
+    conteudoBuffer: Buffer;
+    usuarioId?: string;
+    provedorIa?: string;
+    modeloIa?: string;
+    contexto: { dataReferencia: string; nomeTitular?: string | null };
+    classificacao?: ClassificacaoDocumentoWorker;
+  }): Promise<InventarioDocumentoIa> {
+    const ehPdf = params.mimeType === 'application/pdf' || params.nomeArquivo.toLowerCase().endsWith('.pdf');
+    if (!ehPdf) {
+      return {
+        paginasTotais: 1,
+        paginaAtribuicaoDisponivel: true,
+        paginasComMovimentos: [],
+        registrosPorPagina: [],
+        tipoDocumento: params.classificacao?.tipoDocumento ?? 'OUTRO',
+        confianca: 0,
+        observacoes: 'Formato sem paginação física; arquivo tratado como uma unidade de origem.',
+      };
+    }
+
+    const pdf = params.conteudoBuffer.toString('latin1');
+    const paginasTotais = Math.max(0, (pdf.match(/\/Type\s*\/Page(?:\s|\/|>)/g) || []).length);
+    const textoPdf = PdfTextExtractor.extrairTexto(params.conteudoBuffer);
+    const paginasTexto = dividirDocumentoEmPaginas(textoPdf, paginasTotais || null);
+    const paginasTextuaisConferem = paginasTotais > 0 && paginasTexto.length === paginasTotais && paginasTexto.every((pagina) => pagina.pagina != null);
+    const paginasSemTexto = paginasTexto.flatMap((pagina) => pagina.texto.trim() ? [] : pagina.pagina == null ? [] : [pagina.pagina]);
+    return {
+      paginasTotais: paginasTotais || null,
+      paginaAtribuicaoDisponivel: paginasTextuaisConferem,
+      paginasSemTexto,
+      paginasComMovimentos: [],
+      registrosPorPagina: [],
+      tipoDocumento: params.classificacao?.tipoDocumento ?? 'OUTRO',
+      confianca: paginasTotais > 0 ? 1 : 0,
+      observacoes: paginasTotais > 0
+        ? paginasTextuaisConferem
+          ? 'Total de páginas obtido da estrutura do PDF; limites de página disponíveis no texto extraído.'
+          : 'Total de páginas obtido da estrutura do PDF, mas o texto extraído não preservou todos os limites de página.'
+        : 'Não foi possível identificar páginas na estrutura do PDF.',
+    };
+  }
+
   public async extrairTransacoes(params: {
     nomeArquivo: string;
     mimeType?: string | null;
@@ -109,6 +291,7 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     arquivoId?: string;
     /** TASK-50: handoff do id do log criado em `uso_ia_logs`. */
     aoRegistrarUsoIa?: (usoIaLogId: string | null) => void;
+    classificacao?: ClassificacaoDocumentoWorker;
     contexto: {
       contas: { id: string; nome: string; tipo: string; numeroConta?: string | null; agencia?: string | null }[];
       categorias: { id: string; nome: string }[];
@@ -128,6 +311,22 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     if (isPdf && !textoProcessado) {
       textoProcessado = PdfTextExtractor.extrairTexto(conteudoBuffer);
     }
+    const extDocumento = path.extname(nomeArquivo).toLowerCase();
+    const classificacao = params.classificacao || (['.pdf', '.csv'].includes(extDocumento)
+      ? classificarDocumentoWorker({ nomeArquivo, conteudoBuffer })
+      : {
+          instituicao: null,
+          chaveInstituicaoSkill: null,
+          tipoDocumento: 'OUTRO' as const,
+          origemInstituicao: 'NAO_IDENTIFICADA' as const,
+          origemTipo: 'NAO_IDENTIFICADO' as const,
+          evidencia: [],
+        });
+    const instrucoesSkillDocumento = obterInstrucoesSkillDocumento({
+      tipoDocumento: classificacao.tipoDocumento,
+      chaveInstituicaoSkill: classificacao.chaveInstituicaoSkill,
+    });
+    const contextoComSkill = { ...contexto, classificacaoDocumento: classificacao, instrucoesSkillDocumento };
 
     // 1. Se for formato estritamente estruturado padrão (OFX, CSV com cabeçalho bancário ou JSON estruturado),
     // é seguro extrair diretamente via parser determinístico
@@ -145,7 +344,7 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
         conteudoTexto: textoProcessado,
       });
       if (transacoesEstruturadas.length > 0) {
-        return transacoesEstruturadas;
+        return transacoesEstruturadas.map((transacao) => ({ ...transacao, paginaOrigem: 1 }));
       }
 
       // Se for CSV estruturado válido porém sem lançamentos (ex: somente cabeçalho), retorna array vazio
@@ -158,41 +357,7 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
       }
     }
 
-    // 2. Se for fatura C6 em PDF com formatação reconhecida pelo parser especializado
-    if (isPdf && textoProcessado && C6InvoicePdfParser.isC6Invoice(textoProcessado)) {
-      const transacoesC6 = C6InvoicePdfParser.parse(textoProcessado, {
-        dataReferencia: contexto.dataReferencia,
-        categorias: contexto.categorias,
-      });
-      if (transacoesC6.length > 0) {
-        return transacoesC6;
-      }
-    }
-
-    // 2.1. Se for extrato Santander em PDF com formatação reconhecida pelo parser especializado
-    if (isPdf && textoProcessado && SantanderStatementPdfParser.isSantanderStatement(textoProcessado)) {
-      const transacoesSantander = SantanderStatementPdfParser.parse(textoProcessado, {
-        dataReferencia: contexto.dataReferencia,
-        categorias: contexto.categorias,
-        nomeTitular: contexto.nomeTitular,
-      });
-      if (transacoesSantander.length > 0) {
-        return transacoesSantander;
-      }
-    }
-
-    // 3. Se for fatura em PDF com consumo zero explícito (ex: Mercado Pago R$ 0,00)
-    if (isPdf && textoProcessado) {
-      const isFaturaZerada =
-        /voc[eê]\s+n[aã]o\s+consumiu\s+nada/i.test(textoProcessado) ||
-        /total\s+(a\s+pagar|da\s+fatura)[\s\S]{0,50}r\$\s*0[,.]00/i.test(textoProcessado) ||
-        /n[aã]o\s+h[aá]\s+gastos\s+pendentes/i.test(textoProcessado);
-      if (isFaturaZerada) {
-        return [];
-      }
-    }
-
-    // 4. Rigor Exclusivo da IA para documentos complexos / não-estruturados (PDFs, imagens, textos livres):
+    // 3. Rigor Exclusivo da IA para documentos complexos / não-estruturados (PDFs, imagens, textos livres):
     // Se o usuário especificou um provedor ou se precisa de chave do usuário no banco:
     let apiKeyEfetiva: string | undefined = undefined;
     let modeloEfetivo = params.modeloIa || this.model;
@@ -235,7 +400,7 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
 
     provedorEfetivo = provedorEfetivo.trim().toUpperCase();
 
-    // Provedores sem implementação neste fluxo (OPENAI/ANTHROPIC) NÃO devem cair
+    // Provedores sem implementação neste fluxo (ANTHROPIC) NÃO devem cair
     // silenciosamente no Gemini — erro explícito e acionável.
     if (!provedorSuportadoNoFluxo(provedorEfetivo)) {
       throw new Error(mensagemProvedorNaoSuportado(provedorEfetivo));
@@ -279,35 +444,68 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
     // TASK-49: toda chamada de IA gera EXATAMENTE 1 registro em `uso_ia_logs`
     // (sucesso ou falha). Qualquer erro de telemetria é engolido internamente
     // pelo UsoIaService, nunca interrompendo a importação.
-    const chamada: () => Promise<{ transacoes: LancamentoConsolidadoIa[]; tokens: TokensIa }> =
-      provedorEfetivo === 'DEEPSEEK'
-        ? () =>
+    // Divide documentos textuais longos em blocos universais antes da chamada.
+    // O limite é por tamanho de texto, nunca por banco/instituição/layout.
+    // Isso evita que a resposta JSON seja truncada no limite de tokens do provedor.
+    const textoParaChunks = textoProcessado || '';
+    // 4.000 caracteres mantém margem para documentos com muitas colunas e
+    // evita que a lista de lançamentos consuma todo o limite de saída JSON.
+    // Blocos maiores reduzem requisições; lotes paralelos controlados reduzem a espera.
+    const tamanhoChunk = 4000;
+    const pdfTotalPaginas = isPdf
+      ? Math.max(0, (conteudoBuffer.toString('latin1').match(/\/Type\s*\/Page(?:\s|\/|>)/g) || []).length) || null
+      : 1;
+    const paginasDocumento = dividirDocumentoEmPaginas(textoParaChunks, pdfTotalPaginas);
+    const chunks = dividirPaginaEmChunks(paginasDocumento, tamanhoChunk);
+    if (chunks.length === 0) chunks.push({ pagina: pdfTotalPaginas === 1 ? 1 : null, texto: '' });
+    const textoEntradaDoChunk = (indice: number): string => {
+      const chunk = chunks[indice];
+      if (chunk.pagina == null) return chunk.texto;
+
+      const chunkAnterior = chunks[indice - 1];
+      let contextoMesmoArquivo: string | undefined;
+      if (chunkAnterior && chunkAnterior.pagina === chunk.pagina) {
+        contextoMesmoArquivo = chunkAnterior.texto.slice(-1200);
+      } else if (chunkAnterior && chunkAnterior.pagina === chunk.pagina - 1) {
+        contextoMesmoArquivo = chunkAnterior.texto.slice(-1200);
+      } else {
+        contextoMesmoArquivo = paginasDocumento
+          .find((pagina) => pagina.pagina === chunk.pagina! - 1)?.texto.slice(-1200);
+      }
+
+      if (!contextoMesmoArquivo?.trim()) return chunk.texto;
+      return `CONTEXTO DO TRECHO/PÁGINA ANTERIOR (somente para interpretar continuidade e datas; não extraia lançamentos daqui):\n"""\n${contextoMesmoArquivo}\n"""\n\nTRECHO ATUAL (extraia lançamentos somente daqui):\n"""\n${chunk.texto}\n"""`;
+    };
+    const chamada: (texto?: string) => Promise<{ transacoes: LancamentoConsolidadoIa[]; tokens: TokensIa }> =
+      provedorEfetivo === 'DEEPSEEK' || provedorEfetivo === 'OPENAI'
+        ? (texto = textoProcessado) =>
             this.chamarDeepSeekApi(
               nomeArquivo,
               conteudoBuffer,
-              contexto,
-              textoProcessado,
+              contextoComSkill,
+              texto,
               apiKeyEfetiva,
-              modeloEfetivo
+              modeloEfetivo,
+              provedorEfetivo
             )
         : provedorEfetivo === 'OPENROUTER'
-          ? () =>
+          ? (texto = textoProcessado) =>
               this.chamarOpenRouterApi(
                 nomeArquivo,
                 mimeType,
                 conteudoBuffer,
-                contexto,
-                textoProcessado,
+                contextoComSkill,
+                texto,
                 apiKeyEfetiva,
                 modeloEfetivo
               )
-          : () =>
+          : (texto = textoProcessado) =>
               this.chamarGeminiApi(
                 nomeArquivo,
                 mimeType,
                 conteudoBuffer,
-                contexto,
-                textoProcessado,
+                contextoComSkill,
+                texto,
                 apiKeyEfetiva,
                 modeloEfetivo
               );
@@ -320,7 +518,85 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
         modelo: modeloEfetivo,
         loteId: params.loteId,
         arquivoId: params.arquivoId,
-        execucao: chamada,
+        execucao: async () => {
+          const hashContexto = createHash('sha256').update(JSON.stringify(contextoComSkill)).digest('hex');
+          const checkpoints = params.arquivoId && params.usuarioId
+            ? await prisma.$queryRaw<Array<{ indice: number; hashConteudo: string; hashContexto: string; provedor: string; modelo: string; versaoPrompt: string; versaoSchema: string; resultado: unknown }>>`
+                SELECT indice, hash_conteudo AS "hashConteudo", hash_contexto AS "hashContexto", provedor, modelo,
+                  versao_prompt AS "versaoPrompt", versao_schema AS "versaoSchema", resultado
+                FROM checkpoints_chunks_ia WHERE arquivo_id = ${params.arquivoId}::uuid AND usuario_id = ${params.usuarioId}::uuid`
+            : [];
+          const inicioArquivo = Date.now();
+          const deadlineMs = inicioArquivo + timeoutArquivoIaMs;
+          const extrairChunk = async (indiceChunk: number): Promise<{ transacoes: LancamentoConsolidadoIa[]; tokens: TokensIa }> => {
+            const chunk = chunks[indiceChunk];
+            if (Date.now() - inicioArquivo >= timeoutArquivoIaMs) throw new Error(`Tempo limite total da extração excedido (${timeoutArquivoIaMs}ms). Os chunks concluídos foram preservados.`);
+            const textoEntrada = textoEntradaDoChunk(indiceChunk);
+            const hashChunk = createHash('sha256').update(`${chunk.pagina ?? 'sem-pagina'}\n${textoEntrada}`).digest('hex');
+            const checkpoint = checkpoints.find((c) => c.indice === indiceChunk && c.hashConteudo === hashChunk &&
+              c.hashContexto === hashContexto && c.provedor === provedorEfetivo && c.modelo === modeloEfetivo &&
+              c.versaoPrompt === 'extracao-v4' && c.versaoSchema === 'lancamento-v2');
+            const resultadoChunk = checkpoint
+              ? { transacoes: checkpoint.resultado as unknown as LancamentoConsolidadoIa[], tokens: { tokensPrompt: 0, tokensResposta: 0, tokensTotal: 0 } }
+              : await executarChamadaComLimite(provedorEfetivo, params.usuarioId, () => deadlineArquivoIa.run(deadlineMs, () => chamada(textoEntrada)));
+            const transacoesComPagina = resultadoChunk.transacoes.map((transacao) => ({ ...transacao, paginaOrigem: chunk.pagina }));
+            if (!checkpoint && params.arquivoId && params.usuarioId) {
+              await prisma.$executeRaw`
+                INSERT INTO checkpoints_chunks_ia (usuario_id, arquivo_id, indice, hash_conteudo, hash_contexto,
+                  provedor, modelo, versao_prompt, versao_schema, resultado)
+                VALUES (${params.usuarioId}::uuid, ${params.arquivoId}::uuid, ${indiceChunk}, ${hashChunk}, ${hashContexto},
+                  ${provedorEfetivo}, ${modeloEfetivo}, 'extracao-v4', 'lancamento-v2', ${JSON.stringify(transacoesComPagina)}::jsonb)
+                ON CONFLICT (arquivo_id, indice) DO UPDATE SET usuario_id = EXCLUDED.usuario_id,
+                  hash_conteudo = EXCLUDED.hash_conteudo, hash_contexto = EXCLUDED.hash_contexto,
+                  provedor = EXCLUDED.provedor, modelo = EXCLUDED.modelo, versao_prompt = EXCLUDED.versao_prompt,
+                  versao_schema = EXCLUDED.versao_schema, resultado = EXCLUDED.resultado, atualizado_em = NOW()`;
+            }
+            return { ...resultadoChunk, transacoes: transacoesComPagina };
+          };
+          const resultadosChunks = new Array<{ transacoes: LancamentoConsolidadoIa[]; tokens: TokensIa }>(chunks.length);
+          let proximoChunk = 0;
+          const trabalhadores = Array.from({ length: Math.min(concorrenciaChunksIa, chunks.length) }, async () => {
+            while (true) {
+              const indice = proximoChunk++;
+              if (indice >= chunks.length) return;
+              resultadosChunks[indice] = await extrairChunk(indice);
+            }
+          });
+          await Promise.all(trabalhadores);
+
+          const resultados = [] as LancamentoConsolidadoIa[];
+          let tokensPrompt = 0;
+          let tokensResposta = 0;
+          let tokensTotal = 0;
+          for (const [indiceChunk, resultadoChunk] of resultadosChunks.entries()) {
+            const chunk = chunks[indiceChunk];
+            tokensPrompt += resultadoChunk.tokens.tokensPrompt;
+            tokensResposta += resultadoChunk.tokens.tokensResposta;
+            tokensTotal += resultadoChunk.tokens.tokensTotal;
+            const datas = resultadoChunk.transacoes.map((transacao) => transacao.dataMovimento).sort();
+            for (const transacao of resultadoChunk.transacoes) resultados.push(transacao);
+            console.info('[evolvi-ia:chunk]', JSON.stringify({
+              arquivoId: params.arquivoId,
+              provedor: provedorEfetivo,
+              modelo: modeloEfetivo,
+              chunkIndex: indiceChunk + 1,
+              totalChunks: chunks.length,
+              caracteresEntrada: textoEntradaDoChunk(indiceChunk).length,
+              transacoesRetornadas: resultadoChunk.transacoes.length,
+              transacoesNovas: resultadoChunk.transacoes.length,
+              duplicadasNoChunk: 0,
+              tokensPrompt: resultadoChunk.tokens.tokensPrompt,
+              tokensResposta: resultadoChunk.tokens.tokensResposta,
+              primeiraData: datas[0] || null,
+              ultimaData: datas.at(-1) || null,
+            }));
+          }
+
+          return {
+            transacoes: resultados,
+            tokens: { tokensPrompt, tokensResposta, tokensTotal },
+          };
+        },
         extrairTokens: (r) => r.tokens,
         // TASK-50: handoff explícito do id do log para a tentativa do arquivo.
         aoRegistrar: (logId) => params.aoRegistrarUsoIa?.(logId),
@@ -345,18 +621,23 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
       categorias: { id: string; nome: string }[];
       dataReferencia: string;
       nomeTitular?: string | null;
+      classificacaoDocumento?: ClassificacaoDocumentoWorker;
+      instrucoesSkillDocumento?: string;
     },
     textoProcessado?: string,
     apiKeyOverride?: string,
-    modelOverride?: string
+    modelOverride?: string,
+    provedor: 'DEEPSEEK' | 'OPENAI' = 'DEEPSEEK'
   ): Promise<{ transacoes: LancamentoConsolidadoIa[]; tokens: TokensIa }> {
     const key = apiKeyOverride || this.apiKey;
-    const mod = modelOverride || 'deepseek-chat';
-    const url = 'https://api.deepseek.com/chat/completions';
+    const mod = modelOverride || (provedor === 'OPENAI' ? 'gpt-4o-mini' : 'deepseek-chat');
+    const url = provedor === 'OPENAI'
+      ? 'https://api.openai.com/v1/chat/completions'
+      : 'https://api.deepseek.com/chat/completions';
 
     const texto = textoProcessado || conteudoBuffer.toString('utf-8');
     if (!texto || texto.trim().length === 0) {
-      throw new Error('Não foi possível extrair texto legível deste documento para enviar ao DeepSeek.');
+      throw new Error(`Não foi possível extrair texto legível deste documento para enviar ao ${provedor}.`);
     }
 
     const titularInfo = contexto.nomeTitular ? `Nome do titular da conta: "${contexto.nomeTitular}".` : '';
@@ -373,6 +654,8 @@ export class GeminiIaExtratorClient implements IIaExtratorClient {
 
     const promptSistema = `Você é o extrator inteligente e especialista financeiro do sistema Evolvi.
 Sua missão é extrair rigorosamente TODAS as transações financeiras (despesas, receitas, faturas, pagamentos, transferências) contidas no documento ou extrato anexo.
+${contexto.instrucoesSkillDocumento || ''}
+Classificação feita previamente pelo worker (fonte de verdade; não reidentifique nem altere): instituição ${contexto.classificacaoDocumento?.instituicao || 'não identificada'}; tipo ${contexto.classificacaoDocumento?.tipoDocumento || 'não identificado'}. Use a instituição somente como contexto e classifique cada lançamento pela seção/conta indicada no documento.
 ${titularInfo}
 
 DIRETRIZES FUNDAMENTAIS:
@@ -381,12 +664,15 @@ DIRETRIZES FUNDAMENTAIS:
    - Se for pagamento de fatura de cartão de crédito em extrato bancário de conta corrente (ex: "PAGTO FATURA", "PGTO CARTAO", "PAGAMENTO DE FATURA"): defina "natureza" = "TRANSFERENCIA_PROPRIA" e "isPagamentoFatura" = true.
    - LINHAS INFORMATIVAS DE PAGAMENTO EM FATURA DE CARTÃO (BUG-13): Em faturas de cartão de crédito, linhas como "PAGAMENTO RECEBIDO", "CRÉDITO DE PAGAMENTO DE FATURA", "PAGAMENTO EFETUADO" são compensações informativas da fatura e NÃO geram movimentação de caixa (pois o débito ocorre na conta corrente). Defina "natureza" = "TRANSFERENCIA_PROPRIA", "isPagamentoFatura" = true e "observacao" = "Informativo de quitação em fatura de cartão".
    - Créditos de salário ou proventos de empresa (ex: "TED CONTA SALARIO", "CRED SALARIO", "PLR", "REMUNERACAO", "FOLHA DE PAGAMENTO", "BONUS SALARIAL") são SEMPRE RECEITA operacional, mesmo quando o nome do titular constar na linha como favorecido/remetente da conta salário.
-   - Se for transferência entre contas correntes/poupança, PIX ou TED cujo remetente/pagador for o próprio titular${contexto.nomeTitular ? ` (ex: "${contexto.nomeTitular}")` : ''} (exceto folha de pagamento/conta salário/PLR), ou se for resgate de aplicação/investimento próprio (ex: "RESGATE DE CDB", "RESGATE POUPANCA", "RESGATE INVESTIMENTO"): defina categoricamente "natureza" = "TRANSFERENCIA_PROPRIA" (NUNCA classifique como RECEITA!).
+   - Só classifique PIX/TED como "TRANSFERENCIA_PROPRIA" quando o documento declarar explicitamente que as contas têm a mesma titularidade ou que a conta de destino também pertence ao titular. Não infira titularidade por nome completo, sobrenome, nome parcial, favorecido ou alias de conta. Se for pagamento a outra pessoa ou não houver prova de titularidade comum, mantenha a natureza de despesa/receita indicada pelo sentido da movimentação. Resgates de aplicação/investimento só são transferência própria se o documento identificar que retornam a uma aplicação do mesmo titular.
    - Para aplicações financeiras, aportes, investimentos e compras de ativos (ex: "APLICAÇÃO", "APLICACAO", "CDB", "RDB", "LCI", "LCA", "TESOURO DIRETO", "DEPOSITO POUPANCA", "COMPRA ACOES", "INVESTIMENTO"): defina categoricamente "natureza" = "APORTE_PATRIMONIAL" (NUNCA classifique como DESPESA!).
    - Para compras ou despesas normais: "natureza" = "DESPESA".
    - Para salários, PLR, rendimentos de aplicações, transferências recebidas de terceiros: "natureza" = "RECEITA".
 3. Formato da Data e Regra de Ouro para Cartões:
-   - Formato estrito: "YYYY-MM-DD". Se o documento trouxer apenas DD/MM ou DD/MM/AAAA, converta para YYYY-MM-DD usando o ano de referência ("${contexto.dataReferencia.substring(0, 4)}").
+   - Formato estrito: "YYYY-MM-DD". Se a linha trouxer apenas DD/MM, use o ano do período do extrato ou das datas de movimentação próximas na mesma tabela; use o ano de referência ("${contexto.dataReferencia.substring(0, 4)}") somente quando o documento não der contexto melhor.
+   - Identifique a data da própria movimentação. Não use datas de emissão, geração, impressão, exportação, cabeçalho, rodapé ou identificação do modelo do documento como data de lançamento. Não escolha o ano apenas por ser o mais frequente no arquivo inteiro: considere a frequência somente entre datas que pertencem às linhas de movimentação e confira o período do documento.
+   - Quando uma tabela mostrar a data uma vez e as linhas seguintes forem continuação do mesmo grupo, aplique essa data às linhas sem data até aparecer outra data explícita. Não transforme uma data omitida em dia 1. Não confunda períodos citados na descrição (por exemplo, período de cálculo de tarifa/encargo) com a data do lançamento.
+   - Se o texto incluir contexto de uma página ou trecho anterior, use-o apenas para interpretar a data e a continuidade da tabela; extraia transações somente do trecho atual.
    - REGRA PARA FATURAS DE CARTÃO DE CRÉDITO:
      * Para COMPRAS À VISTA (sem parcelas) ocorridas no ciclo recente da fatura: a "dataMovimento" DEVE ser a data exata da transação (compra).
      * Para COMPRAS PARCELADAS (ex: "Parcela 2/10", "01/03", "5 de 6"): a exigibilidade financeira e o débito desta parcela ocorrem na fatura atual. Portanto, a "dataMovimento" deve ser atribuída ao mês e ano da fatura (usando o dia de fechamento/vencimento ou dataReferencia "${contexto.dataReferencia}"), preservando a data da compra original no texto da descrição/observação. NUNCA aloque uma parcela cobrada na fatura atual para um mês ou ano anterior!
@@ -394,7 +680,8 @@ DIRETRIZES FUNDAMENTAIS:
 5. Parcelamento: Se houver indicação de parcela (ex: "01/03", "3/10", "parcela 2 de 5"), preencha "parcelaAtual" e "totalParcelas".
 6. Contas disponíveis do usuário:
 ${contasFormatadas}
-Se o documento for de uma instituição específica (ex: Santander, Nubank, Itaú, Inter, C6), sugira a conta em "contaSugerida" e o tipo ("CARTAO_CREDITO" ou "CONTA_CORRENTE") em "tipoConta". Correlacione número da conta ou agência quando disponíveis.
+Use somente os dados da conta/cartão explicitamente presentes no documento e as contas disponíveis do usuário; não infira conta, produto ou layout a partir da marca da instituição.
+Classifique a origem pelo tipo de seção/conta em que cada movimentação está listada: CONTA_CORRENTE, POUPANCA, INVESTIMENTO ou CARTAO_CREDITO. Uma movimentação de aplicação CDB listada na seção de conta corrente continua sendo da CONTA_CORRENTE; use INVESTIMENTO para movimentações listadas na conta/seção de investimento. Inclua movimentações efetivas de poupança, inclusive rendimentos creditados. Não converta saldos anterior/atual, resumos ou subtotais em lançamentos. Se houver contas do usuário compatíveis, use o nome correspondente em "contaSugerida".
 Identificação precisa da conta/cartão (BUG-16):
 - Se for extrato de conta corrente e houver número da conta/agência legível no cabeçalho ou metadados, extraia apenas os dígitos em "numeroConta" (ex: "010830489" ou "24220973" ou "123456").
 - Se for fatura de cartão de crédito e houver indicação do final do cartão/dígitos (ex: "Final 2458", "Cartão 7936"), extraia os últimos dígitos (normalmente 4 dígitos) em "digitosCartao".
@@ -413,7 +700,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       "valor": 99.90,
       "natureza": "DESPESA" | "RECEITA" | "TRANSFERENCIA_PROPRIA" | "APORTE_PATRIMONIAL",
       "contaSugerida": "string ou null",
-      "tipoConta": "CONTA_CORRENTE" | "CARTAO_CREDITO" | null,
+      "tipoConta": "CONTA_CORRENTE" | "POUPANCA" | "CARTAO_CREDITO" | "INVESTIMENTO" | "OUTRO" | null,
       "numeroConta": "string ou null",
       "digitosCartao": "string ou null",
       "categoriaSugerida": "string ou null",
@@ -433,7 +720,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
         { role: 'system', content: promptSistema },
         {
           role: 'user',
-          content: `Documento a analisar ("${nomeArquivo}"):\n"""\n${texto}\n"""`,
+          content: `Documento financeiro a analisar:\n"""\n${texto}\n"""`,
         },
       ],
       response_format: { type: 'json_object' },
@@ -441,7 +728,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       max_tokens: 8192,
     };
 
-    const res = await fetch(url, {
+    const res = await fetchIaResiliente(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -452,13 +739,13 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`Erro na API DeepSeek (${res.status}): ${errText}`);
+      throw new Error(`Erro na API ${provedor} (${res.status}): ${errText}`);
     }
 
     const data = (await res.json()) as any;
     const rawText = data.choices?.[0]?.message?.content;
     if (!rawText) {
-      throw new Error('A resposta do DeepSeek não continha texto de saída.');
+      throw new Error(`A resposta do ${provedor} não continha texto de saída.`);
     }
     // TASK-49: contagem real de tokens devolvida pelo provedor (usage)
     const tokens = tokensDeUsageOpenAi(data.usage);
@@ -467,24 +754,9 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
     try {
       parsedJson = JSON.parse(rawText);
     } catch {
-      // Se a resposta foi truncada perto do final do JSON, recuperamos todos os objetos completos de transacoes
-      const matches = Array.from(rawText.matchAll(/\{[^{}]*"dataMovimento"[^{}]*\}/g));
-      if (matches.length > 0) {
-        const transacoesRecuperadas: any[] = [];
-        for (const m of matches as RegExpMatchArray[]) {
-          try {
-            transacoesRecuperadas.push(JSON.parse(m[0]));
-          } catch {
-            // Ignora fragmento
-          }
-        }
-        if (transacoesRecuperadas.length > 0) {
-          parsedJson = { transacoes: transacoesRecuperadas };
-        }
-      }
-      if (!parsedJson) {
-        throw new Error(`A resposta do DeepSeek gerou JSON incompleto ou inválido: ${rawText.slice(-100)}`);
-      }
+      // Nunca recuperar objetos de uma resposta truncada: isso transforma perda
+      // silenciosa em sucesso parcial. O chunk inteiro deve ser reprocessado.
+      throw new Error(`A resposta do ${provedor} gerou JSON incompleto ou inválido: ${rawText.slice(-100)}`);
     }
     const lista = Array.isArray(parsedJson) ? parsedJson : parsedJson.transacoes || [];
 
@@ -506,7 +778,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       }))
       .filter((t: LancamentoConsolidadoIa) => t.valor > 0);
 
-    return { transacoes, tokens };
+    return { transacoes: validarTransacoesDoChunk(transacoes), tokens };
   }
 
   private async chamarOpenRouterApi(
@@ -518,6 +790,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       categorias: { id: string; nome: string }[];
       dataReferencia: string;
       nomeTitular?: string | null;
+      classificacaoDocumento?: ClassificacaoDocumentoWorker;
+      instrucoesSkillDocumento?: string;
     },
     textoProcessado?: string,
     apiKeyOverride?: string,
@@ -573,6 +847,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
 
     const promptSistema = `Você é o extrator inteligente e especialista financeiro do sistema Evolvi.
 Sua missão é extrair rigorosamente TODAS as transações financeiras (despesas, receitas, faturas, pagamentos, transferências) contidas no documento ou extrato anexo.
+${contexto.instrucoesSkillDocumento || ''}
+Classificação feita previamente pelo worker (fonte de verdade; não reidentifique nem altere): instituição ${contexto.classificacaoDocumento?.instituicao || 'não identificada'}; tipo ${contexto.classificacaoDocumento?.tipoDocumento || 'não identificado'}. Use a instituição somente como contexto e classifique cada lançamento pela seção/conta indicada no documento.
 ${titularInfo}
 
 DIRETRIZES FUNDAMENTAIS:
@@ -581,12 +857,15 @@ DIRETRIZES FUNDAMENTAIS:
    - Se for pagamento de fatura de cartão de crédito em extrato bancário de conta corrente (ex: "PAGTO FATURA", "PGTO CARTAO", "PAGAMENTO DE FATURA"): defina "natureza" = "TRANSFERENCIA_PROPRIA" e "isPagamentoFatura" = true.
    - LINHAS INFORMATIVAS DE PAGAMENTO EM FATURA DE CARTÃO (BUG-13): Em faturas de cartão de crédito, linhas como "PAGAMENTO RECEBIDO", "CRÉDITO DE PAGAMENTO DE FATURA", "PAGAMENTO EFETUADO" são compensações informativas da fatura e NÃO geram movimentação de caixa (pois o débito ocorre na conta corrente). Defina "natureza" = "TRANSFERENCIA_PROPRIA", "isPagamentoFatura" = true e "observacao" = "Informativo de quitação em fatura de cartão".
    - Créditos de salário ou proventos de empresa (ex: "TED CONTA SALARIO", "CRED SALARIO", "PLR", "REMUNERACAO", "FOLHA DE PAGAMENTO", "BONUS SALARIAL") são SEMPRE RECEITA operacional, mesmo quando o nome do titular constar na linha como favorecido/remetente da conta salário.
-   - Se for transferência entre contas correntes/poupança, PIX ou TED cujo remetente/pagador for o próprio titular${contexto.nomeTitular ? ` (ex: "${contexto.nomeTitular}")` : ''} (exceto folha de pagamento/conta salário/PLR), ou se for resgate de aplicação/investimento próprio (ex: "RESGATE DE CDB", "RESGATE POUPANCA", "RESGATE INVESTIMENTO"): defina categoricamente "natureza" = "TRANSFERENCIA_PROPRIA" (NUNCA classifique como RECEITA!).
+   - Só classifique PIX/TED como "TRANSFERENCIA_PROPRIA" quando o documento declarar explicitamente que as contas têm a mesma titularidade ou que a conta de destino também pertence ao titular. Não infira titularidade por nome completo, sobrenome, nome parcial, favorecido ou alias de conta. Se for pagamento a outra pessoa ou não houver prova de titularidade comum, mantenha a natureza de despesa/receita indicada pelo sentido da movimentação. Resgates de aplicação/investimento só são transferência própria se o documento identificar que retornam a uma aplicação do mesmo titular.
    - Para aplicações financeiras, aportes, investimentos e compras de ativos (ex: "APLICAÇÃO", "APLICACAO", "CDB", "RDB", "LCI", "LCA", "TESOURO DIRETO", "DEPOSITO POUPANCA", "COMPRA ACOES", "INVESTIMENTO"): defina categoricamente "natureza" = "APORTE_PATRIMONIAL" (NUNCA classifique como DESPESA!).
    - Para compras ou despesas normais: "natureza" = "DESPESA".
    - Para salários, PLR, rendimentos de aplicações, transferências recebidas de terceiros: "natureza" = "RECEITA".
 3. Formato da Data e Regra de Ouro para Cartões:
-   - Formato estrito: "YYYY-MM-DD". Se o documento trouxer apenas DD/MM ou DD/MM/AAAA, converta para YYYY-MM-DD usando o ano de referência ("${contexto.dataReferencia.substring(0, 4)}").
+   - Formato estrito: "YYYY-MM-DD". Se a linha trouxer apenas DD/MM, use o ano do período do extrato ou das datas de movimentação próximas na mesma tabela; use o ano de referência ("${contexto.dataReferencia.substring(0, 4)}") somente quando o documento não der contexto melhor.
+   - Identifique a data da própria movimentação. Não use datas de emissão, geração, impressão, exportação, cabeçalho, rodapé ou identificação do modelo do documento como data de lançamento. Não escolha o ano apenas por ser o mais frequente no arquivo inteiro: considere a frequência somente entre datas que pertencem às linhas de movimentação e confira o período do documento.
+   - Quando uma tabela mostrar a data uma vez e as linhas seguintes forem continuação do mesmo grupo, aplique essa data às linhas sem data até aparecer outra data explícita. Não transforme uma data omitida em dia 1. Não confunda períodos citados na descrição (por exemplo, período de cálculo de tarifa/encargo) com a data do lançamento.
+   - Se o texto incluir contexto de uma página ou trecho anterior, use-o apenas para interpretar a data e a continuidade da tabela; extraia transações somente do trecho atual.
    - REGRA PARA FATURAS DE CARTÃO DE CRÉDITO:
      * Para COMPRAS À VISTA (sem parcelas) ocorridas no ciclo recente da fatura: a "dataMovimento" DEVE ser a data exata da transação (compra).
      * Para COMPRAS PARCELADAS (ex: "Parcela 2/10", "01/03", "5 de 6"): a exigibilidade financeira e o débito desta parcela ocorrem na fatura atual. Portanto, a "dataMovimento" deve ser atribuída ao mês e ano da fatura (usando o dia de fechamento/vencimento ou dataReferencia "${contexto.dataReferencia}"), preservando a data da compra original no texto da descrição/observação. NUNCA aloque uma parcela cobrada na fatura atual para um mês ou ano anterior!
@@ -594,7 +873,8 @@ DIRETRIZES FUNDAMENTAIS:
 5. Parcelamento: Se houver indicação de parcela (ex: "01/03", "3/10", "parcela 2 de 5"), preencha "parcelaAtual" e "totalParcelas".
 6. Contas disponíveis do usuário:
 ${contasFormatadas}
-Se o documento for de uma instituição específica (ex: Santander, Nubank, Itaú, Inter, C6), sugira a conta em "contaSugerida" e o tipo ("CARTAO_CREDITO" ou "CONTA_CORRENTE") em "tipoConta". Correlacione número da conta ou agência quando disponíveis.
+Use somente os dados da conta/cartão explicitamente presentes no documento e as contas disponíveis do usuário; não infira conta, produto ou layout a partir da marca da instituição.
+Classifique a origem pelo tipo de seção/conta em que cada movimentação está listada: CONTA_CORRENTE, POUPANCA, INVESTIMENTO ou CARTAO_CREDITO. Uma movimentação de aplicação CDB listada na seção de conta corrente continua sendo da CONTA_CORRENTE; use INVESTIMENTO para movimentações listadas na conta/seção de investimento. Inclua movimentações efetivas de poupança, inclusive rendimentos creditados. Não converta saldos anterior/atual, resumos ou subtotais em lançamentos. Se houver contas do usuário compatíveis, use o nome correspondente em "contaSugerida".
 Identificação precisa da conta/cartão (BUG-16):
 - Se for extrato de conta corrente e houver número da conta/agência legível no cabeçalho ou metadados, extraia apenas os dígitos em "numeroConta" (ex: "010830489" ou "24220973" ou "123456").
 - Se for fatura de cartão de crédito e houver indicação do final do cartão/dígitos (ex: "Final 2458", "Cartão 7936"), extraia os últimos dígitos (normalmente 4 dígitos) em "digitosCartao".
@@ -614,7 +894,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       "valor": 99.90,
       "natureza": "DESPESA" | "RECEITA" | "TRANSFERENCIA_PROPRIA" | "APORTE_PATRIMONIAL",
       "contaSugerida": "string ou null",
-      "tipoConta": "CONTA_CORRENTE" | "CARTAO_CREDITO" | null,
+      "tipoConta": "CONTA_CORRENTE" | "POUPANCA" | "CARTAO_CREDITO" | "INVESTIMENTO" | "OUTRO" | null,
       "numeroConta": "string ou null",
       "digitosCartao": "string ou null",
       "categoriaSugerida": "string ou null",
@@ -639,7 +919,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       conteudoUsuario = [
         {
           type: 'text',
-          text: `${promptSistema}\n\nDocumento a analisar ("${nomeArquivo}"): analise a imagem anexa.`,
+          text: `${promptSistema}\n\nAnalise a imagem anexa.`,
         },
         {
           type: 'image_url',
@@ -651,7 +931,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       conteudoUsuario = [
         {
           type: 'text',
-          text: `${promptSistema}\n\nDocumento a analisar ("${nomeArquivo}"): analise o PDF anexo.`,
+          text: `${promptSistema}\n\nAnalise o PDF anexo.`,
         },
         {
           type: 'file',
@@ -662,7 +942,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
         },
       ];
     } else {
-      conteudoUsuario = `Documento a analisar ("${nomeArquivo}"):\n"""\n${texto}\n"""`;
+      conteudoUsuario = `Documento financeiro a analisar:\n"""\n${texto}\n"""`;
     }
 
     const body = {
@@ -676,7 +956,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       max_tokens: 8192,
     };
 
-    const res = await fetch(url, {
+    const res = await fetchIaResiliente(url, {
       method: 'POST',
       headers: montarHeadersOpenRouter(key),
       body: JSON.stringify(body),
@@ -699,23 +979,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
     try {
       parsedJson = JSON.parse(rawText);
     } catch {
-      const matches = Array.from(rawText.matchAll(/\{[^{}]*"dataMovimento"[^{}]*\}/g));
-      if (matches.length > 0) {
-        const transacoesRecuperadas: any[] = [];
-        for (const m of matches as RegExpMatchArray[]) {
-          try {
-            transacoesRecuperadas.push(JSON.parse(m[0]));
-          } catch {
-            // Ignora fragmento
-          }
-        }
-        if (transacoesRecuperadas.length > 0) {
-          parsedJson = { transacoes: transacoesRecuperadas };
-        }
-      }
-      if (!parsedJson) {
-        throw new Error(`A resposta do OpenRouter gerou JSON incompleto ou inválido: ${rawText.slice(-100)}`);
-      }
+      throw new Error(`A resposta do OpenRouter gerou JSON incompleto ou inválido: ${rawText.slice(-100)}`);
     }
     const lista = Array.isArray(parsedJson) ? parsedJson : parsedJson.transacoes || [];
 
@@ -737,7 +1001,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       }))
       .filter((t: LancamentoConsolidadoIa) => t.valor > 0);
 
-    return { transacoes, tokens };
+    return { transacoes: validarTransacoesDoChunk(transacoes), tokens };
   }
 
   private async chamarGeminiApi(
@@ -749,6 +1013,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       categorias: { id: string; nome: string }[];
       dataReferencia: string;
       nomeTitular?: string | null;
+      classificacaoDocumento?: ClassificacaoDocumentoWorker;
+      instrucoesSkillDocumento?: string;
     },
     textoProcessado?: string,
     apiKeyOverride?: string,
@@ -772,6 +1038,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
 
     const promptSistema = `Você é o extrator inteligente e especialista financeiro do sistema Evolvi.
 Sua missão é extrair rigorosamente TODAS as transações financeiras (despesas, receitas, faturas, pagamentos, transferências) contidas no documento ou extrato anexo.
+${contexto.instrucoesSkillDocumento || ''}
+Classificação feita previamente pelo worker (fonte de verdade; não reidentifique nem altere): instituição ${contexto.classificacaoDocumento?.instituicao || 'não identificada'}; tipo ${contexto.classificacaoDocumento?.tipoDocumento || 'não identificado'}. Use a instituição somente como contexto e classifique cada lançamento pela seção/conta indicada no documento.
 ${titularInfo}
 
 DIRETRIZES FUNDAMENTAIS:
@@ -780,12 +1048,15 @@ DIRETRIZES FUNDAMENTAIS:
    - Se for pagamento de fatura de cartão de crédito em extrato bancário de conta corrente (ex: "PAGTO FATURA", "PGTO CARTAO", "PAGAMENTO DE FATURA"): defina "natureza" = "TRANSFERENCIA_PROPRIA" e "isPagamentoFatura" = true.
    - LINHAS INFORMATIVAS DE PAGAMENTO EM FATURA DE CARTÃO (BUG-13): Em faturas de cartão de crédito, linhas como "PAGAMENTO RECEBIDO", "CRÉDITO DE PAGAMENTO DE FATURA", "PAGAMENTO EFETUADO" são compensações informativas da fatura e NÃO geram movimentação de caixa (pois o débito ocorre na conta corrente). Defina "natureza" = "TRANSFERENCIA_PROPRIA", "isPagamentoFatura" = true e "observacao" = "Informativo de quitação em fatura de cartão".
    - Créditos de salário ou proventos de empresa (ex: "TED CONTA SALARIO", "CRED SALARIO", "PLR", "REMUNERACAO", "FOLHA DE PAGAMENTO", "BONUS SALARIAL") são SEMPRE RECEITA operacional, mesmo quando o nome do titular constar na linha como favorecido/remetente da conta salário.
-   - Se for transferência entre contas correntes/poupança, PIX ou TED cujo remetente/pagador for o próprio titular${contexto.nomeTitular ? ` (ex: "${contexto.nomeTitular}")` : ''} (exceto folha de pagamento/conta salário/PLR), ou se for resgate de aplicação/investimento próprio (ex: "RESGATE DE CDB", "RESGATE POUPANCA", "RESGATE INVESTIMENTO"): defina categoricamente "natureza" = "TRANSFERENCIA_PROPRIA" (NUNCA classifique como RECEITA!).
+   - Só classifique PIX/TED como "TRANSFERENCIA_PROPRIA" quando o documento declarar explicitamente que as contas têm a mesma titularidade ou que a conta de destino também pertence ao titular. Não infira titularidade por nome completo, sobrenome, nome parcial, favorecido ou alias de conta. Se for pagamento a outra pessoa ou não houver prova de titularidade comum, mantenha a natureza de despesa/receita indicada pelo sentido da movimentação. Resgates de aplicação/investimento só são transferência própria se o documento identificar que retornam a uma aplicação do mesmo titular.
    - Para aplicações financeiras, aportes, investimentos e compras de ativos (ex: "APLICAÇÃO", "APLICACAO", "CDB", "RDB", "LCI", "LCA", "TESOURO DIRETO", "DEPOSITO POUPANCA", "COMPRA ACOES", "INVESTIMENTO"): defina categoricamente "natureza" = "APORTE_PATRIMONIAL" (NUNCA classifique como DESPESA!).
    - Para compras ou despesas normais: "natureza" = "DESPESA".
    - Para salários, PLR, rendimentos de aplicações, transferências recebidas de terceiros: "natureza" = "RECEITA".
 3. Formato da Data e Regra de Ouro para Cartões:
-   - Formato estrito: "YYYY-MM-DD". Se o documento trouxer apenas DD/MM ou DD/MM/AAAA, converta para YYYY-MM-DD usando o ano de referência ("${contexto.dataReferencia.substring(0, 4)}").
+   - Formato estrito: "YYYY-MM-DD". Se a linha trouxer apenas DD/MM, use o ano do período do extrato ou das datas de movimentação próximas na mesma tabela; use o ano de referência ("${contexto.dataReferencia.substring(0, 4)}") somente quando o documento não der contexto melhor.
+   - Identifique a data da própria movimentação. Não use datas de emissão, geração, impressão, exportação, cabeçalho, rodapé ou identificação do modelo do documento como data de lançamento. Não escolha o ano apenas por ser o mais frequente no arquivo inteiro: considere a frequência somente entre datas que pertencem às linhas de movimentação e confira o período do documento.
+   - Quando uma tabela mostrar a data uma vez e as linhas seguintes forem continuação do mesmo grupo, aplique essa data às linhas sem data até aparecer outra data explícita. Não transforme uma data omitida em dia 1. Não confunda períodos citados na descrição (por exemplo, período de cálculo de tarifa/encargo) com a data do lançamento.
+   - Se o texto incluir contexto de uma página ou trecho anterior, use-o apenas para interpretar a data e a continuidade da tabela; extraia transações somente do trecho atual.
    - REGRA PARA FATURAS DE CARTÃO DE CRÉDITO:
      * Para COMPRAS À VISTA (sem parcelas) ocorridas no ciclo recente da fatura: a "dataMovimento" DEVE ser a data exata da transação (compra).
      * Para COMPRAS PARCELADAS (ex: "Parcela 2/10", "01/03", "5 de 6"): a exigibilidade financeira e o débito desta parcela ocorrem na fatura atual. Portanto, a "dataMovimento" deve ser atribuída ao mês e ano da fatura (usando o dia de fechamento/vencimento ou dataReferencia "${contexto.dataReferencia}"), preservando a data da compra original no texto da descrição/observação. NUNCA aloque uma parcela cobrada na fatura atual para um mês ou ano anterior!
@@ -793,7 +1064,8 @@ DIRETRIZES FUNDAMENTAIS:
 5. Parcelamento: Se houver indicação de parcela (ex: "01/03", "3/10", "parcela 2 de 5"), preencha "parcelaAtual" e "totalParcelas".
 6. Contas disponíveis do usuário:
 ${contasFormatadas}
-Se o documento for de uma instituição específica (ex: Santander, Nubank, Itaú, Inter, C6), sugira a conta em "contaSugerida" e o tipo ("CARTAO_CREDITO" ou "CONTA_CORRENTE") em "tipoConta". Correlacione número da conta ou agência quando disponíveis.
+Use somente os dados da conta/cartão explicitamente presentes no documento e as contas disponíveis do usuário; não infira conta, produto ou layout a partir da marca da instituição.
+Classifique a origem pelo tipo de seção/conta em que cada movimentação está listada: CONTA_CORRENTE, POUPANCA, INVESTIMENTO ou CARTAO_CREDITO. Uma movimentação de aplicação CDB listada na seção de conta corrente continua sendo da CONTA_CORRENTE; use INVESTIMENTO para movimentações listadas na conta/seção de investimento. Inclua movimentações efetivas de poupança, inclusive rendimentos creditados. Não converta saldos anterior/atual, resumos ou subtotais em lançamentos. Se houver contas do usuário compatíveis, use o nome correspondente em "contaSugerida".
 Identificação precisa da conta/cartão (BUG-16):
 - Se for extrato de conta corrente e houver número da conta/agência legível no cabeçalho ou metadados, extraia apenas os dígitos em "numeroConta" (ex: "010830489" ou "24220973" ou "123456").
 - Se for fatura de cartão de crédito e houver indicação do final do cartão/dígitos (ex: "Final 2458", "Cartão 7936"), extraia os últimos dígitos (normalmente 4 dígitos) em "digitosCartao".
@@ -812,7 +1084,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       "valor": 99.90,
       "natureza": "DESPESA" | "RECEITA" | "TRANSFERENCIA_PROPRIA" | "APORTE_PATRIMONIAL",
       "contaSugerida": "string ou null",
-      "tipoConta": "CONTA_CORRENTE" | "CARTAO_CREDITO" | null,
+      "tipoConta": "CONTA_CORRENTE" | "POUPANCA" | "CARTAO_CREDITO" | "INVESTIMENTO" | "OUTRO" | null,
       "numeroConta": "string ou null",
       "digitosCartao": "string ou null",
       "categoriaSugerida": "string ou null",
@@ -843,7 +1115,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       const texto = textoProcessado || conteudoBuffer.toString('utf-8');
       parts = [
         {
-          text: `${promptSistema}\n\nDocumento a analisar ("${nomeArquivo}"):\n"""\n${texto}\n"""`,
+          text: `${promptSistema}\n\nDocumento financeiro a analisar:\n"""\n${texto}\n"""`,
         },
       ];
     } else {
@@ -868,7 +1140,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       },
     };
 
-    const res = await fetch(url, {
+    const res = await fetchIaResiliente(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -909,7 +1181,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       }))
       .filter((t: LancamentoConsolidadoIa) => t.valor > 0);
 
-    return { transacoes, tokens };
+    return { transacoes: validarTransacoesDoChunk(transacoes), tokens };
   }
 
   public extrairLocalDeterministic(params: {
@@ -938,29 +1210,6 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
     }
     texto = texto || '';
 
-    // 1. Tentar parser especializado para Fatura C6 Bank
-    if (C6InvoicePdfParser.isC6Invoice(texto)) {
-      const transacoesC6 = C6InvoicePdfParser.parse(texto, {
-        dataReferencia: contexto.dataReferencia,
-        categorias: contexto.categorias,
-      });
-      if (transacoesC6.length > 0) {
-        return transacoesC6;
-      }
-    }
-
-    // 1.1. Tentar parser especializado para Extrato Santander
-    if (SantanderStatementPdfParser.isSantanderStatement(texto)) {
-      const transacoesSantander = SantanderStatementPdfParser.parse(texto, {
-        dataReferencia: contexto.dataReferencia,
-        categorias: contexto.categorias,
-        nomeTitular: contexto.nomeTitular,
-      });
-      if (transacoesSantander.length > 0) {
-        return transacoesSantander;
-      }
-    }
-
     // 2. Tentar parser universal (OFX, CSV, JSON)
     if (ext === '.ofx' || ext === '.csv' || ext === '.json' || texto.includes('<OFX>') || texto.includes(';')) {
       const parseRes = this.universalParser.parse(texto, nomeArquivo);
@@ -968,26 +1217,12 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
         return parseRes.transacoes.map((t) => {
           let natureza: 'DESPESA' | 'RECEITA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL' = (t.natureza as any) || 'DESPESA';
           const descLower = t.descricao.toLowerCase();
-          const nomeTitular = contexto.nomeTitular;
-          let isTransferenciaPropriaTitular = false;
-          if (nomeTitular) {
-            const partesNome = nomeTitular
-              .trim()
-              .split(/\s+/)
-              .filter((p) => p.length >= 3);
-            const containsNomeCompleto = t.descricao.toUpperCase().includes(nomeTitular.toUpperCase());
-            const containsPartesSignificativas =
-              partesNome.length >= 2 &&
-              partesNome.every((p) => t.descricao.toUpperCase().includes(p.toUpperCase()));
+          const tipoContaDeduzido = (parseRes.contaSugerida?.tipo as any) || null;
+          const isPagamentoFatura =
+            descricaoIndicaPagamentoFatura(t.descricao) ||
+            (tipoContaDeduzido === 'CARTAO_CREDITO' && t.isPagamentoFatura);
 
-            if (containsNomeCompleto || containsPartesSignificativas) {
-              isTransferenciaPropriaTitular = true;
-            }
-          }
-
-          if (t.isPagamentoFatura || descLower.includes('fatura') || descLower.includes('pagamento do cartao')) {
-            natureza = 'TRANSFERENCIA_PROPRIA';
-          } else if (isTransferenciaPropriaTitular) {
+          if (isPagamentoFatura || descricaoIndicaTransferenciaPropria(t.descricao)) {
             natureza = 'TRANSFERENCIA_PROPRIA';
           } else if (
             descLower.includes('aplicação') ||
@@ -1020,7 +1255,6 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
             natureza = 'DESPESA';
           }
 
-          const tipoContaDeduzido = (parseRes.contaSugerida?.tipo as any) || this.deduzirTipoContaPorArquivo(nomeArquivo);
           const isLinhaInformativaFaturaCartao =
             tipoContaDeduzido === 'CARTAO_CREDITO' &&
             (t.isPagamentoFatura ||
@@ -1038,7 +1272,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
             descricao: t.descricao,
             valor: t.valor,
             natureza,
-            contaSugerida: parseRes.contaSugerida?.nome || this.deduzirNomeContaPorArquivo(nomeArquivo),
+            contaSugerida: parseRes.contaSugerida?.nome || null,
             tipoConta: tipoContaDeduzido,
             numeroConta: parseRes.contaSugerida?.numeroConta || null,
             digitosCartao: parseRes.contaSugerida?.digitosCartao || null,
@@ -1046,7 +1280,7 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
             parcelaAtual: null,
             totalParcelas: null,
             idOrigem: t.idExterno || null,
-            isPagamentoFatura: Boolean(t.isPagamentoFatura || isLinhaInformativaFaturaCartao),
+            isPagamentoFatura: Boolean(isPagamentoFatura || isLinhaInformativaFaturaCartao),
             observacao,
             confianca: 0.98,
           };
@@ -1078,32 +1312,6 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (JSON puro):
       default:
         return 'text/plain';
     }
-  }
-
-  private deduzirNomeContaPorArquivo(nome: string): string {
-    const lower = nome.toLowerCase();
-    if (lower.includes('nubank') || lower.includes('nu_') || lower.startsWith('nu')) return 'Nubank';
-    if (lower.includes('itau') || lower.includes('itaú')) return 'Itaú Unibanco';
-    if (lower.includes('inter')) return 'Banco Inter';
-    if (lower.includes('c6')) return 'C6 Bank';
-    if (lower.includes('santander')) return 'Santander';
-    if (lower.includes('bradesco')) return 'Bradesco';
-    if (lower.includes('caixa')) return 'Caixa Econômica';
-    if (lower.includes('bb') || lower.includes('brasil')) return 'Banco do Brasil';
-    return 'Conta Bancária';
-  }
-
-  private deduzirTipoContaPorArquivo(nome: string): 'CARTAO_CREDITO' | 'CONTA_CORRENTE' {
-    const lower = nome.toLowerCase();
-    if (
-      lower.includes('fatura') ||
-      lower.includes('cartao') ||
-      lower.includes('cartão') ||
-      lower.includes('credit')
-    ) {
-      return 'CARTAO_CREDITO';
-    }
-    return 'CONTA_CORRENTE';
   }
 
   private deduzirCategoria(

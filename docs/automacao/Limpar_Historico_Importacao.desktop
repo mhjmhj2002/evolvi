@@ -2,7 +2,8 @@
 Version=1.0
 Type=Application
 Name=Limpar Histórico de Importação Evolvi
-Comment=Limpa lançamentos, lotes, arquivos de importação e alertas preservando credenciais de IA
+Comment=Limpa dados financeiros e importações do usuário preservando configurações, uso e médias globais de IA
+Keywords=Limpar vencimentos e parcelamentos;Projeção;Importação;Histórico;
 Exec=bash /home/mhj/git/evolvi/docs/automacao/limpar_historico_importacao.sh
 Path=/home/mhj/git/evolvi
 Icon=edit-clear

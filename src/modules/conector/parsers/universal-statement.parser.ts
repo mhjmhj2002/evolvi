@@ -1,5 +1,5 @@
 import { BankAccountRaw, BankTransactionRaw } from '../types/bank-connector.interface.js';
-import { ItauBankConnectorProvider } from '../providers/itau-bank-connector.provider.js';
+import { descricaoIndicaPagamentoFatura } from '../../movimento/natureza-movimento.util.js';
 
 export interface ParseResult {
   formato: 'OFX' | 'CSV' | 'JSON';
@@ -47,7 +47,6 @@ export class UniversalStatementParser {
     try {
       // Extrair informações de conta se disponíveis
       const acctIdMatch = content.match(/<ACCTID>([^<\r\n]+)/i);
-      const bankIdMatch = content.match(/<BANKID>([^<\r\n]+)/i);
       const isCreditCard = content.includes('<CCSTMTRS>') || content.includes('<CCACCTFROM>');
       const idExternoConta = acctIdMatch ? acctIdMatch[1].trim() : undefined;
 
@@ -55,7 +54,7 @@ export class UniversalStatementParser {
         idExterno: idExternoConta,
         numeroConta: !isCreditCard ? idExternoConta : undefined,
         digitosCartao: isCreditCard && idExternoConta ? idExternoConta.slice(-4) : undefined,
-        nome: `${isCreditCard ? 'Cartão' : 'Conta'} ${bankIdMatch ? `Banco ${bankIdMatch[1].trim()}` : 'OFX'}`,
+        nome: `${isCreditCard ? 'Cartão' : 'Conta'} OFX`,
         tipo: isCreditCard ? 'CARTAO_CREDITO' : 'CONTA_CORRENTE',
       };
 
@@ -91,27 +90,12 @@ export class UniversalStatementParser {
         const valorAbsoluto = Math.abs(valorNumerico);
         const descricaoNormalizada = (memo || trnType || 'Lançamento OFX').trim();
 
-        // Identificação Itaú / Bancos Brasileiros: Categorização POF e anti-dupla contagem
-        const classif = (bankIdMatch && bankIdMatch[1].trim() === '341') || /itau/i.test(content)
-          ? ItauBankConnectorProvider.classificarTransacaoItau(descricaoNormalizada)
-          : {
-              categoriaSugerida: undefined,
-              natureza: (isNegativo ? 'DESPESA' : 'RECEITA') as BankTransactionRaw['natureza'],
-              isPagamentoFatura: false,
-            };
-
-        const isPagamento =
-          Boolean(classif.isPagamentoFatura) ||
-          /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|fatura\s*cart[aã]o|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
-            descricaoNormalizada
-          ) ||
-          (/pag\s*boleto|pagamento\s*boleto|pagto\s*boleto/i.test(descricaoNormalizada) &&
-            /nu\s*pagamentos|nubank|c6\s*bank|banco\s*c6|bradescard|itaucard|cart[aã]o|credicard|santander\s*cart[oõ]es/i.test(descricaoNormalizada));
+        const isPagamento = descricaoIndicaPagamentoFatura(descricaoNormalizada);
 
 
         let natureza: BankTransactionRaw['natureza'] = isPagamento
           ? 'TRANSFERENCIA_PROPRIA'
-          : classif.natureza || (isNegativo ? 'DESPESA' : 'RECEITA');
+          : (isNegativo ? 'DESPESA' : 'RECEITA');
 
         transacoes.push({
           idExterno: fitId || undefined,
@@ -120,7 +104,6 @@ export class UniversalStatementParser {
           valor: valorAbsoluto,
           natureza,
           isPagamentoFatura: isPagamento,
-          categoriaSugerida: classif.categoriaSugerida,
           memo: memo || undefined,
         });
       }
@@ -227,7 +210,7 @@ export class UniversalStatementParser {
       const colData = idxData;
       const colValor = idxValor;
 
-      // Suporte a CSVs bancários com colunas distintas de Histórico e Descrição (ex: Banco Inter: Histórico="Pix enviado", Descrição="Manuel Alejandro...")
+      // Suporta CSVs com colunas distintas para histórico e descrição.
       const idxHist = colunasCabecalho.findIndex((c) => /^(historico|hist[oó]rico)$/i.test(c));
       const idxDescOnly = colunasCabecalho.findIndex((c) => /^(descri[cç][aã]o|memo|detalhe|lan[cç]amento)$/i.test(c));
       const colDesc = idxDescOnly >= 0 ? idxDescOnly : (idxDesc >= 0 ? idxDesc : (idxData === 0 ? 1 : 0));
@@ -296,15 +279,7 @@ export class UniversalStatementParser {
           }
         }
 
-        const classif = ItauBankConnectorProvider.classificarTransacaoItau(descricaoNormalizada);
-
-        const isPagamento =
-          Boolean(classif.isPagamentoFatura) ||
-          /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|fatura\s*cart[aã]o|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
-            descricaoNormalizada
-          ) ||
-          (/pag\s*boleto|pagamento\s*boleto|pagto\s*boleto/i.test(descricaoNormalizada) &&
-            /nu\s*pagamentos|nubank|c6\s*bank|banco\s*c6|bradescard|itaucard|cart[aã]o|credicard|santander\s*cart[oõ]es/i.test(descricaoNormalizada));
+        const isPagamento = descricaoIndicaPagamentoFatura(descricaoNormalizada);
 
         let natureza: BankTransactionRaw['natureza'] = isPagamento
           ? 'TRANSFERENCIA_PROPRIA'
@@ -316,7 +291,6 @@ export class UniversalStatementParser {
           valor: valorAbsoluto,
           natureza,
           isPagamentoFatura: isPagamento,
-          categoriaSugerida: classif.categoriaSugerida,
         });
       }
     } catch (err: unknown) {
@@ -355,12 +329,7 @@ export class UniversalStatementParser {
         const descricao = String(item.descricao || item.memo || 'Lançamento JSON').trim();
 
         const isPagamentoFatura =
-          Boolean(item.isPagamentoFatura) ||
-          /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|fatura\s*cart[aã]o|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
-            descricao
-          ) ||
-          (/pag\s*boleto|pagamento\s*boleto|pagto\s*boleto/i.test(descricao) &&
-            /nu\s*pagamentos|nubank|c6\s*bank|banco\s*c6|bradescard|itaucard|cart[aã]o|credicard|santander\s*cart[oõ]es/i.test(descricao));
+          Boolean(item.isPagamentoFatura) || descricaoIndicaPagamentoFatura(descricao);
 
 
         let natureza: BankTransactionRaw['natureza'] = (item.natureza as BankTransactionRaw['natureza']) || (isNegativo ? 'DESPESA' : 'RECEITA');

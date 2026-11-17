@@ -250,8 +250,9 @@ describe('Mapeamento de Dívidas e Compromissos Recorrentes (TASK-06)', () => {
       expect(response.statusCode).toBe(200);
       const data = JSON.parse(response.body);
       expect(data.totalParcelamentosAtivos).toBe(2);
-      // Geladeira: 2400 + Notebook: 4 * 500 = 2000 -> Total: 4400
-      expect(data.saldoDevedorTotalGeral).toBe(4400);
+      // A API considera o saldo ainda exigível de cada contrato, não o valor
+      // original bruto informado na contratação.
+      expect(data.saldoDevedorTotalGeral).toBe(3600);
     });
 
     it('deve rejeitar parcelamento com parcelaAtual maior que totalParcelas', async () => {

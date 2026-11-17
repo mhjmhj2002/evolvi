@@ -9,6 +9,7 @@ import {
   ValidacaoDeduplicacaoService,
   ValidacaoDeduplicacaoResultado,
 } from './validacao-deduplicacao.service.js';
+import { descricaoIndicaTransferenciaPropria } from './natureza-movimento.util.js';
 
 /**
  * Versão corrente do catálogo de regras determinísticas de negócio de movimentos.
@@ -24,8 +25,9 @@ import {
  * Versão 9: Alinhamento determinístico da competência financeira de compras parceladas de cartão (Parcela X/Y) à fatura de cobrança
  * Versão 10: BUG-22 (Resolução automática de duplicatas óbvias R1 e R2, sem poluir a Central de Suspeitas)
  * Versão 11: Correção de pagamentos de fatura que caíram como aportes patrimoniais (reclassificação determinística para TRANSFERENCIA_PROPRIA)
+ * Versão 12: Natureza de transferência exige evidência textual explícita; coincidência de nomes não comprova titularidade.
  */
-export const VERSAO_REGRAS_MOVIMENTOS_ATUAL = 11;
+export const VERSAO_REGRAS_MOVIMENTOS_ATUAL = 12;
 
 /**
  * Helper determinístico para inferir a competência (YYYY-MM) de cobrança da fatura
@@ -189,36 +191,9 @@ export class MovimentoRecalculoService {
       }
     }
 
-    // 3. Reconhecimento Retrospectivo de Transferências Próprias do Titular (TASK-48):
-    // Busca movimentos do usuário classificados erroneamente como DESPESA ou RECEITA
-    // cuja descrição contenha o nome do titular (exceto proventos/salário/PLR já tratados)
-    // ou resgates/pagamentos de fatura, convertendo-os para TRANSFERENCIA_PROPRIA.
-    // 2. Extrai nomes/titularidades conhecidas do usuário (nome de perfil e titulares nos nomes de contas cadastradas)
-    const usuario = await prisma.usuario.findUnique({
-      where: { id: usuarioId },
-      select: { nome: true },
-    });
-    const nomeTitular = usuario?.nome?.trim();
-
-    // Busca titulares identificados nos nomes das contas do usuário, ex: "Inter Final 3788 (MANUEL A H JARA)"
-    const contasUsuario = await prisma.conta.findMany({
-      where: { usuarioId },
-      select: { nome: true },
-    });
-    const titularesConhecidos = new Set<string>();
-    if (nomeTitular) {
-      titularesConhecidos.add(nomeTitular.toUpperCase());
-    }
-    for (const c of contasUsuario) {
-      const matchParen = c.nome.match(/\(([^)]+)\)/);
-      if (matchParen) {
-        const titularConta = matchParen[1].trim().toUpperCase();
-        if (titularConta.length >= 5) {
-          titularesConhecidos.add(titularConta);
-        }
-      }
-    }
-
+    // 3. Reconhecimento retrospectivo de transferências próprias: só converte
+    // quando a descrição/observação declara explicitamente titularidade comum.
+    // Coincidência de nome de pessoa ou favorecido não prova que a conta é própria.
     const idsParaConverterTransferenciaPropria: string[] = [];
     // Busca movimentos do usuário classificados erroneamente como DESPESA, RECEITA ou APORTE_PATRIMONIAL que não foram fixados manualmente pelo usuário
     const movimentosCandidatosTransf = await prisma.movimento.findMany({
@@ -234,9 +209,6 @@ export class MovimentoRecalculoService {
       },
     });
 
-    const regexTermosTransfPropria =
-      /transfer[êe]ncia\s+(?:entre\s+contas|de\s+mesma\s+titularidade)|transf\s+mesma\s+titularidade|mesma\s+titularidade|pr[óo]prio\s+titular|contas\s+pr[óo]prias|pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|fatura\s*cart[aã]o|debito\s*automatico\s*fatura|pag\s*fatura/i;
-
     for (const mov of movimentosCandidatosTransf) {
       // Regra de Ouro: Proventos de salário, conta salário ou PLR legítimos NUNCA são convertidos
       if (REGEX_PROVENTOS_SALARIO_PLR.test(mov.descricao) || REGEX_PROVENTOS_SALARIO_PLR.test(mov.observacao || '')) {
@@ -245,27 +217,9 @@ export class MovimentoRecalculoService {
 
       let isTransferenciaPropria = false;
 
-      // 1. Checagem por termos inequívocos na descrição ou observação do extrato
-      if (regexTermosTransfPropria.test(mov.descricao) || regexTermosTransfPropria.test(mov.observacao || '')) {
-        isTransferenciaPropria = true;
-      }
-
-      // 2. Checagem por correspondência do nome do titular cadastrado ou titulares das contas próprias
-      if (!isTransferenciaPropria) {
-        const descUpper = mov.descricao.toUpperCase();
-        for (const titular of titularesConhecidos) {
-          const partesNome = titular.split(/\s+/).filter((p) => p.length >= 3);
-          const containsNomeCompleto = descUpper.includes(titular);
-          const containsPartesSignificativas =
-            partesNome.length >= 2 &&
-            partesNome.every((p) => descUpper.includes(p));
-
-          if (containsNomeCompleto || containsPartesSignificativas) {
-            isTransferenciaPropria = true;
-            break;
-          }
-        }
-      }
+      isTransferenciaPropria =
+        descricaoIndicaTransferenciaPropria(mov.descricao) ||
+        descricaoIndicaTransferenciaPropria(mov.observacao || '');
 
       if (isTransferenciaPropria) {
         idsParaConverterTransferenciaPropria.push(mov.id);

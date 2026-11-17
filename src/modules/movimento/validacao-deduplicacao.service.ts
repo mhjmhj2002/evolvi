@@ -1,5 +1,6 @@
 import { prisma } from '../../infrastructure/database/prisma.js';
 import { extrairRaizComerciante } from './movimento.util.js';
+import { descricaoIndicaPagamentoFatura } from './natureza-movimento.util.js';
 
 export interface ValidacaoDeduplicacaoResultado {
   usuarioId: string;
@@ -308,11 +309,9 @@ export function saoDuplicatasSemanticas(
   const raizA = extrairRaizComerciante(descA).toLowerCase();
   const raizB = extrairRaizComerciante(descB).toLowerCase();
 
-  const tokensA = new Set(normA.split(' ').filter(Boolean));
-  const tokensB = new Set(normB.split(' ').filter(Boolean));
-  const comuns = [...tokensA].filter((t) => tokensB.has(t));
-  const totalDistintos = new Set([...tokensA, ...tokensB]).size;
-  const similarity = totalDistintos > 0 ? comuns.length / totalDistintos : 0;
+  const normRaizA = normalizarDescricaoComparacao(raizA || descA);
+  const normRaizB = normalizarDescricaoComparacao(raizB || descB);
+  const similarityRaiz = calcularSimilaridadeTexto(normRaizA, normRaizB);
 
   if (raizA && raizB && raizA === raizB) {
     // Mesma raiz de comerciante (ex: "Mp *mariadefatima", "Leomar Schunk")
@@ -335,19 +334,15 @@ export function saoDuplicatasSemanticas(
   // (ex: "PADARIA DINIZ VILA VELHA" vs "PADARIA DINIZ - VILA VELHA BRA").
   const valorNum = mA.valor ? Number(mA.valor) : (mB.valor ? Number(mB.valor) : null);
   if (valorNum !== null && !isNaN(valorNum) && Math.abs(valorNum) < 50.0) {
-    if (similarity >= 0.7) {
+    if (similarityRaiz >= 0.7) {
       return true;
     }
   }
 
-  // 7. Pagamentos de Fatura e Liquidações Bancárias Equivalentes (ex: "Pagamento efetuado" vs "Pagamento efetuado - BANCO C6 S.A.")
-  const ehPagamentoA = /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|pag\s*fatura/i.test(descA);
-  const ehPagamentoB = /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|pag\s*fatura/i.test(descB);
+  // 7. Só aproxima pagamentos quando ambas as descrições mencionam fatura/cartão.
+  const ehPagamentoA = descricaoIndicaPagamentoFatura(descA);
+  const ehPagamentoB = descricaoIndicaPagamentoFatura(descB);
   if (ehPagamentoA && ehPagamentoB) {
-    // Se ambos são termos de liquidação/pagamento de fatura e um contém a base do outro (ex: "Pagamento efetuado")
-    if (normA.startsWith('pagamento efetuado') && normB.startsWith('pagamento efetuado')) {
-      return true;
-    }
     if (normA.includes(normB) || normB.includes(normA)) {
       return true;
     }
@@ -357,12 +352,12 @@ export function saoDuplicatasSemanticas(
   // Ex: "TED RECEBIDA - PAGTO SEGURO DESEMPREGO OPERACOES CREDITO IMOBILIARIO" vs "TED RECEBIDA PAGTO SEGURO DESEMPREGO"
   // Ex: "REMUNERACAO BASICA POUPANCA TAXA = 0,173 %" vs "REMUNERACAO BASICA POUPANCA"
   // Ex: "PAGAMENTO CARTAO CREDITO BCE 14/08 10:12 CARTAO VISA" vs "PAGAMENTO CARTAO CREDITO BCE - CARTAO VISA"
-  const palavrasA = normA.split(' ').filter((p) => p.length > 2);
-  const palavrasB = normB.split(' ').filter((p) => p.length > 2);
+  const palavrasA = normRaizA.split(' ').filter((p) => p.length > 2);
+  const palavrasB = normRaizB.split(' ').filter((p) => p.length > 2);
 
   if (palavrasA.length >= 2 && palavrasB.length >= 2) {
-    const aContemQuaseTudoDeB = palavrasB.every((p) => normA.includes(p));
-    const bContemQuaseTudoDeA = palavrasA.every((p) => normB.includes(p));
+    const aContemQuaseTudoDeB = palavrasB.every((p) => normRaizA.includes(p));
+    const bContemQuaseTudoDeA = palavrasA.every((p) => normRaizB.includes(p));
 
     if (aContemQuaseTudoDeB || bContemQuaseTudoDeA) {
       return true;
@@ -371,7 +366,7 @@ export function saoDuplicatasSemanticas(
 
   // BUG-22: Regra R2 - Se a similaridade textual (ponderada por tokens e bigramas) for maior que 50% (> 0.50)
   // e as descrições não forem distintas por identificador/ordinal estrito
-  const simGlobal = calcularSimilaridadeTexto(descA, descB);
+  const simGlobal = similarityRaiz;
   if (simGlobal > 0.50) {
     return true;
   }
@@ -504,11 +499,21 @@ export class ValidacaoDeduplicacaoService {
           continue;
         }
 
-        // Verifica equivalência semântica:
-        // R1: Mesma conta + mesma data + mesmo valor
-        // R2: Descrição com similaridade semântica / textual > 50%
-        const atendeR1 = mesmaConta;
-        const atendeR2 = saoDuplicatasSemanticas(mov, conc);
+        // Duas linhas equivalentes extraídas do mesmo documento podem ser
+        // lançamentos legítimos repetidos (mesmo valor, data e descrição).
+        // Sem um identificador oficial para provar a duplicidade, preserva
+        // ambas para a fila de suspeitas em vez de excluir uma automaticamente.
+        const mesmoIdentificadorOrigem = Boolean(mov.idOrigem && conc.idOrigem && mov.idOrigem === conc.idOrigem);
+        if (mov.origemDocumento && mov.origemDocumento === conc.origemDocumento && !mesmoIdentificadorOrigem) {
+          continue;
+        }
+
+        // Mesma conta, data e valor apenas delimitam candidatos. A descrição
+        // também precisa confirmar que se trata da mesma transação: duas
+        // compras diferentes podem ter o mesmo valor no mesmo dia.
+        const mesmaTransacao = saoDuplicatasSemanticas(mov, conc);
+        const atendeR1 = mesmaConta && mesmaTransacao;
+        const atendeR2 = !mesmaConta && mesmaTransacao;
 
         if (atendeR1 || atendeR2) {
           duplicataEncontrada = conc;
@@ -576,6 +581,21 @@ export class ValidacaoDeduplicacaoService {
                   ],
                 },
               ],
+            },
+          });
+
+          // Preserve every extracted row in staging and point duplicate rows
+          // to the canonical movement instead of letting ON DELETE SET NULL
+          // create an unclassified orphan.
+          await tx.stagingLancamentoImportacao.updateMany({
+            where: {
+              movimentoId: descartar.id,
+              lote: { usuarioId },
+            },
+            data: {
+              movimentoId: preservar.id,
+              statusProcessamento: 'IGNORADO',
+              motivoDescarte: 'DUPLICATA_CONSOLIDADA',
             },
           });
 

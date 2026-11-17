@@ -78,11 +78,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return;
         }
       } catch (err) {
-        // Se a chamada de rede falhar e for ambiente local de desenvolvimento,
-        // permite fallback de login simulado para as 3 roles com validação de senha
-        if (senha.length < 4) {
-          throw new Error('Senha deve ter no mínimo 4 caracteres.');
+        // Login simulado só existe para as contas de demonstração quando a API
+        // está realmente indisponível. Erros HTTP (401/500) nunca autenticam um
+        // usuário fictício, pois isso mascara a sessão real e suas configurações.
+        const emailsDemo = new Set([
+          'owner@evolvi.app',
+          'admin@evolvi.app',
+          'visitante@evolvi.app',
+          'usuario@evolvi.app',
+        ]);
+        const falhaDeRede = err instanceof TypeError;
+        const ambienteDev = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
+        if (!ambienteDev || !falhaDeRede || !emailsDemo.has(email.trim().toLowerCase())) {
+          throw err;
         }
+        if (senha.length < 4) throw new Error('Senha deve ter no mínimo 4 caracteres.');
 
         const roleDefinida: RoleUsuario = (roleDesejada || 'USER').toUpperCase() as RoleUsuario;
         const nomesPorEmail: Record<string, string> = {

@@ -6,7 +6,7 @@ import {
   FiltroMovimentosParams,
   apiService,
 } from '../api.ts';
-import { formatarDataIso } from '../utils/data.ts';
+import { formatarDataIso, getCompetenciaAtual } from '../utils/data.ts';
 import {
   Calendar,
   Search,
@@ -57,8 +57,8 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
   onMovimentoModificado,
   onNavigateTab,
 }) => {
-  // Competência padrão (Ano-Mês atual ou 2026-10 de referência)
-  const [competencia, setCompetencia] = useState<string>('2026-10');
+  // Competência padrão: sempre o mês em andamento (AAAA-MM)
+  const [competencia, setCompetencia] = useState<string>(() => getCompetenciaAtual());
   const [dataInicio, setDataInicio] = useState<string>('');
   const [dataFim, setDataFim] = useState<string>('');
   const [busca, setBusca] = useState<string>('');
@@ -642,7 +642,9 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
         const inst = inferirInstituicao(mov);
         chave = inst;
         rotulo = inst;
-        subtitulo = `${mov.conta?.tipo === 'CARTAO_CREDITO' ? 'Cartão' : 'Conta'} • ${mov.conta?.nome || 'Padrão'}`;
+        const tipoConta = mov.conta?.tipo;
+        const rotuloConta = tipoConta === 'CARTAO_CREDITO' ? 'Cartão' : tipoConta === 'POUPANCA' ? 'Poupança' : tipoConta === 'INVESTIMENTO' ? 'Investimento' : 'Conta';
+        subtitulo = `${rotuloConta} • ${mov.conta?.nome || 'Padrão'}`;
       } else if (modoAgrupamento === 'FORMA_PAGAMENTO') {
         const fp = inferirFormaPagamento(mov);
         chave = fp;
@@ -1278,7 +1280,7 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                 <option value="">Todas as Contas</option>
                 {contas.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.nome} ({c.tipo === 'CARTAO_CREDITO' ? 'Cartão' : 'Conta'})
+                    {c.nome} ({c.tipo === 'CARTAO_CREDITO' ? 'Cartão' : c.tipo === 'POUPANCA' ? 'Poupança' : c.tipo === 'INVESTIMENTO' ? 'Investimento' : 'Conta'})
                   </option>
                 ))}
               </select>
@@ -1681,10 +1683,10 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                     const corValor = isReceita
                       ? 'var(--status-green)'
                       : isDespesa
-                      ? 'var(--status-red)'
-                      : isAporte
-                      ? '#38bdf8'
-                      : 'var(--brand-secondary)';
+                        ? 'var(--status-red)'
+                        : isAporte
+                          ? '#38bdf8'
+                          : 'var(--brand-secondary)';
 
                     const sinal = isReceita ? '+ ' : isDespesa ? '- ' : '';
                     const instItem = inferirInstituicao(item);
@@ -1716,10 +1718,10 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                               background: isReceita
                                 ? 'var(--status-green-bg)'
                                 : isDespesa
-                                ? 'var(--status-red-bg)'
-                                : isAporte
-                                ? 'rgba(56, 189, 248, 0.15)'
-                                : 'rgba(129, 140, 248, 0.12)',
+                                  ? 'var(--status-red-bg)'
+                                  : isAporte
+                                    ? 'rgba(56, 189, 248, 0.15)'
+                                    : 'rgba(129, 140, 248, 0.12)',
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',
@@ -1966,10 +1968,10 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                 {itemSelecionado.natureza === 'RECEITA'
                   ? 'RECEITA'
                   : itemSelecionado.natureza === 'DESPESA'
-                  ? 'DESPESA DE CONSUMO'
-                  : itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
-                  ? 'INVESTIMENTO / APORTE PATRIMONIAL'
-                  : 'TRANSFERÊNCIA PRÓPRIA'}
+                    ? 'DESPESA DE CONSUMO'
+                    : itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
+                      ? 'INVESTIMENTO / APORTE PATRIMONIAL'
+                      : 'TRANSFERÊNCIA PRÓPRIA'}
               </span>
               <div
                 style={{
@@ -1980,10 +1982,10 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                     itemSelecionado.natureza === 'RECEITA'
                       ? 'var(--status-green)'
                       : itemSelecionado.natureza === 'DESPESA'
-                      ? 'var(--status-red)'
-                      : itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
-                      ? '#38bdf8'
-                      : 'var(--brand-secondary)',
+                        ? 'var(--status-red)'
+                        : itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
+                          ? '#38bdf8'
+                          : 'var(--brand-secondary)',
                 }}
               >
                 {itemSelecionado.natureza === 'RECEITA' ? '+ ' : itemSelecionado.natureza === 'DESPESA' ? '- ' : ''}
@@ -2224,11 +2226,10 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                     ? 'rgba(56, 189, 248, 0.08)'
                     : 'rgba(255, 255, 255, 0.02)',
                   borderRadius: 'var(--radius-sm)',
-                  border: `1px solid ${
-                    itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
+                  border: `1px solid ${itemSelecionado.natureza === 'APORTE_PATRIMONIAL'
                       ? 'rgba(56, 189, 248, 0.35)'
                       : 'var(--border-subtle)'
-                  }`,
+                    }`,
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2328,8 +2329,8 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                       {salvandoNatureza
                         ? 'Atualizando...'
                         : propagarVendedor && similaresInfo && similaresInfo.totalSimilares > 0
-                        ? `Catalogar Este e Outros ${similaresInfo.totalSimilares} como Aporte`
-                        : 'Catalogar como Aporte / Investimento'}
+                          ? `Catalogar Este e Outros ${similaresInfo.totalSimilares} como Aporte`
+                          : 'Catalogar como Aporte / Investimento'}
                     </button>
                   ) : (
                     <button
@@ -2371,11 +2372,10 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                     ? 'rgba(129, 140, 248, 0.08)'
                     : 'rgba(255, 255, 255, 0.02)',
                   borderRadius: 'var(--radius-sm)',
-                  border: `1px solid ${
-                    itemSelecionado.natureza === 'TRANSFERENCIA_PROPRIA'
+                  border: `1px solid ${itemSelecionado.natureza === 'TRANSFERENCIA_PROPRIA'
                       ? 'rgba(129, 140, 248, 0.3)'
                       : 'var(--border-subtle)'
-                  }`,
+                    }`,
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -2606,11 +2606,10 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                     feedbackSplit.tipo === 'sucesso'
                       ? 'var(--status-green-bg)'
                       : 'var(--status-red-bg)',
-                  border: `1px solid ${
-                    feedbackSplit.tipo === 'sucesso'
+                  border: `1px solid ${feedbackSplit.tipo === 'sucesso'
                       ? 'var(--status-green-border)'
                       : 'var(--status-red-border)'
-                  }`,
+                    }`,
                   color:
                     feedbackSplit.tipo === 'sucesso'
                       ? 'var(--status-green)'
@@ -2768,11 +2767,10 @@ export const TelaLancamentos: React.FC<TelaLancamentosProps> = ({
                     background: estaBalanceado
                       ? 'rgba(34, 197, 94, 0.08)'
                       : 'rgba(239, 68, 68, 0.08)',
-                    border: `1px solid ${
-                      estaBalanceado
+                    border: `1px solid ${estaBalanceado
                         ? 'var(--status-green-border)'
                         : 'var(--status-red-border)'
-                    }`,
+                      }`,
                     borderRadius: 'var(--radius-md)',
                     padding: '10px 14px',
                     display: 'flex',

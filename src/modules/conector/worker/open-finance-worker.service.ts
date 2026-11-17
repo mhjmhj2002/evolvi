@@ -470,7 +470,7 @@ export class OpenFinanceWorkerService {
   private async obterOuCriarContaLocal(
     usuarioId: string,
     nome: string,
-    tipo: 'CONTA_CORRENTE' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO',
+    tipo: 'CONTA_CORRENTE' | 'POUPANCA' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO',
     dadosAdicionais?: {
       saldoInicial?: number;
       diaFechamento?: number;

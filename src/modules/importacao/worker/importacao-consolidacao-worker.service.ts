@@ -16,6 +16,11 @@ import {
 import { classificadorCombinatorioService } from '../../movimento/classificador-combinatorio.service.js';
 import { addMesesCompetencia } from '../../parcelamento/parcelamento.util.js';
 import { inferirCompetenciaFaturaDocumento } from '../../movimento/movimento-recalculo.service.js';
+import { randomUUID } from 'node:crypto';
+import { StatusStagingLancamento } from '@prisma/client';
+import { importacaoDiagnosticoService } from '../importacao-diagnostico.service.js';
+import { inferirPeriodoExtrato, validarDatasContraPeriodo } from './validacao-consistencia-conteudo.util.js';
+import { descricaoIndicaPagamentoFatura, descricaoIndicaTransferenciaPropria } from '../../movimento/natureza-movimento.util.js';
 
 export interface ConsolidacaoLoteResultado {
   loteId: string;
@@ -97,7 +102,7 @@ export class ImportacaoConsolidacaoWorkerService {
   public async obterOuAutoCadastrarConta(params: {
     usuarioId: string;
     contaSugerida?: string | null;
-    tipoConta?: 'CONTA_CORRENTE' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO' | null;
+    tipoConta?: 'CONTA_CORRENTE' | 'POUPANCA' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO' | null;
     arquivoOrigem?: string;
     numeroConta?: string | null;
     digitosCartao?: string | null;
@@ -117,6 +122,7 @@ export class ImportacaoConsolidacaoWorkerService {
 
       if (numLimpo) {
         const contaPorNumero = contasExistentes.find((c) => {
+          if (tipoConta && c.tipo !== tipoConta) return false;
           if (!c.numeroConta) return false;
           const cRaw = c.numeroConta.trim();
           const cLimpo = cRaw.replace(/\D/g, '');
@@ -156,6 +162,10 @@ export class ImportacaoConsolidacaoWorkerService {
     if (!nomeFinal) {
       if (tipoConta === 'CARTAO_CREDITO') {
         nomeFinal = 'Cartão de Crédito';
+      } else if (tipoConta === 'POUPANCA') {
+        nomeFinal = 'Poupança';
+      } else if (tipoConta === 'INVESTIMENTO') {
+        nomeFinal = 'Investimento';
       } else {
         nomeFinal = 'Conta Corrente';
       }
@@ -166,7 +176,7 @@ export class ImportacaoConsolidacaoWorkerService {
 
     const nomeNormalizado = this.normalizarNome(nomeFinal);
     const contaEncontrada = contasExistentes.find(
-      (c) => this.normalizarNome(c.nome) === nomeNormalizado
+      (c) => this.normalizarNome(c.nome) === nomeNormalizado && (!tipoConta || c.tipo === tipoConta)
     );
 
     if (contaEncontrada) {
@@ -272,7 +282,33 @@ export class ImportacaoConsolidacaoWorkerService {
 
     const operacaoAtual = (async () => {
       await lockAnterior.catch(() => {});
-      return this.executarConsolidacaoLoteInterno(loteId, usuarioIdEsperado);
+      const lote = await prisma.loteImportacao.findUnique({ where: { id: loteId }, select: { usuarioId: true } });
+      if (!lote || (usuarioIdEsperado && lote.usuarioId !== usuarioIdEsperado)) {
+        return this.executarConsolidacaoLoteInterno(loteId, usuarioIdEsperado);
+      }
+      const owner = randomUUID();
+      const reservado = await prisma.$executeRaw`
+        UPDATE lotes_importacao
+        SET worker_owner = ${owner}, worker_lease_until = NOW() + INTERVAL '15 minutes',
+            worker_attempts = worker_attempts + 1
+        WHERE id = ${loteId}::uuid AND usuario_id = ${lote.usuarioId}::uuid
+          AND (worker_lease_until IS NULL OR worker_lease_until < NOW())
+      `;
+      if (reservado !== 1) {
+        return { loteId, sucesso: true, totalProcessados: 0, novosMovimentosInseridos: 0,
+          duplicadasIgnoradas: 0, pagamentosFaturaConvertidos: 0, contasCriadas: 0,
+          parcelamentosCriados: 0, erros: [] };
+      }
+      const heartbeat = setInterval(() => {
+        void prisma.$executeRaw`UPDATE lotes_importacao SET worker_lease_until = NOW() + INTERVAL '15 minutes' WHERE id = ${loteId}::uuid AND usuario_id = ${lote.usuarioId}::uuid AND worker_owner = ${owner}`
+          .catch((err) => console.error('[evolvi-worker:consolidacao] Falha ao renovar lease:', err));
+      }, 60_000);
+      try {
+        return await this.executarConsolidacaoLoteInterno(loteId, lote.usuarioId);
+      } finally {
+        clearInterval(heartbeat);
+        await prisma.$executeRaw`UPDATE lotes_importacao SET worker_owner = NULL, worker_lease_until = NULL WHERE id = ${loteId}::uuid AND usuario_id = ${lote.usuarioId}::uuid AND worker_owner = ${owner}`;
+      }
     })();
 
     this.locksPorLote.set(loteId, operacaoAtual);
@@ -286,6 +322,42 @@ export class ImportacaoConsolidacaoWorkerService {
     }
   }
 
+  /** Reabre somente linhas sem evidência de movimento oficial, preservando duplicatas válidas. */
+  public async reprocessarArquivoInconsistente(arquivoId: string, usuarioId: string): Promise<ConsolidacaoLoteResultado> {
+    const arquivo = await prisma.arquivoImportacao.findFirst({
+      where: { id: arquivoId, usuarioId },
+      select: { id: true, loteId: true },
+    });
+    if (!arquivo) throw new Error('Arquivo de importação não encontrado para este usuário.');
+
+    const historico = await prisma.historicoImportacaoArquivo.findFirst({
+      where: { arquivoId, usuarioId },
+      select: { contaId: true },
+    });
+
+    const linhas = await prisma.stagingLancamentoImportacao.findMany({ where: { arquivoId } });
+    await prisma.$transaction(async (tx) => {
+      for (const linha of linhas) {
+        const movimento = await tx.movimento.findFirst({
+          where: {
+            usuarioId,
+            contaId: historico?.contaId ?? undefined,
+            dataMovimento: linha.dataMovimento,
+            valor: Number(linha.valor),
+            descricao: linha.descricao,
+          },
+          select: { id: true },
+        });
+        const ignoradoInformativo = linha.statusProcessamento === 'IGNORADO' && /linha informativa de pagamento em fatura de cartão/i.test(linha.observacao || '');
+        if (!movimento && !ignoradoInformativo) {
+          await tx.stagingLancamentoImportacao.update({ where: { id: linha.id }, data: { statusProcessamento: 'PENDENTE' } });
+        }
+      }
+      await tx.arquivoImportacao.update({ where: { id: arquivoId }, data: { status: 'STAGING_CARREGADO', statusFinal: null, mensagemErro: null } });
+    });
+    return this.consolidarLote(arquivo.loteId, usuarioId);
+  }
+
   private async executarConsolidacaoLoteInterno(
     loteId: string,
     usuarioIdEsperado?: string
@@ -294,9 +366,6 @@ export class ImportacaoConsolidacaoWorkerService {
       where: { id: loteId },
       include: {
         arquivos: true,
-        usuario: {
-          select: { id: true, nome: true },
-        },
       },
     });
 
@@ -315,20 +384,29 @@ export class ImportacaoConsolidacaoWorkerService {
       where: { id: loteId },
       data: { status: 'CONSOLIDANDO' },
     });
+    await prisma.arquivoImportacao.updateMany({
+      where: { loteId, usuarioId: lote.usuarioId, stagingLancamentos: { some: { statusProcessamento: 'PENDENTE' } } },
+      data: { consolidacaoIniciadaEm: new Date(), consolidacaoFinalizadaEm: null },
+    });
 
-    // Busca linhas pendentes de staging do lote
-    const stagingItens = await prisma.stagingLancamentoImportacao.findMany({
+    // Lê staging em páginas estáveis por ID para manter memória limitada ao bloco.
+    const paginaStaging = Math.max(1, Math.min(1000, Number(process.env.IMPORTACAO_CONSOLIDACAO_PAGE_SIZE) || 200));
+    const totalPendentes = await prisma.stagingLancamentoImportacao.count({
+      where: { loteId, statusProcessamento: 'PENDENTE' },
+    });
+    let stagingItens = await prisma.stagingLancamentoImportacao.findMany({
       where: {
         loteId,
         statusProcessamento: 'PENDENTE',
       },
-      orderBy: { dataMovimento: 'asc' },
+      orderBy: { id: 'asc' },
+      take: paginaStaging,
     });
 
     const resultado: ConsolidacaoLoteResultado = {
       loteId,
       sucesso: true,
-      totalProcessados: stagingItens.length,
+      totalProcessados: totalPendentes,
       novosMovimentosInseridos: 0,
       duplicadasIgnoradas: 0,
       pagamentosFaturaConvertidos: 0,
@@ -336,17 +414,207 @@ export class ImportacaoConsolidacaoWorkerService {
       parcelamentosCriados: 0,
       erros: [],
     };
+    const inicioConsolidacaoLote = Date.now();
 
     // Cache local de contas criadas/resolvidas no ciclo para não reconsultar desnecessariamente
     const cacheContas = new Map<string, { id: string; nome: string }>();
+    const cacheCategorias = new Map<string, string | null>();
+    const movimentosDaPagina = new Map<string, { id: string; chaveDedupe: string | null; contaId: string; dataMovimento: Date; valor: unknown; descricao: string }>();
+    const chaveTexto = (contaId: string, data: Date, valor: number, descricao: string) => JSON.stringify([contaId, data.toISOString().slice(0, 10), valor.toFixed(2), descricao]);
+    const registrarSuspeitaData = async (movimentoId: string, item: (typeof stagingItens)[number], dataOriginal: string, periodo: { inicio: string; fim: string }) => {
+      const motivo = `Data extraída (${dataOriginal}) fora do período do documento (${periodo.inicio} a ${periodo.fim}); correção automática não foi segura. Arquivo: ${item.arquivoOrigem}.`;
+      try {
+        const existente = await prisma.suspeitaMovimento.findFirst({
+          where: { usuarioId: lote.usuarioId, movimentoId, status: 'PENDENTE', motivo },
+          select: { id: true },
+        });
+        if (!existente) await prisma.$executeRaw`
+          INSERT INTO suspeitas_movimento (usuario_id, tipo, status, confianca, motivo, movimento_id)
+          VALUES (${lote.usuarioId}::uuid, 'SUSPEITA_DATA_FORA_PERIODO'::"TipoSuspeitaMovimento", 'PENDENTE'::"StatusSuspeitaMovimento", 1, ${motivo}, ${movimentoId}::uuid)
+        `;
+      } catch (erro) {
+        console.error('[ImportacaoConsolidacaoWorker] Falha ao registrar suspeita de data; movimento mantido sem falhar a importação:', erro);
+        await importacaoDiagnosticoService.registrar(item.arquivoId, 'SUSPEITA_CONSISTENCIA', motivo, { movimentoId }).catch(() => undefined);
+      }
+    };
 
     // Mapeamento de contaId resolvido por arquivoId para catalogação com alta fidelidade
     const arquivoContasMap = new Map<string, string>();
+    const faturasPorArquivo = new Map<string, string>();
+    let catalogoInstituicoes: Array<{ id: string; nome_reduzido: string; nome_oficial: string; aliases: unknown }> | undefined;
+    const resolverInstituicao = async (nome: string) => {
+      const nomeNormalizado = nome.trim();
+      if (!nomeNormalizado) throw new Error('Não foi possível identificar a instituição financeira do arquivo.');
+      catalogoInstituicoes ??= await prisma.$queryRaw<Array<{ id: string; nome_reduzido: string; nome_oficial: string; aliases: unknown }>>`SELECT id, nome_reduzido, nome_oficial, aliases FROM instituicoes_financeiras WHERE ativo = true`;
+      const normalizar = (valor: string) => valor.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+      const alvo = normalizar(nomeNormalizado);
+      const instituicao = catalogoInstituicoes.find((item) => [item.nome_reduzido, item.nome_oficial, ...(Array.isArray(item.aliases) ? item.aliases as string[] : [])]
+        .some((candidato) => normalizar(candidato).includes(alvo) || alvo.includes(normalizar(candidato))));
+      if (!instituicao) throw new Error('Instituição financeira do arquivo não consta no catálogo oficial.');
+      return instituicao;
+    };
+
+    // BUG-29: todo lançamento importado precisa apontar para um documento
+    // imutável. A instituição é resolvida exclusivamente pelo catálogo (não
+    // por regras específicas de banco).
+    const garantirFatura = async (item: (typeof stagingItens)[number], contaId: string): Promise<string | null> => {
+      const existente = faturasPorArquivo.get(item.arquivoId);
+      if (existente) return existente;
+      const arquivo = lote.arquivos.find((a) => a.id === item.arquivoId);
+      // Staging criado diretamente por rotinas internas/testes não representa
+      // uma importação de arquivo. O contrato obrigatório vale para arquivos
+      // recebidos, que sempre possuem hash de conteúdo.
+      if (!arquivo?.hashConteudo) return null;
+      // Uma tentativa anterior pode já ter criado a fatura a partir de outra
+      // linha do documento. Reutilize-a sem depender dos campos desta linha.
+      const faturaPersistida = await prisma.fatura.findFirst({
+        where: { usuarioId: lote.usuarioId, hashArquivo: arquivo.hashConteudo },
+        select: { id: true },
+      });
+      if (faturaPersistida) {
+        faturasPorArquivo.set(item.arquivoId, faturaPersistida.id);
+        return faturaPersistida.id;
+      }
+      const nomeInstituicao = (item.contaSugerida || '').trim();
+      const instituicao = await resolverInstituicao(nomeInstituicao);
+      const anoMes = item.dataMovimento.toISOString().slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(anoMes)) throw new Error('Não foi possível identificar o ano/mês da fatura no arquivo.');
+      const tipoDocumento = item.tipoConta === 'CARTAO_CREDITO' ? 'FATURA_CARTAO' : 'EXTRATO_CONTA';
+      const idFatura = `${arquivo.hashConteudo}:${anoMes}:${tipoDocumento}`;
+      const fatura = await prisma.$queryRaw<Array<{ id: string }>>`INSERT INTO faturas (usuario_id,instituicao_id,id_fatura,hash_arquivo,nome_arquivo_original,tipo_documento,ano_mes_fatura,conta_id,metadados_extracao) VALUES (${lote.usuarioId}::uuid,${instituicao.id}::uuid,${idFatura},${arquivo.hashConteudo},${arquivo.nomeArquivo},${tipoDocumento}::tipo_documento_rastreavel,${anoMes},${contaId}::uuid,${JSON.stringify({ arquivoId: arquivo.id })}::jsonb) ON CONFLICT (usuario_id,hash_arquivo) DO UPDATE SET instituicao_id=EXCLUDED.instituicao_id,conta_id=EXCLUDED.conta_id,nome_arquivo_original=EXCLUDED.nome_arquivo_original RETURNING id`;
+      faturasPorArquivo.set(item.arquivoId, fatura[0].id);
+      return fatura[0].id;
+    };
+
+    // Resolve cada documento antes de percorrer as linhas em ordem de ID. Testa
+    // sugestões distintas do arquivo até achar uma instituição real no catálogo;
+    // rótulos genéricos de conta não podem impedir o uso da evidência seguinte.
+    for (const arquivo of lote.arquivos) {
+      if (!arquivo.hashConteudo) continue;
+      const faturaPersistida = await prisma.fatura.findFirst({
+        where: { usuarioId: lote.usuarioId, hashArquivo: arquivo.hashConteudo },
+        select: { id: true },
+      });
+      if (faturaPersistida) {
+        faturasPorArquivo.set(arquivo.id, faturaPersistida.id);
+        continue;
+      }
+
+      let cursorCandidata: string | undefined;
+      let falhaPreResolucao: unknown;
+      while (!faturasPorArquivo.has(arquivo.id)) {
+        const candidatas = await prisma.stagingLancamentoImportacao.findMany({
+          where: {
+            loteId,
+            arquivoId: arquivo.id,
+            contaSugerida: { not: '' },
+            ...(cursorCandidata ? { id: { gt: cursorCandidata } } : {}),
+          },
+          orderBy: { id: 'asc' },
+          take: 100,
+        });
+        if (!candidatas.length) break;
+
+        for (const evidenciaDocumento of candidatas) {
+          cursorCandidata = evidenciaDocumento.id;
+          if (!evidenciaDocumento.contaSugerida?.trim()) continue;
+          try {
+            await resolverInstituicao(evidenciaDocumento.contaSugerida);
+            const cacheKey = `${evidenciaDocumento.contaSugerida}_${evidenciaDocumento.tipoConta || ''}_${evidenciaDocumento.numeroConta || ''}_${evidenciaDocumento.digitosCartao || ''}_${evidenciaDocumento.arquivoOrigem}`;
+            let contaInfo = cacheContas.get(cacheKey);
+            if (!contaInfo) {
+              const resConta = await this.obterOuAutoCadastrarConta({
+                usuarioId: lote.usuarioId,
+                contaSugerida: evidenciaDocumento.contaSugerida,
+                tipoConta: evidenciaDocumento.tipoConta,
+                arquivoOrigem: evidenciaDocumento.arquivoOrigem,
+                numeroConta: evidenciaDocumento.numeroConta,
+                digitosCartao: evidenciaDocumento.digitosCartao,
+              });
+              if (resConta.criadaAgora) resultado.contasCriadas++;
+              contaInfo = { id: resConta.contaId, nome: resConta.contaNome };
+              cacheContas.set(cacheKey, contaInfo);
+            }
+            arquivoContasMap.set(arquivo.id, contaInfo.id);
+            await garantirFatura(evidenciaDocumento, contaInfo.id);
+            break;
+          } catch (erro) {
+            // Continua procurando outra sugestão do mesmo documento. O erro
+            // definitivo será atribuído à linha se nenhuma candidata servir.
+            falhaPreResolucao = erro;
+          }
+        }
+      }
+      if (!faturasPorArquivo.has(arquivo.id) && falhaPreResolucao) {
+        console.warn(`[ImportacaoConsolidacaoWorker] Nenhuma sugestão identificou uma instituição para o arquivo ${arquivo.id}:`, falhaPreResolucao);
+      }
+    }
 
     // Carrega regras de vendedor/favorecido do usuário para correspondência inteligente
     const regrasVendedorUsuario = await prisma.regraVendedorCategoria.findMany({
       where: { usuarioId: lote.usuarioId },
     });
+
+    let cursorStaging: string | undefined;
+    const ocorrenciasNoDocumento = new Map<string, number>();
+    while (stagingItens.length > 0) {
+    // Mantém o cache de candidatos limitado à página atual. Movimentos criados
+    // em páginas anteriores já são encontrados na consulta em lote ao banco.
+    movimentosDaPagina.clear();
+    // Pré-carrega/resolução de contas uma vez por conta distinta na página.
+    for (const item of stagingItens) {
+      const cacheKey = `${item.contaSugerida || ''}_${item.tipoConta || ''}_${item.numeroConta || ''}_${item.digitosCartao || ''}_${item.arquivoOrigem}`;
+      if (cacheContas.has(cacheKey)) continue;
+      const resConta = await this.obterOuAutoCadastrarConta({ usuarioId: lote.usuarioId, contaSugerida: item.contaSugerida,
+        tipoConta: item.tipoConta, arquivoOrigem: item.arquivoOrigem, numeroConta: item.numeroConta, digitosCartao: item.digitosCartao });
+      if (resConta.criadaAgora) resultado.contasCriadas++;
+      cacheContas.set(cacheKey, { id: resConta.contaId, nome: resConta.contaNome });
+    }
+    const idsArquivosPagina = [...new Set(stagingItens.map((item) => item.arquivoId).filter((id): id is string => Boolean(id)))];
+    const inventariosPagina = idsArquivosPagina.length
+      ? await prisma.inventarioIaArquivo.findMany({
+        where: { usuarioId: lote.usuarioId, arquivoId: { in: idsArquivosPagina } },
+        orderBy: { criadoEm: 'desc' },
+        select: { arquivoId: true, dataInicial: true, dataFinal: true },
+      })
+      : [];
+    const periodoInventarioPorArquivo = new Map<string, { dataInicial: Date | null; dataFinal: Date | null }>();
+    for (const inventario of inventariosPagina) {
+      if (!periodoInventarioPorArquivo.has(inventario.arquivoId)) {
+        periodoInventarioPorArquivo.set(inventario.arquivoId, { dataInicial: inventario.dataInicial, dataFinal: inventario.dataFinal });
+      }
+    }
+
+    // Uma consulta em lote substitui a busca de duplicata por linha para a página.
+    const chavesDedupePagina = new Set<string>();
+    const condicoesTextoPagina: Array<{ contaId: string; dataMovimento: Date; valor: number; descricao: string }> = [];
+    const ocorrenciaPorStaging = new Map<string, number>();
+    const contadoresPagina = new Map(ocorrenciasNoDocumento);
+    for (const item of stagingItens) {
+      const cacheKey = `${item.contaSugerida || ''}_${item.tipoConta || ''}_${item.numeroConta || ''}_${item.digitosCartao || ''}_${item.arquivoOrigem}`;
+      const conta = cacheContas.get(cacheKey)!;
+      const data = item.dataMovimento.toISOString().slice(0, 10);
+      const valor = Number(item.valor);
+      const assinatura = JSON.stringify([item.arquivoOrigem, conta.id, data, valor, item.descricao.trim().toLocaleLowerCase(), item.idOrigem || null]);
+      const ocorrencia = (contadoresPagina.get(assinatura) || 0) + 1;
+      contadoresPagina.set(assinatura, ocorrencia);
+      ocorrenciaPorStaging.set(item.id, ocorrencia);
+      chavesDedupePagina.add(gerarChaveDedupe({ contaId: conta.id, dataMovimento: data, valor, descricao: item.descricao, idOrigem: item.idOrigem, ocorrencia }));
+      chavesDedupePagina.add(gerarChaveDedupe({ contaId: conta.id, dataMovimento: data, valor, descricao: item.descricao, ocorrencia }));
+      condicoesTextoPagina.push({ contaId: conta.id, dataMovimento: item.dataMovimento, valor, descricao: item.descricao });
+    }
+    const movimentosPrecarregados = await prisma.movimento.findMany({
+      where: { usuarioId: lote.usuarioId, OR: [
+        { chaveDedupe: { in: [...chavesDedupePagina] } },
+        ...condicoesTextoPagina.map((condicao) => ({ contaId: condicao.contaId, dataMovimento: condicao.dataMovimento, valor: condicao.valor, descricao: condicao.descricao })),
+      ] },
+      select: { id: true, chaveDedupe: true, contaId: true, dataMovimento: true, valor: true, descricao: true },
+    });
+    for (const movimento of movimentosPrecarregados) {
+      movimentosDaPagina.set(chaveTexto(movimento.contaId, movimento.dataMovimento, Number(movimento.valor), movimento.descricao), movimento);
+      if (movimento.chaveDedupe) movimentosDaPagina.set(movimento.chaveDedupe, movimento);
+    }
+    for (const [assinatura, ocorrencia] of contadoresPagina) ocorrenciasNoDocumento.set(assinatura, ocorrencia);
 
     for (const item of stagingItens) {
       try {
@@ -371,13 +639,56 @@ export class ImportacaoConsolidacaoWorkerService {
           cacheContas.set(cacheKey, contaInfo);
         }
 
+        const dataOriginal = item.dataMovimento.toISOString().slice(0, 10);
+        const periodoInventario = item.arquivoId ? periodoInventarioPorArquivo.get(item.arquivoId) : undefined;
+        const periodoFonte = inferirPeriodoExtrato(item.arquivoOrigem, periodoInventario?.dataInicial, periodoInventario?.dataFinal);
+        let inconsistenciaData: { dataOriginal: string; periodo: { inicio: string; fim: string } } | null = null;
+        if (periodoFonte) {
+          const validacaoData = validarDatasContraPeriodo([dataOriginal], periodoFonte);
+          if (validacaoData.datas[0]?.corrigida) {
+            item.dataMovimento = new Date(`${validacaoData.datas[0].final}T00:00:00.000Z`);
+            await prisma.stagingLancamentoImportacao.update({ where: { id: item.id }, data: { dataMovimento: item.dataMovimento } });
+            await importacaoDiagnosticoService.registrar(item.arquivoId, 'CONSOLIDACAO', 'Data corrigida pela validação do período explícito do documento.', {
+              stagingId: item.id, dataOriginal, dataCorrigida: validacaoData.datas[0].final, periodo: periodoFonte,
+            });
+          } else if (validacaoData.inconsistencias.length) {
+            inconsistenciaData = { dataOriginal, periodo: { inicio: periodoFonte.inicio, fim: periodoFonte.fim } };
+          }
+        }
+
         if (item.arquivoId && !arquivoContasMap.has(item.arquivoId)) {
           arquivoContasMap.set(item.arquivoId, contaInfo.id);
+        }
+
+        const linhaQuitacaoInformativa = item.tipoConta === 'CARTAO_CREDITO' &&
+          (Boolean(item.observacao?.includes('Informativo de quitação em fatura de cartão')) ||
+            /pag(amento)?\s*(de)?\s*(fat(ura)?|cart[aã]o)|pagamento\s*recebido|cr[eé]dito\s*pagamento/i.test(item.descricao));
+        if (linhaQuitacaoInformativa) {
+          await prisma.stagingLancamentoImportacao.update({
+            where: { id: item.id },
+            data: {
+              statusProcessamento: 'IGNORADO',
+              movimentoId: null,
+              motivoDescarte: 'QUITACAO_INFORMATIVA_FATURA',
+              observacao: item.observacao || 'Linha informativa de pagamento em fatura de cartão; não representa um novo movimento.',
+            },
+          });
+          resultado.duplicadasIgnoradas += 1;
+          importacaoEventBus.emitTransacaoConsolidada({
+            loteId, arquivoId: item.arquivoId, arquivoOrigem: item.arquivoOrigem,
+            usuarioId: lote.usuarioId, stagingId: item.id, movimentoId: 'informativo',
+            dataMovimento: item.dataMovimento.toISOString().split('T')[0], descricao: item.descricao,
+            valor: Number(item.valor), natureza: 'TRANSFERENCIA_PROPRIA', contaNome: contaInfo.nome,
+            duplicadaIgnorada: true, timestamp: new Date(),
+          });
+          continue;
         }
 
         const dataMovimentoStr = item.dataMovimento.toISOString().split('T')[0];
         const competencia = dataMovimentoStr.substring(0, 7);
         const valorNum = Number(item.valor);
+        const ocorrencia = ocorrenciaPorStaging.get(item.id) || 1;
+        const faturaId = await garantirFatura(item, contaInfo.id);
 
         // 1. Chave Dedupe determinística estruturada (com idOrigem se disponível)
         const chaveDedupe = gerarChaveDedupe({
@@ -386,6 +697,7 @@ export class ImportacaoConsolidacaoWorkerService {
           valor: valorNum,
           descricao: item.descricao,
           idOrigem: item.idOrigem,
+          ocorrencia,
         });
 
         // Chave Dedupe alternativa sem idOrigem para cruzar extratos onde idOrigem não foi extraído
@@ -394,26 +706,12 @@ export class ImportacaoConsolidacaoWorkerService {
           dataMovimento: dataMovimentoStr,
           valor: valorNum,
           descricao: item.descricao,
+          ocorrencia,
         });
 
-        // Verificar duplicata no banco de movimentos oficiais
-        const orConditions: any[] = [{ chaveDedupe }];
-        if (chaveDedupeSemId !== chaveDedupe) {
-          orConditions.push({ chaveDedupe: chaveDedupeSemId });
-        }
-        orConditions.push({
-          contaId: contaInfo.id,
-          dataMovimento: item.dataMovimento,
-          valor: valorNum,
-          descricao: item.descricao,
-        });
-
-        const movimentoExistente = await prisma.movimento.findFirst({
-          where: {
-            usuarioId: lote.usuarioId,
-            OR: orConditions,
-          },
-        });
+        // Duplicatas da página e do banco foram pré-carregadas em uma consulta.
+        const movimentoExistente = movimentosDaPagina.get(chaveDedupe) || movimentosDaPagina.get(chaveDedupeSemId) ||
+          (ocorrencia === 1 ? movimentosDaPagina.get(chaveTexto(contaInfo.id, item.dataMovimento, valorNum, item.descricao)) : undefined);
 
         if (movimentoExistente) {
           resultado.duplicadasIgnoradas++;
@@ -421,8 +719,13 @@ export class ImportacaoConsolidacaoWorkerService {
           // Atualiza staging para IGNORADO
           await prisma.stagingLancamentoImportacao.update({
             where: { id: item.id },
-            data: { statusProcessamento: 'IGNORADO' },
+            data: {
+              statusProcessamento: 'IGNORADO',
+              movimentoId: movimentoExistente.id,
+              motivoDescarte: 'DUPLICATA_CONSOLIDADA',
+            },
           });
+          if (inconsistenciaData) await registrarSuspeitaData(movimentoExistente.id, item, inconsistenciaData.dataOriginal, inconsistenciaData.periodo);
 
           // Notifica evento com status de duplicata ignorada
           importacaoEventBus.emitTransacaoConsolidada({
@@ -444,40 +747,11 @@ export class ImportacaoConsolidacaoWorkerService {
           continue;
         }
 
-        // BUG-13: Se o item for em conta de cartão de crédito e corresponder a quitação/pagamento recebido,
-        // ele é puramente compensatório/informativo na fatura e deve ser ignorado para não duplicar com o débito da conta corrente
-        const isQuitacaoEmCartao =
-          item.tipoConta === 'CARTAO_CREDITO' &&
-          (/pag(amento)?\s*(de)?\s*(fat(ura)?|cart[aã]o)|pagamento\s*recebido|cr[eé]dito\s*pagamento/i.test(
-            item.descricao
-          ) ||
-            /informativ[ao]\s*de\s*quita[cç][aã]o/i.test(item.observacao || ''));
-
-        if (isQuitacaoEmCartao) {
-          resultado.duplicadasIgnoradas++;
-
-          await prisma.stagingLancamentoImportacao.update({
-            where: { id: item.id },
-            data: {
-              statusProcessamento: 'IGNORADO',
-              observacao: 'Linha informativa de pagamento em fatura de cartão (ignorado para evitar redundância)',
-            },
-          });
-
-          continue;
-        }
-
-        // 2. Regra Anti-Dupla Contagem (Anti-Inflação): pagamento de fatura, PIX/TED próprio e resgates viram TRANSFERENCIA_PROPRIA
+        // 2. Classificação posterior: pagamentos de fatura, PIX/TED próprio e
+        // resgates permanecem como lançamentos oficiais para revisão posterior.
         let naturezaFinal = item.natureza;
         let isPagamentoFaturaConvertido = false;
-        const descUpper = item.descricao.toUpperCase();
-
-        const isPagamentoFatura =
-          /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|fatura\s*cart[aã]o|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
-            item.descricao
-          ) ||
-          (/pag\s*boleto|pagamento\s*boleto|pagto\s*boleto/i.test(item.descricao) &&
-            /nu\s*pagamentos|nubank|c6\s*bank|banco\s*c6|bradescard|itaucard|cart[aã]o|credicard|santander\s*cart[oõ]es/i.test(item.descricao));
+        const isPagamentoFatura = descricaoIndicaPagamentoFatura(item.descricao);
 
 
         const isResgateInvestimento =
@@ -493,23 +767,7 @@ export class ImportacaoConsolidacaoWorkerService {
             item.descricao
           );
 
-        // Verifica se a descrição de entrada contém o nome do titular cadastrado
-        let isTransferenciaPropriaTitular = false;
-        const nomeTitular = lote.usuario?.nome;
-        if (nomeTitular) {
-          const partesNome = nomeTitular
-            .trim()
-            .split(/\s+/)
-            .filter((p) => p.length >= 3);
-          const containsNomeCompleto = descUpper.includes(nomeTitular.toUpperCase());
-          const containsPartesSignificativas =
-            partesNome.length >= 2 &&
-            partesNome.every((p) => descUpper.includes(p.toUpperCase()));
-
-          if (containsNomeCompleto || containsPartesSignificativas) {
-            isTransferenciaPropriaTitular = true;
-          }
-        }
+        const isTransferenciaPropriaExplicita = descricaoIndicaTransferenciaPropria(item.descricao);
 
         const isAporteInvestimento =
           /aplica[cç][aã]o\s*(de)?\s*(cdb|rdb|lci|lca|tesouro|fundo|investimento|financeira)?|(?:\b|^)(cdb|rdb|lci|lca)(?:\b|$)|tesouro\s*direto|dep[oó]sito\s*poupan[cç]a|compra\s*a[cç][oõ]es|(?:\b|^)investimento(?:\b|$)/i.test(
@@ -529,7 +787,7 @@ export class ImportacaoConsolidacaoWorkerService {
         } else if (isAporteInvestimento) {
           // Identificação de investimentos / aportes patrimoniais novos de saída (TASK-44)
           naturezaFinal = 'APORTE_PATRIMONIAL';
-        } else if (isTransferenciaPropriaTitular) {
+        } else if (isTransferenciaPropriaExplicita) {
           naturezaFinal = 'TRANSFERENCIA_PROPRIA';
         }
 
@@ -579,10 +837,13 @@ export class ImportacaoConsolidacaoWorkerService {
             categoriaParaBuscar = inferenciaComb.categoriaSugerida;
           }
 
-          categoriaIdFinal = await this.resolverCategoriaPof(
-            lote.usuarioId,
-            categoriaParaBuscar
-          );
+          const categoriaCacheKey = (categoriaParaBuscar || '').trim().toLocaleLowerCase('pt-BR');
+          if (cacheCategorias.has(categoriaCacheKey)) {
+            categoriaIdFinal = cacheCategorias.get(categoriaCacheKey) || null;
+          } else {
+            categoriaIdFinal = await this.resolverCategoriaPof(lote.usuarioId, categoriaParaBuscar);
+            cacheCategorias.set(categoriaCacheKey, categoriaIdFinal);
+          }
         }
 
         // 4. Inserção Atômica do Movimento Oficial com tratamento de concorrência P2002
@@ -615,8 +876,9 @@ export class ImportacaoConsolidacaoWorkerService {
         }
 
         try {
+          await prisma.$transaction(async (tx) => {
           if (movimentoPrevistoExistente) {
-            novoMovimento = await prisma.movimento.update({
+            novoMovimento = await tx.movimento.update({
               where: { id: movimentoPrevistoExistente.id },
               data: {
                 dataMovimento: item.dataMovimento,
@@ -631,11 +893,14 @@ export class ImportacaoConsolidacaoWorkerService {
                 idOrigem: item.idOrigem || null,
                 origemDocumento: `IA_LOTE_${item.arquivoOrigem}`,
                 observacao: item.observacao || null,
-              },
+                ...(faturaId ? { faturaId } : {}),
+                dataCompra: item.dataMovimento,
+                competenciaContabil: competencia,
+                competenciaFatura: competencia,
+              } as any,
             });
-            resultado.novosMovimentosInseridos++;
           } else {
-            novoMovimento = await prisma.movimento.create({
+            novoMovimento = await tx.movimento.create({
               data: {
                 usuarioId: lote.usuarioId,
                 contaId: contaInfo.id,
@@ -652,23 +917,51 @@ export class ImportacaoConsolidacaoWorkerService {
                 idOrigem: item.idOrigem || null,
                 origemDocumento: `IA_LOTE_${item.arquivoOrigem}`,
                 observacao: item.observacao || null,
-              },
+                ...(faturaId ? { faturaId } : {}),
+                dataCompra: item.dataMovimento,
+                competenciaContabil: competencia,
+                competenciaFatura: competencia,
+              } as any,
             });
-            resultado.novosMovimentosInseridos++;
           }
+          await tx.stagingLancamentoImportacao.update({
+            where: { id: item.id },
+            data: { statusProcessamento: 'PROCESSADO', movimentoId: novoMovimento.id, motivoDescarte: null },
+          });
+          resultado.novosMovimentosInseridos++;
+          movimentosDaPagina.set(chaveDedupe, novoMovimento);
+          movimentosDaPagina.set(chaveDedupeSemId, novoMovimento);
+          if (ocorrencia === 1) movimentosDaPagina.set(chaveTexto(contaInfo.id, item.dataMovimento, valorNum, item.descricao), novoMovimento);
+          });
+          if (inconsistenciaData) await registrarSuspeitaData(novoMovimento.id, item, inconsistenciaData.dataOriginal, inconsistenciaData.periodo);
         } catch (createErr: any) {
           if (createErr?.code === 'P2002') {
             // Concorrência interceptada pela constraint UNIQUE do banco
             resultado.duplicadasIgnoradas++;
 
-            await prisma.stagingLancamentoImportacao.update({
-              where: { id: item.id },
-              data: { statusProcessamento: 'IGNORADO' },
-            });
-
             const movSalvo = await prisma.movimento.findFirst({
               where: { usuarioId: lote.usuarioId, chaveDedupe },
             });
+
+            if (!movSalvo) {
+              const motivo = 'Conflito de unicidade sem movimento consolidado correspondente.';
+              await prisma.stagingLancamentoImportacao.update({
+                where: { id: item.id },
+                data: { statusProcessamento: 'ERRO', motivoDescarte: null },
+              });
+              resultado.erros.push({ stagingId: item.id, motivo });
+              continue;
+            }
+
+            await prisma.stagingLancamentoImportacao.update({
+              where: { id: item.id },
+              data: {
+                statusProcessamento: 'IGNORADO',
+                movimentoId: movSalvo.id,
+                motivoDescarte: 'DUPLICATA_CONSOLIDADA',
+              },
+            });
+            if (inconsistenciaData) await registrarSuspeitaData(movSalvo.id, item, inconsistenciaData.dataOriginal, inconsistenciaData.periodo);
 
             importacaoEventBus.emitTransacaoConsolidada({
               loteId,
@@ -676,7 +969,7 @@ export class ImportacaoConsolidacaoWorkerService {
               arquivoOrigem: item.arquivoOrigem,
               usuarioId: lote.usuarioId,
               stagingId: item.id,
-              movimentoId: movSalvo?.id || 'duplicada',
+              movimentoId: movSalvo.id,
               dataMovimento: dataMovimentoStr,
               descricao: item.descricao,
               valor: valorNum,
@@ -709,7 +1002,6 @@ export class ImportacaoConsolidacaoWorkerService {
               totalParcelas: item.totalParcelas,
             },
           });
-
           // Casar por prefixoBase idêntico (case-insensitive) ou descrição exata
           const parcelamentoExistente = parcelamentosCandidatos.find((p) => {
             if (p.descricao.toLowerCase() === item.descricao.toLowerCase()) return true;
@@ -763,7 +1055,7 @@ export class ImportacaoConsolidacaoWorkerService {
         // 6. Atualizar staging para PROCESSADO
         await prisma.stagingLancamentoImportacao.update({
           where: { id: item.id },
-          data: { statusProcessamento: 'PROCESSADO' },
+          data: { statusProcessamento: 'PROCESSADO', movimentoId: novoMovimento.id, motivoDescarte: null },
         });
 
         // 7. Emitir evento de transação individual consolidada para a UI em tempo real
@@ -787,12 +1079,26 @@ export class ImportacaoConsolidacaoWorkerService {
       } catch (err: unknown) {
         const motivo = err instanceof Error ? err.message : String(err);
         resultado.erros.push({ stagingId: item.id, motivo });
+        await importacaoDiagnosticoService.registrar(item.arquivoId, 'ERRO_CONSOLIDACAO', motivo, { stagingId: item.id });
 
         await prisma.stagingLancamentoImportacao.update({
           where: { id: item.id },
           data: { statusProcessamento: 'ERRO' },
         });
       }
+    }
+
+    cursorStaging = stagingItens[stagingItens.length - 1]?.id;
+    if (!cursorStaging) break;
+    stagingItens = await prisma.stagingLancamentoImportacao.findMany({
+      where: {
+        loteId,
+        statusProcessamento: 'PENDENTE',
+        id: { gt: cursorStaging },
+      },
+      orderBy: { id: 'asc' },
+      take: paginaStaging,
+    });
     }
 
     // 8. Atualizar status dos arquivos para PROCESSADO_FINAL se todos os seus stagings foram concluídos
@@ -806,30 +1112,108 @@ export class ImportacaoConsolidacaoWorkerService {
     for (const item of stagingArquivosIds) {
       if (!item.arquivoId) continue;
 
+      const whereArquivo = { arquivoId: item.arquivoId };
       const stagingsPendentes = await prisma.stagingLancamentoImportacao.count({
-        where: {
-          arquivoId: item.arquivoId,
-          statusProcessamento: 'PENDENTE',
-        },
+        where: { ...whereArquivo, statusProcessamento: 'PENDENTE' },
+      });
+      const stagingsComErro = await prisma.stagingLancamentoImportacao.count({
+        where: { ...whereArquivo, statusProcessamento: 'ERRO' },
+      });
+      const totalStagings = await prisma.stagingLancamentoImportacao.count({ where: whereArquivo });
+      const linhasInformativasIgnoradas = await prisma.stagingLancamentoImportacao.count({
+        where: { ...whereArquivo, statusProcessamento: 'IGNORADO', OR: [
+          { motivoDescarte: 'QUITACAO_INFORMATIVA_FATURA' },
+          { motivoDescarte: 'DUPLICATA_CONSOLIDADA' },
+          { observacao: { contains: 'linha informativa de pagamento em fatura de cartão', mode: 'insensitive' } },
+        ] },
       });
 
-      if (stagingsPendentes === 0) {
+      // O status PROCESSADO só é válido quando existe o movimento oficial
+      // correspondente. Linhas recém-criadas são verificadas por contagem e
+      // vínculo; só registros legados sem vínculo exigem busca por atributos.
+      const ondeLegado = {
+        ...whereArquivo,
+        movimentoId: null,
+        statusProcessamento: { in: [StatusStagingLancamento.PROCESSADO, StatusStagingLancamento.IGNORADO] },
+      };
+      let cursorLegado: string | undefined;
+      let stagingsLegados = await prisma.stagingLancamentoImportacao.findMany({
+        where: ondeLegado,
+        select: { id: true, statusProcessamento: true, dataMovimento: true, valor: true, descricao: true, observacao: true, motivoDescarte: true },
+        orderBy: { id: 'asc' },
+        take: paginaStaging,
+      });
+      let stagingSemMovimento = 0;
+      while (stagingsLegados.length > 0) {
+        const candidatos = stagingsLegados.filter((staging) =>
+          !(staging.statusProcessamento === 'IGNORADO' &&
+            (Boolean(staging.motivoDescarte) || /linha informativa de pagamento em fatura de cartão/i.test(staging.observacao || '')))
+        );
+        const movimentosLegados = candidatos.length > 0 ? await prisma.movimento.findMany({
+          where: { usuarioId: lote.usuarioId, OR: candidatos.map((staging) => ({
+            dataMovimento: staging.dataMovimento,
+            valor: Number(staging.valor),
+            descricao: staging.descricao,
+          })) },
+          select: { dataMovimento: true, valor: true, descricao: true },
+        }) : [];
+        const chavesLegadas = new Set(movimentosLegados.map((movimento) =>
+          JSON.stringify([movimento.dataMovimento.toISOString().slice(0, 10), Number(movimento.valor).toFixed(2), movimento.descricao])
+        ));
+        for (const staging of candidatos) {
+          const chave = JSON.stringify([staging.dataMovimento.toISOString().slice(0, 10), Number(staging.valor).toFixed(2), staging.descricao]);
+          if (!chavesLegadas.has(chave)) stagingSemMovimento++;
+        }
+        cursorLegado = stagingsLegados[stagingsLegados.length - 1]?.id;
+        if (!cursorLegado) break;
+        stagingsLegados = await prisma.stagingLancamentoImportacao.findMany({
+          where: { ...ondeLegado, id: { gt: cursorLegado } },
+          select: { id: true, statusProcessamento: true, dataMovimento: true, valor: true, descricao: true, observacao: true, motivoDescarte: true },
+          orderBy: { id: 'asc' },
+          take: paginaStaging,
+        });
+      }
+
+      // Duplicatas válidas podem ser reconhecidas pela chave de deduplicação,
+      // sem igualdade textual perfeita. Nesse caso, a contagem de movimentos
+      // persistidos para a origem do arquivo é a evidência oficial do lote.
+      const arquivoOrigem = await prisma.stagingLancamentoImportacao.findFirst({
+        where: whereArquivo,
+        select: { arquivoOrigem: true },
+      });
+      const movimentosDaOrigem = await prisma.movimento.count({
+        where: {
+          usuarioId: lote.usuarioId,
+          origemDocumento: `IA_LOTE_${arquivoOrigem?.arquivoOrigem || ''}`,
+        },
+      });
+      const linhasSemMovimentoEsperado = totalStagings - linhasInformativasIgnoradas;
+      if (movimentosDaOrigem >= linhasSemMovimentoEsperado) stagingSemMovimento = 0;
+
+      const falhaIntegridade = stagingsComErro > 0 || stagingsPendentes > 0 || stagingSemMovimento > 0;
+
+      if (!falhaIntegridade && totalStagings > 0) {
         const arqAtual = await prisma.arquivoImportacao.findUnique({
           where: { id: item.arquivoId },
         });
 
-        if (arqAtual && arqAtual.status !== 'PROCESSADO_FINAL' && arqAtual.status !== 'ERRO') {
+        // Um arquivo em ERRO pode ser recuperado após reprocessamento idempotente.
+        if (arqAtual && arqAtual.status !== 'PROCESSADO_FINAL') {
           await prisma.arquivoImportacao.update({
             where: { id: item.arquivoId },
             data: {
               status: 'PROCESSADO_FINAL',
+              statusFinal: 'SUCESSO',
               mensagemErro: null,
+              duracaoConsolidacaoMs: Math.max(0, Date.now() - inicioConsolidacaoLote),
+              consolidacaoFinalizadaEm: new Date(),
             },
           });
 
           importacaoEventBus.emitArquivoProgresso({
             loteId,
             arquivoId: arqAtual.id,
+            usuarioId: lote.usuarioId,
             nomeArquivo: arqAtual.nomeArquivo,
             status: 'PROCESSADO_FINAL',
             mensagem: 'Lançamentos consolidados e integrados aos movimentos oficiais.',
@@ -862,7 +1246,60 @@ export class ImportacaoConsolidacaoWorkerService {
             );
           }
         }
+      } else if (falhaIntegridade) {
+        await prisma.arquivoImportacao.update({
+          where: { id: item.arquivoId },
+          data: {
+            status: 'ERRO',
+            statusFinal: 'FALHA',
+            mensagemErro: `Consolidação incompleta: ${stagingsComErro} erro(s), ${stagingsPendentes} pendente(s), ${stagingSemMovimento} lançamento(s) sem movimento oficial ou duplicata válida.`,
+            duracaoConsolidacaoMs: Math.max(0, Date.now() - inicioConsolidacaoLote),
+            consolidacaoFinalizadaEm: new Date(),
+          },
+        });
+      } else {
+        await prisma.arquivoImportacao.update({
+          where: { id: item.arquivoId },
+          data: { status: 'ERRO', statusFinal: 'FALHA', mensagemErro: 'Arquivo possui staging sem lançamentos consolidados.', duracaoConsolidacaoMs: Math.max(0, Date.now() - inicioConsolidacaoLote), consolidacaoFinalizadaEm: new Date() },
+        });
       }
+    }
+
+    // BUG-30: os movimentos podem ser inseridos ou reconhecidos como duplicados
+    // depois que a fatura foi criada. Recalcula a auditoria a partir da fonte
+    // oficial (movimentos vinculados), sempre isolando usuário e fatura.
+    const faturaIds = [...new Set(faturasPorArquivo.values())];
+    for (const faturaId of faturaIds) {
+      const fatura = await prisma.fatura.findFirst({
+        where: { id: faturaId, usuarioId: lote.usuarioId },
+        select: {
+          id: true,
+          valorTotalDocumento: true,
+          quantidadeLancamentosDocumento: true,
+        },
+      });
+      if (!fatura) continue;
+
+      const agregacao = await prisma.movimento.aggregate({
+        where: { usuarioId: lote.usuarioId, faturaId: fatura.id },
+        _count: { _all: true },
+        _sum: { valor: true },
+      });
+      const quantidade = agregacao._count._all;
+      const valorTotal = Number(agregacao._sum.valor ?? 0);
+      const quantidadeConfere = fatura.quantidadeLancamentosDocumento == null ||
+        fatura.quantidadeLancamentosDocumento === quantidade;
+      const valorConfere = fatura.valorTotalDocumento == null ||
+        Math.abs(Number(fatura.valorTotalDocumento) - valorTotal) <= 0.01;
+
+      await prisma.fatura.updateMany({
+        where: { id: fatura.id, usuarioId: lote.usuarioId },
+        data: {
+          quantidadeLancamentosImportados: quantidade,
+          valorTotalLancamentos: valorTotal,
+          statusConciliacao: quantidadeConfere && valorConfere ? 'OK' : 'DIVERGENTE',
+        },
+      });
     }
 
 
@@ -954,6 +1391,14 @@ export class ImportacaoConsolidacaoWorkerService {
         totalContasCriadas: resultado.contasCriadas,
         timestamp: new Date(),
       });
+
+      // O snapshot inclui staging, inventário e tentativas antes da remoção da pasta temporária.
+      const arquivosParaArquivar = await prisma.arquivoImportacao.findMany({
+        where: { loteId }, select: { id: true, status: true, statusFinal: true },
+      });
+      for (const arquivo of arquivosParaArquivar) {
+        await importacaoDiagnosticoService.finalizarArquivo(arquivo.id, arquivo.statusFinal || arquivo.status);
+      }
 
       // 11. Limpeza do diretório temporário do lote: todos os dados e lançamentos já estão no banco
       if (lote.caminhoDiretorio) {

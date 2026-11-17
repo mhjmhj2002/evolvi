@@ -1,5 +1,6 @@
 import { LancamentoConsolidadoIa } from '../../importacao/worker/ia-extrator.schema.js';
 import { InterBankConnectorProvider } from '../providers/inter-bank-connector.provider.js';
+import { descricaoIndicaPagamentoFatura, descricaoIndicaTransferenciaPropria } from '../../movimento/natureza-movimento.util.js';
 
 const MESES_MAP: Record<string, string> = {
   janeiro: '01',
@@ -91,8 +92,7 @@ export class InterStatementPdfParser {
       nomeTitular?: string | null;
     }
   ): LancamentoConsolidadoIa[] {
-    const { agencia, numeroConta, titular } = this.extrairMetadadosConta(texto);
-    const nomeTitularEfetivo = contexto?.nomeTitular || titular;
+    const { agencia, numeroConta } = this.extrairMetadadosConta(texto);
 
     const lines = texto.split(/\r?\n/);
     const transacoes: LancamentoConsolidadoIa[] = [];
@@ -161,35 +161,16 @@ export class InterStatementPdfParser {
       const classif = InterBankConnectorProvider.classificarTransacaoInter(descricaoFinal);
       const descLower = descricaoFinal.toLowerCase();
 
-      // Checagem de mesma titularidade para transferências próprias (PIX/TED entre contas do mesmo titular)
-      const isMesmoTitular =
-        Boolean(nomeTitularEfetivo) &&
-        (descLower.includes(nomeTitularEfetivo!.toLowerCase()) ||
-          descLower.includes('manuel alejandro hino') ||
-          descLower.includes('manuel alejandro hinojosa'));
-
+      // Nome/favorecido não comprova titularidade comum; exige indicação explícita no texto.
       let natureza: 'DESPESA' | 'RECEITA' | 'TRANSFERENCIA_PROPRIA' | 'APORTE_PATRIMONIAL' =
         isNegativo ? 'DESPESA' : 'RECEITA';
 
       let isPagamentoFatura = false;
 
-      if (
-        classif.isPagamentoFatura ||
-        descLower.includes('debito automatico fatura cartao inter') ||
-        descLower.includes('fatura cartao inter') ||
-        descLower.includes('pagamento efetuado: banco c6 s.a.') ||
-        descLower.includes('pagamento efetuado: nu pagamentos')
-      ) {
+      if (descricaoIndicaPagamentoFatura(descricaoFinal)) {
         natureza = 'TRANSFERENCIA_PROPRIA';
         isPagamentoFatura = true;
-      } else if (
-        isMesmoTitular &&
-        (descLower.includes('pix enviado') ||
-          descLower.includes('pix recebido') ||
-          descLower.includes('ted recebida') ||
-          descLower.includes('ted enviada') ||
-          descLower.includes('transferencia recebida'))
-      ) {
+      } else if (descricaoIndicaTransferenciaPropria(descricaoFinal)) {
         natureza = 'TRANSFERENCIA_PROPRIA';
       } else if (
         !isNegativo ||

@@ -5,6 +5,7 @@ import {
   BankTransactionRaw,
   BankInvoiceRaw,
 } from '../types/bank-connector.interface.js';
+import { descricaoIndicaPagamentoFatura } from '../../movimento/natureza-movimento.util.js';
 
 export interface NubankCredentials {
   cpf?: string;
@@ -41,12 +42,7 @@ export class NubankBankConnectorProvider implements IBankConnectorProvider {
     const tagsUpper = (tags || []).map((t) => t.toUpperCase());
 
     // 1. Anti-Dupla Contagem: Pagamentos de fatura feitos com a NuConta ou recebimento de pagamento de fatura
-    if (
-      /pag(amento|to)?\s*(efetuado|de|da)?\s*fat(ura)?|fatura\s*cart[aã]o|pagamento\s*recebido|deb\s*aut\s*fatura\s*nu|pagto\s*fatura\s*nubank|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
-        desc
-      ) ||
-      tagsUpper.includes('PAGAMENTO_FATURA')
-    ) {
+    if (descricaoIndicaPagamentoFatura(desc) || tagsUpper.includes('PAGAMENTO_FATURA')) {
       return {
         categoriaSugerida: 'Outras Despesas Correntes',
         natureza: 'TRANSFERENCIA_PROPRIA',

@@ -5,6 +5,7 @@ import {
   BankTransactionRaw,
   BankInvoiceRaw,
 } from '../types/bank-connector.interface.js';
+import { descricaoIndicaPagamentoFatura } from '../../movimento/natureza-movimento.util.js';
 
 export interface InterCredentials {
   clientId?: string;
@@ -39,11 +40,7 @@ export class InterBankConnectorProvider implements IBankConnectorProvider {
     const dUpper = desc.toUpperCase();
 
     // 1. Anti-Dupla Contagem: Pagamentos de fatura de cartão Inter debitadas em conta corrente
-    if (
-      /pag(amento|to)?\s*(efetuado|de\s*fat(ura)?|da\s*fat(ura)?|fatura|recebido)|fatura\s*cart[aã]o|deb\s*aut\s*cartao\s*inter|pagto\s*fatura\s*inter|inter\s*mastercard\s*deb|debito\s*automatico\s*fatura|pag\s*fatura/i.test(
-        desc
-      )
-    ) {
+    if (descricaoIndicaPagamentoFatura(desc)) {
       return {
         categoriaSugerida: 'Outras Despesas Correntes',
         natureza: 'TRANSFERENCIA_PROPRIA',

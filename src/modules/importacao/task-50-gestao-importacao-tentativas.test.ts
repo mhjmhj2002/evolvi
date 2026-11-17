@@ -279,10 +279,9 @@ describe('TASK-50: Gestão de Importação — Lote → Arquivo → Detalhe (ten
     };
 
     const worker = new ImportacaoIaWorkerService(extratorMock, process.cwd(), false);
-    const resultado = await worker.processarLote(lote.loteId, {
-      provedorIa: 'GEMINI',
-      modeloIa: 'gemini-3.8-flash',
-    });
+    // Sem seleção explícita: somente neste modo a cadeia automática pode
+    // tentar o próximo provedor configurado.
+    const resultado = await worker.processarLote(lote.loteId);
 
     expect(resultado.arquivosProcessadosComSucesso).toBe(1);
     expect(resultado.arquivosComErro).toBe(0);
@@ -295,12 +294,12 @@ describe('TASK-50: Gestão de Importação — Lote → Arquivo → Detalhe (ten
 
     expect(tentativas).toHaveLength(2);
     expect(tentativas[0].numeroTentativa).toBe(1);
-    expect(tentativas[0].provedor).toBe('GEMINI');
+    expect(tentativas[0].provedor).toBe('DEEPSEEK');
     expect(tentativas[0].status).toBe('FALHA');
     expect(tentativas[0].mensagemErro).toContain('Quota excedida');
 
     expect(tentativas[1].numeroTentativa).toBe(2);
-    expect(tentativas[1].provedor).toBe('DEEPSEEK');
+    expect(tentativas[1].provedor).toBe('GEMINI');
     expect(tentativas[1].status).toBe('SUCESSO');
     expect(tentativas[1].totalTransacoesExtraidas).toBe(1);
     // Correlação do log de telemetria de IA (TASK-49) via handoff explícito
@@ -309,13 +308,14 @@ describe('TASK-50: Gestão de Importação — Lote → Arquivo → Detalhe (ten
       where: { id: tentativas[1].usoIaLogId! },
     });
     expect(logCorrelacionado?.arquivoId).toBe(arquivoId);
-    expect(logCorrelacionado?.provedor).toBe('DEEPSEEK');
+    expect(logCorrelacionado?.provedor).toBe('GEMINI');
 
     const arquivoFinal = await prisma.arquivoImportacao.findUnique({ where: { id: arquivoId } });
     expect(arquivoFinal?.totalTentativas).toBe(2);
     expect(arquivoFinal?.status).toBe('IA_CONCLUIDO');
-    expect(arquivoFinal?.statusFinal).toBe('SUCESSO');
-    expect(arquivoFinal?.ultimoProvedor).toBe('DEEPSEEK');
+    // SUCESSO só é atribuído pelo worker de consolidação, após persistência oficial.
+    expect(arquivoFinal?.statusFinal).toBeNull();
+    expect(arquivoFinal?.ultimoProvedor).toBe('GEMINI');
 
     // Evento consolidado foi gerado com os metadados do provedor que teve sucesso
     const consolidado = JSON.parse(
@@ -324,7 +324,7 @@ describe('TASK-50: Gestão de Importação — Lote → Arquivo → Detalhe (ten
         'utf-8'
       )
     );
-    expect(consolidado.metadados.provedor).toBe('DEEPSEEK');
+    expect(consolidado.metadados.provedor).toBe('GEMINI');
     expect(consolidado.transacoes).toHaveLength(1);
 
     await prisma.usoIaLog.deleteMany({ where: { usuarioId: usuarioAId } });

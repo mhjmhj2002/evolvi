@@ -59,6 +59,7 @@ describe('TASK-41: ConciliacaoService - Histórico Estruturado e Alertas de Lacu
         valor: 150.0,
         natureza: 'DESPESA',
         contaSugerida: 'Cartão Nubank Teste',
+        tipoConta: 'CARTAO_CREDITO',
         statusProcessamento: 'PROCESSADO',
       },
     });
@@ -71,7 +72,7 @@ describe('TASK-41: ConciliacaoService - Histórico Estruturado e Alertas de Lacu
 
     expect(historico).toBeDefined();
     expect(historico.tipoDocumento).toBe(TipoDocumentoImportado.FATURA_CARTAO);
-    expect(historico.instituicao).toBe('Nubank');
+    expect(historico.instituicao).toBe('Nubank Teste');
     expect(historico.competencia).toBe('2026-01');
     expect(historico.totalTransacoes).toBe(1);
     expect(Number(historico.valorTotal)).toBe(150.0);
@@ -425,27 +426,7 @@ describe('TASK-41: ConciliacaoService - Histórico Estruturado e Alertas de Lacu
     expect(alertaAtualizado?.resolvidoEm).toBeDefined();
   });
 
-  it('deve extrair com sucesso o período formal do extrato a partir do cabeçalho ou nome de arquivo', () => {
-    // 1. Cabeçalho explícito "Período de DD/MM/AAAA a DD/MM/AAAA"
-    const p1 = conciliacaoService.extrairPeriodoDocumento(
-      'Extrato Neon\nPeríodo de 31/12/2025 a 16/09/2026\nDescrição...',
-      'Extrato.pdf'
-    );
-    expect(p1).not.toBeNull();
-    expect(p1?.inicio.toISOString().slice(0, 10)).toBe('2025-12-31');
-    expect(p1?.fim.toISOString().slice(0, 10)).toBe('2026-09-16');
-
-    // 2. Nome de arquivo no padrão YYYY-MM_a_YYYY-MM
-    const p2 = conciliacaoService.extrairPeriodoDocumento(
-      null,
-      'IA_LOTE_Extrato_Neon_2025-12_a_2026-09.pdf'
-    );
-    expect(p2).not.toBeNull();
-    expect(p2?.inicio.toISOString().slice(0, 10)).toBe('2025-12-01');
-    expect(p2?.fim.toISOString().slice(0, 10)).toBe('2026-09-30');
-  });
-
-  it('não deve gerar alertas de lacuna para meses sem movimentação quando o período do extrato cobre o intervalo', async () => {
+  it('não infere cobertura temporal pelo nome do arquivo quando existem apenas datas de lançamentos', async () => {
     // Conta bancária Neon
     const contaNeon = await prisma.conta.create({
       data: {
@@ -496,7 +477,7 @@ describe('TASK-41: ConciliacaoService - Histórico Estruturado e Alertas de Lacu
       },
     });
 
-    // Cataloga arquivo (extrai o período de 2025-12 a 2026-09)
+    // O intervalo catalogado vem das datas efetivamente extraídas para staging.
     await conciliacaoService.catalogarArquivo({
       usuarioId,
       arquivoId: arq.id,
@@ -504,12 +485,9 @@ describe('TASK-41: ConciliacaoService - Histórico Estruturado e Alertas de Lacu
       contaId: contaNeon.id,
     });
 
-    // Verifica lacunas
-    const alertas = await conciliacaoService.verificarLacunas(usuarioId);
-
-    // Não deve existir nenhum alerta de lacuna para 2026-06 ou 2026-08 na conta Neon
-    const alertasNeon = alertas.filter((a: any) => a.contaId === contaNeon.id);
-    expect(alertasNeon.length).toBe(0);
+    const historico = await prisma.historicoImportacaoArquivo.findUnique({ where: { arquivoId: arq.id } });
+    expect(historico?.periodoInicio?.toISOString().slice(0, 10)).toBe('2026-05-27');
+    expect(historico?.periodoFim?.toISOString().slice(0, 10)).toBe('2026-07-21');
   });
 
   it('deve consultar detalhes, resumo consolidado e lançamentos de um arquivo importado com isolamento multi-tenant', async () => {

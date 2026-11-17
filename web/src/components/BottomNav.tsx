@@ -1,11 +1,10 @@
 import React from 'react';
-import { LayoutDashboard, ReceiptText, Activity, CalendarClock, Compass, Plus, UserCog, Sparkles } from 'lucide-react';
+import { LayoutDashboard, ReceiptText, Activity, CalendarClock, Compass, UserCog, Sparkles, TrendingUp } from 'lucide-react';
 import { BottomNavProps } from './types.ts';
 
 export const BottomNav: React.FC<BottomNavProps> = ({
   activeTab,
   onSelectTab,
-  onOpenNewTransaction,
 }) => {
   return (
     <nav className="bottom-nav" aria-label="Navegação Principal Mobile">
@@ -55,17 +54,6 @@ export const BottomNav: React.FC<BottomNavProps> = ({
         <span>Importar</span>
       </button>
 
-      {/* Floating Center Action Button - ergonomia celular */}
-      <button
-        type="button"
-        className="bottom-nav-action-btn"
-        onClick={onOpenNewTransaction}
-        aria-label="Adicionar Lançamento"
-        title="Novo Lançamento"
-      >
-        <Plus size={26} strokeWidth={2.6} />
-      </button>
-
       <button
         type="button"
         className={`bottom-nav-item ${activeTab === 'compromissos' ? 'active' : ''}`}
@@ -75,6 +63,18 @@ export const BottomNav: React.FC<BottomNavProps> = ({
           <CalendarClock size={20} />
         </div>
         <span>Contas</span>
+      </button>
+
+      <button
+        type="button"
+        className={`bottom-nav-item ${activeTab === 'projecao' ? 'active' : ''}`}
+        onClick={() => onSelectTab('projecao')}
+        title="Projeção futura baseada no consumo"
+      >
+        <div className="nav-icon-wrapper">
+          <TrendingUp size={20} />
+        </div>
+        <span>Projeção</span>
       </button>
 
       <button

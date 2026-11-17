@@ -6,11 +6,14 @@ import {
   ImportacaoEventBus,
   ImportacaoLoteRecepcionadoEvent,
 } from '../../../infrastructure/events/importacao-event-bus.js';
-import { IIaExtratorClient, GeminiIaExtratorClient } from './ia-extrator.client.js';
+import { IIaExtratorClient, GeminiIaExtratorClient, InventarioDocumentoIa } from './ia-extrator.client.js';
 import { ArquivoConsolidadoIa, arquivoConsolidadoIaSchema } from './ia-extrator.schema.js';
-import { PdfTextExtractor } from '../../conector/parsers/pdf-text-extractor.js';
-import { C6InvoicePdfParser } from '../../conector/parsers/c6-invoice-pdf.parser.js';
 import { ImportacaoTentativasService } from '../importacao-tentativas.service.js';
+import { inferirTipoDocumentoImportado } from '../classificacao-documento.util.js';
+import { randomUUID } from 'node:crypto';
+import { PdfTextExtractor } from '../../conector/parsers/pdf-text-extractor.js';
+import { importacaoDiagnosticoService } from '../importacao-diagnostico.service.js';
+import { classificarDocumentoWorker } from './classificador-documento-worker.js';
 
 
 export interface ProcessamentoArquivoResultado {
@@ -252,9 +255,8 @@ export class ImportacaoIaWorkerService {
   /**
    * TASK-50: monta a cadeia de execução de provedores de IA para o arquivo.
    *
-   * - Quando um provedor é explicitamente solicitado, ele é o primeiro alvo.
-   * - Os demais provedores configurados e ativos do usuário entram como fallback
-   *   (cada um gera uma tentativa própria em `tentativas_arquivo_importacao`).
+   * - Quando um provedor é explicitamente solicitado pela tela, ele é o único alvo.
+   * - Fallbacks só entram quando a seleção é automática (sem provedorIa explícito).
    */
   public async montarCadeiaProvedores(params: {
     usuarioId: string;
@@ -262,6 +264,12 @@ export class ImportacaoIaWorkerService {
     modeloIa?: string;
   }): Promise<AlvoExtracaoIa[]> {
     const { usuarioId, provedorIa, modeloIa } = params;
+
+    // A escolha explícita do usuário é soberana: nunca executar outro provedor
+    // em segundo plano, mesmo que existam configurações de fallback no perfil.
+    if (provedorIa) {
+      return [{ provedor: provedorIa, modelo: modeloIa }];
+    }
 
     const configurados = await prisma.configuracaoIaUsuario.findMany({
       where: { usuarioId },
@@ -280,9 +288,7 @@ export class ImportacaoIaWorkerService {
       alvos.push({ provedor, modelo: modelo || undefined });
     };
 
-    if (provedorIa) {
-      adicionar(provedorIa, modeloIa);
-    } else if (configurados.length > 0) {
+    if (configurados.length > 0) {
       adicionar(configurados[0].provedor, configurados[0].modelo);
     } else {
       adicionar('GEMINI', modeloIa);
@@ -322,17 +328,36 @@ export class ImportacaoIaWorkerService {
     alvos?: AlvoExtracaoIa[];
   }): Promise<ProcessamentoArquivoResultado> {
     const { lote, arquivo, contexto, provedorIa, modeloIa } = params;
+    const owner = randomUUID();
+    const reservado = await prisma.$executeRaw`
+      UPDATE arquivos_importacao
+      SET worker_owner = ${owner}, worker_stage = 'IA',
+          worker_lease_until = NOW() + INTERVAL '20 minutes', worker_attempts = worker_attempts + 1
+      WHERE id = ${arquivo.id}::uuid
+        AND EXISTS (SELECT 1 FROM lotes_importacao l WHERE l.id = arquivos_importacao.lote_id AND l.usuario_id = ${lote.usuarioId}::uuid)
+        AND status IN ('RECEPCIONADO', 'ENVIADO_IA', 'ERRO')
+        AND ja_importado_anteriormente = FALSE
+        AND (worker_lease_until IS NULL OR worker_lease_until < NOW())
+    `;
+    if (reservado !== 1) {
+      return { arquivoId: arquivo.id, nomeArquivo: arquivo.nomeArquivo, sucesso: false, totalTransacoes: 0, erro: 'Arquivo já reservado por outra execução.' };
+    }
+    const heartbeat = setInterval(() => {
+      void prisma.$executeRaw`UPDATE arquivos_importacao SET worker_lease_until = NOW() + INTERVAL '20 minutes' WHERE id = ${arquivo.id}::uuid AND worker_owner = ${owner} AND EXISTS (SELECT 1 FROM lotes_importacao l WHERE l.id = arquivos_importacao.lote_id AND l.usuario_id = ${lote.usuarioId}::uuid)`
+        .catch((err) => console.error('[evolvi-worker:importacao-ia] Falha ao renovar lease:', err));
+    }, 60_000);
 
     try {
       // 1. Atualiza status para ENVIADO_IA
       await prisma.arquivoImportacao.update({
         where: { id: arquivo.id },
-        data: { status: 'ENVIADO_IA', mensagemErro: null },
+        data: { status: 'ENVIADO_IA', mensagemErro: null, extracaoIniciadaEm: new Date(), extracaoFinalizadaEm: null },
       });
 
       importacaoEventBus.emitArquivoProgresso({
         loteId: lote.id,
         arquivoId: arquivo.id,
+        usuarioId: lote.usuarioId,
         nomeArquivo: arquivo.nomeArquivo,
         status: 'ENVIADO_IA',
         timestamp: new Date(),
@@ -345,6 +370,62 @@ export class ImportacaoIaWorkerService {
         arquivo.caminhoRelativo
       );
       const buffer = await fs.readFile(caminhoFisicoArquivo);
+      const instituicoesConhecidas = await prisma.instituicaoFinanceira.findMany({
+        where: { ativo: true }, select: { nomeOficial: true, nomeReduzido: true, aliases: true },
+      }).catch(() => []);
+      const classificacao = classificarDocumentoWorker({
+        nomeArquivo: arquivo.nomeArquivo, conteudoBuffer: buffer, instituicoes: instituicoesConhecidas,
+      });
+
+      // TASK-55: cria a evidência antes da extração. Clientes legados recebem
+      // um inventário provisório e ele é completado após a extração.
+      let inventario: InventarioDocumentoIa = {
+        paginasTotais: null, paginasComMovimentos: [], registrosPorPagina: [],
+        quantidadeEsperada: null, somaAbsolutaEsperada: null,
+        tipoDocumento: 'OUTRO', confianca: 0, observacoes: 'Inventário não disponível para o cliente de IA.',
+      };
+      if (this.extratorClient.inventariarDocumento) {
+        try {
+          inventario = await this.extratorClient.inventariarDocumento({
+            nomeArquivo: arquivo.nomeArquivo, mimeType: arquivo.mimeType,
+            conteudoBuffer: buffer, usuarioId: lote.usuarioId, provedorIa, modeloIa,
+            contexto: { dataReferencia: contexto.dataReferencia, nomeTitular: contexto.nomeTitular },
+            classificacao,
+          });
+        } catch (err) {
+          // Persiste a tentativa de inventário também quando a chamada falha.
+          // O status PENDENTE/confiança zero bloqueará qualquer consolidação.
+          inventario.observacoes = `Falha ao inventariar o documento: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+      inventario.observacoes = [
+        inventario.observacoes,
+        `Classificação do worker: ${classificacao.instituicao || 'instituição não identificada'} (${classificacao.origemInstituicao}); ${classificacao.tipoDocumento} (${classificacao.origemTipo}).`,
+      ].filter(Boolean).join(' ');
+      const inventarioPersistido = await prisma.inventarioIaArquivo.create({
+        data: {
+          usuarioId: lote.usuarioId, arquivoId: arquivo.id, provedor: (provedorIa || 'GEMINI').slice(0, 30),
+          modelo: (modeloIa || 'desconhecido').slice(0, 80), paginasTotais: inventario.paginasTotais ?? 1,
+          paginasComMovimentos: inventario.paginasComMovimentos || [], registrosPorPagina: inventario.registrosPorPagina,
+          paginas: { create: Array.from({ length: inventario.paginasTotais ?? 1 }, (_, indice) => {
+            const pagina = indice + 1;
+            const expectativa = inventario.registrosPorPagina.find((item) => item.pagina === pagina)?.quantidade;
+            return {
+              usuario: { connect: { id: lote.usuarioId } }, pagina,
+              possuiMovimentos: expectativa == null ? false : expectativa > 0,
+              quantidadeEsperada: expectativa ?? null,
+              divergencias: inventario.paginaAtribuicaoDisponivel === false || inventario.paginasSemTexto?.includes(pagina)
+                ? { atribuicaoDePaginaIndisponivel: true }
+                : undefined,
+            };
+          }) },
+          quantidadeEsperada: inventario.quantidadeEsperada ?? null,
+          dataInicial: inventario.dataInicial ? new Date(inventario.dataInicial) : null,
+          dataFinal: inventario.dataFinal ? new Date(inventario.dataFinal) : null,
+          somaAbsolutaEsperada: inventario.somaAbsolutaEsperada ?? null, tipoDocumento: inventario.tipoDocumento,
+          confianca: inventario.confianca, observacoes: inventario.observacoes ?? null,
+        },
+      });
 
       // TASK-50: cadeia de execução — cada provedor tentado gera 1 tentativa própria.
       const alvos: AlvoExtracaoIa[] =
@@ -355,6 +436,7 @@ export class ImportacaoIaWorkerService {
       let transacoesExtraidas: Awaited<ReturnType<IIaExtratorClient['extrairTransacoes']>> = [];
       let provedorUtilizado = alvos[0].provedor;
       let modeloUtilizado = alvos[0].modelo;
+      let tentativaIaId: string | null = null;
       const errosPorProvedor: string[] = [];
 
       for (const alvo of alvos) {
@@ -379,6 +461,7 @@ export class ImportacaoIaWorkerService {
             // TASK-49: vincula o log de consumo de IA ao lote/arquivo de importação
             loteId: lote.id,
             arquivoId: arquivo.id,
+            classificacao,
             // TASK-50: handoff explícito do id do log criado em uso_ia_logs
             aoRegistrarUsoIa: (logId) => {
               usoIaLogId = logId;
@@ -406,6 +489,7 @@ export class ImportacaoIaWorkerService {
           duracaoMs,
           usoIaLogId,
         });
+        tentativaIaId = tentativa.id;
 
         await ImportacaoTentativasService.correlacionarUsoIaLog({
           tentativaId: tentativa.id,
@@ -425,6 +509,46 @@ export class ImportacaoIaWorkerService {
 
         errosPorProvedor.push(`${alvo.provedor}: ${mensagemErroTentativa}`);
         transacoesExtraidas = [];
+      }
+
+      // Associa lançamentos ao segmento de origem e grava a contagem real em
+      // todas as páginas, inclusive aquelas que não tiveram movimentos.
+      const paginasTotais = inventarioPersistido.paginasTotais ?? 1;
+      transacoesExtraidas = transacoesExtraidas.map((transacao) => ({
+        ...transacao,
+        paginaOrigem: transacao.paginaOrigem ?? (paginasTotais === 1 ? 1 : null),
+      }));
+      const paginasInvalidas = transacoesExtraidas.some((transacao) =>
+        transacao.paginaOrigem == null || transacao.paginaOrigem < 1 || transacao.paginaOrigem > paginasTotais,
+      );
+      const origemDePaginaIndisponivel = inventario.paginaAtribuicaoDisponivel === false ||
+        (inventario.paginasSemTexto?.length ?? 0) > 0;
+      if (!paginasInvalidas && !origemDePaginaIndisponivel && errosPorProvedor.length === 0) {
+        const quantidades = Array.from({ length: paginasTotais }, () => ({ quantidade: 0, somaAbsoluta: 0 }));
+        for (const transacao of transacoesExtraidas) {
+          const pagina = quantidades[transacao.paginaOrigem! - 1];
+          pagina.quantidade += 1;
+          pagina.somaAbsoluta += Math.abs(transacao.valor);
+        }
+        await prisma.$transaction(quantidades.map((contagem, indice) => prisma.inventarioIaPagina.updateMany({
+          where: { inventarioId: inventarioPersistido.id, usuarioId: lote.usuarioId, pagina: indice + 1 },
+          data: {
+            quantidadeExtraida: contagem.quantidade,
+            somaAbsolutaExtraida: contagem.somaAbsoluta,
+            possuiMovimentos: contagem.quantidade > 0,
+          },
+        })));
+        await prisma.inventarioIaArquivo.update({
+          where: { id: inventarioPersistido.id },
+          data: { paginasComMovimentos: quantidades.flatMap((item, indice) => item.quantidade ? [indice + 1] : []) },
+        });
+      }
+
+      if (tentativaIaId) {
+        await prisma.inventarioIaArquivo.update({
+          where: { id: inventarioPersistido.id },
+          data: { tentativaId: tentativaIaId, provedor: provedorUtilizado.slice(0, 30), modelo: (modeloUtilizado || 'desconhecido').slice(0, 80) },
+        });
       }
 
       // 4. Validação e Reconhecimento de Documento Válido sem Movimentação (BUG-08)
@@ -454,6 +578,7 @@ export class ImportacaoIaWorkerService {
         }
 
         if (isDocumentoVazioLegitimo) {
+          if (errosPorProvedor.length > 0) throw new Error('Documento sem extração confirmada; não foi possível registrar a cobertura por página.');
           // Documento válido sem lançamentos no período (ex: fatura zerada ou mês sem movimentação)
           await prisma.arquivoImportacao.update({
             where: { id: arquivo.id },
@@ -461,12 +586,14 @@ export class ImportacaoIaWorkerService {
               status: 'PROCESSADO_FINAL',
               statusFinal: 'VAZIO',
               mensagemErro: null,
+              extracaoFinalizadaEm: new Date(),
             },
           });
 
           importacaoEventBus.emitArquivoProgresso({
             loteId: lote.id,
             arquivoId: arquivo.id,
+            usuarioId: lote.usuarioId,
             nomeArquivo: arquivo.nomeArquivo,
             status: 'PROCESSADO_FINAL',
             mensagem: 'Documento financeiro válido sem movimentação ou com total R$ 0,00 no período (CONCLUIDO_VAZIO).',
@@ -510,6 +637,17 @@ export class ImportacaoIaWorkerService {
         );
       }
 
+      // Clientes antigos sem endpoint de inventário ainda deixam uma evidência
+      // auditável coerente com a extração realizada.
+      if (!this.extratorClient.inventariarDocumento) {
+        await prisma.inventarioIaArquivo.update({ where: { id: inventarioPersistido.id }, data: {
+          quantidadeEsperada: transacoesExtraidas.length,
+          somaAbsolutaEsperada: transacoesExtraidas.reduce((s, t) => s + t.valor, 0),
+          confianca: 1, status: 'CONFERENTE', observacoes: null,
+          divergencias: { quantidade: { esperado: transacoesExtraidas.length, extraido: transacoesExtraidas.length } },
+        }});
+      }
+
       // Validação schema Zod
       const payloadConsolidado: ArquivoConsolidadoIa = {
         loteId: lote.id,
@@ -549,68 +687,17 @@ export class ImportacaoIaWorkerService {
         JSON.stringify(validacao.data, null, 2),
         'utf-8'
       );
+      await importacaoDiagnosticoService.copiarJson(arquivo.id, caminhoFisicoConsolidado);
+      await importacaoDiagnosticoService.registrar(arquivo.id, 'EXTRACAO_IA', 'Extração concluída.', {
+        transacoes: transacoesExtraidas.length, provedor: provedorUtilizado, modelo: modeloUtilizado,
+      });
 
-      // BUG-21: Detecção de metadados de fatura de cartão (vencimento e valor total)
-      let eFaturaCartao = false;
-      let faturaDataVencimento: Date | null = null;
+      // Classificação e metadados só podem vir da extração estruturada da IA;
+      // nome do arquivo e regex sobre texto livre não são evidência de documento.
+      const eFaturaCartao = inferirTipoDocumentoImportado(transacoesExtraidas) === 'FATURA_CARTAO';
+      const faturaDataVencimento: Date | null = null;
       let faturaValorTotal: number | null = null;
-
-      // Obtém texto do documento de forma segura se for PDF ou texto puro
-      let textoDocumento = '';
-      try {
-        const ext = path.extname(arquivo.nomeArquivo).toLowerCase();
-        if (ext === '.pdf') {
-          textoDocumento = PdfTextExtractor.extrairTexto(buffer) || '';
-        } else if (ext === '.txt' || ext === '.csv' || ext === '.ofx' || ext === '.json') {
-          textoDocumento = buffer.toString('utf-8');
-        }
-      } catch {
-        textoDocumento = '';
-      }
-
-      // Se houver texto legível, tenta extrair pelo C6 parser ou regex universal
-      if (textoDocumento && textoDocumento.trim().length > 0) {
-        const metadadosC6 = C6InvoicePdfParser.extrairMetadadosFatura(textoDocumento);
-        if (metadadosC6.eFaturaCartao) {
-          eFaturaCartao = true;
-          faturaDataVencimento = metadadosC6.faturaDataVencimento;
-          faturaValorTotal = metadadosC6.faturaValorTotal;
-        } else {
-          // Heurística universal em texto: se for extrato bancário/conta corrente explícito, não deve ser classificado como fatura
-          const isExtrato = /extrato|conta\s*corrente/i.test(arquivo.nomeArquivo) || /extrato\s+de\s+conta|conta\s*corrente/i.test(textoDocumento);
-          const isFatura = !isExtrato && (
-            /fatura|cart[aã]o\s+de\s+cr[eé]dito|fatura\s+fechada/i.test(textoDocumento) ||
-            /fatura|nubank/i.test(arquivo.nomeArquivo)
-          );
-          if (isFatura) {
-            eFaturaCartao = true;
-            const vencMatch = textoDocumento.match(/vencimento[\s\S]{0,30}(\d{2})\/(\d{2})\/(\d{4})/i);
-            if (vencMatch) {
-              faturaDataVencimento = new Date(`${vencMatch[3]}-${vencMatch[2]}-${vencMatch[1]}T12:00:00.000Z`);
-            }
-            const totalMatch =
-              textoDocumento.match(/chegou\s+no\s+(?:valor\s+de\s*)?(?:r\$\s*)?([\d\.,]+)/i) ||
-              textoDocumento.match(/valor\s+da\s+fatura:\s*(?:r\$\s*)?([\d\.,]+)/i) ||
-              textoDocumento.match(/total\s+a\s+pagar\s*(?:r\$\s*)?([\d\.,]+)/i) ||
-              textoDocumento.match(/total\s+(?:da\s+)?fatura[\s\S]{0,30}(?:r\$\s*)?([\d\.,]+)/i) ||
-              textoDocumento.match(/valor\s+total[\s\S]{0,30}(?:r\$\s*)?([\d\.,]+)/i);
-            if (totalMatch) {
-              const clean = totalMatch[1].replace(/\./g, '').replace(',', '.').replace(/[^\d.]/g, '').trim();
-              const num = parseFloat(clean);
-              if (!isNaN(num) && num > 0) faturaValorTotal = num;
-            }
-          }
-        }
-      }
-
-      // Se ainda não identificou valor total mas as transações são de cartão de crédito, soma os débitos como estimativa de total se for fatura
-      const ehNomeFatura = /fatura|nubank/i.test(arquivo.nomeArquivo) && !/extrato/i.test(arquivo.nomeArquivo);
-      if (!eFaturaCartao && (transacoesExtraidas.some((t) => t.tipoConta === 'CARTAO_CREDITO') || ehNomeFatura)) {
-        eFaturaCartao = true;
-      }
-
-      // Se é fatura de cartão e não conseguiu extrair faturaValorTotal do texto, calcula o valor líquido das transações (despesas - receitas/estornos, excluindo pagamentos)
-      if (eFaturaCartao && (!faturaValorTotal || faturaValorTotal <= 0) && transacoesExtraidas.length > 0) {
+      if (eFaturaCartao && transacoesExtraidas.length > 0) {
         const comprasEfetivas = transacoesExtraidas.filter((t) => !t.isPagamentoFatura);
         const totalLiquido = comprasEfetivas.reduce((acc, t) => {
           return t.natureza === 'RECEITA' ? acc - t.valor : acc + t.valor;
@@ -625,7 +712,10 @@ export class ImportacaoIaWorkerService {
         where: { id: arquivo.id },
         data: {
           status: 'IA_CONCLUIDO',
-          statusFinal: 'SUCESSO',
+          extracaoFinalizadaEm: new Date(),
+          // A extração foi concluída, mas ainda não houve persistência oficial.
+          // SUCESSO só pode ser atribuído pelo worker de consolidação.
+          statusFinal: null,
           mensagemErro: null,
           ultimoProvedor: (provedorUtilizado || 'GEMINI').slice(0, 30),
           eFaturaCartao,
@@ -640,6 +730,7 @@ export class ImportacaoIaWorkerService {
       importacaoEventBus.emitArquivoProgresso({
         loteId: lote.id,
         arquivoId: arquivo.id,
+        usuarioId: lote.usuarioId,
         nomeArquivo: arquivo.nomeArquivo,
         status: 'IA_CONCLUIDO',
         mensagem: `${transacoesExtraidas.length} transações extraídas e consolidadas com sucesso.`,
@@ -676,9 +767,12 @@ export class ImportacaoIaWorkerService {
           status: 'ERRO',
           statusFinal: 'FALHA',
           mensagemErro,
+          extracaoFinalizadaEm: new Date(),
         },
         select: { totalTentativas: true },
       });
+      await importacaoDiagnosticoService.registrar(arquivo.id, 'ERRO_EXTRACAO_IA', mensagemErro);
+      await importacaoDiagnosticoService.finalizarArquivo(arquivo.id, 'ERRO');
 
       // TASK-50: garante ao menos uma tentativa FALHA registrada para o arquivo
       // (cobre falhas anteriores a qualquer chamada de IA — ex.: leitura do disco).
@@ -703,6 +797,7 @@ export class ImportacaoIaWorkerService {
       importacaoEventBus.emitArquivoProgresso({
         loteId: lote.id,
         arquivoId: arquivo.id,
+        usuarioId: lote.usuarioId,
         nomeArquivo: arquivo.nomeArquivo,
         status: 'ERRO',
         mensagem: mensagemErro,
@@ -717,6 +812,9 @@ export class ImportacaoIaWorkerService {
         erro: mensagemErro,
         totalTentativas: arquivoComErro.totalTentativas,
       };
+    } finally {
+      clearInterval(heartbeat);
+      await prisma.$executeRaw`UPDATE arquivos_importacao SET worker_owner = NULL, worker_lease_until = NULL, worker_stage = NULL WHERE id = ${arquivo.id}::uuid AND worker_owner = ${owner} AND EXISTS (SELECT 1 FROM lotes_importacao l WHERE l.id = arquivos_importacao.lote_id AND l.usuario_id = ${lote.usuarioId}::uuid)`;
     }
   }
 

@@ -383,6 +383,45 @@ describe('OPENROUTER: extração de transações pelo worker de importação', (
     expect(serializado).not.toContain('\uFFFD');
   });
 
+  it('TASK-59: reutiliza checkpoints validados e não chama novamente os chunks concluídos', async () => {
+    await criarConfig(usuarioAId);
+    const lote = await storageService.recepcionarLote({
+      usuarioId: usuarioAId,
+      arquivos: [{ nomeOriginal: 'fixture-universal.txt', buffer: Buffer.from('x'.repeat(12000)), mimeType: 'text/plain' }],
+    });
+    pastasParaLimpeza.push(path.resolve(process.cwd(), lote.caminhoDiretorio));
+    const arquivo = lote.arquivos[0];
+    const fetchMock = vi.fn().mockResolvedValue(respostaOpenRouter({
+      transacoes: [{ dataMovimento: '2026-10-21', descricao: 'Lançamento de fixture', valor: 19.5, natureza: 'DESPESA', isPagamentoFatura: false }],
+    }) as any);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock as any;
+    const client = new GeminiIaExtratorClient('');
+    const parametros = {
+      nomeArquivo: arquivo.nomeArquivo,
+      mimeType: 'text/plain',
+      conteudoBuffer: Buffer.from('x'.repeat(12000)),
+      conteudoTexto: 'x'.repeat(12000),
+      usuarioId: usuarioAId,
+      loteId: lote.loteId,
+      arquivoId: arquivo.id,
+      provedorIa: 'OPENROUTER',
+      modeloIa: MODELO_OPENROUTER_PADRAO,
+      contexto,
+    };
+    try {
+      const primeira = await client.extrairTransacoes(parametros);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      const segunda = await client.extrairTransacoes(parametros);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(primeira).toHaveLength(3);
+      expect(segunda).toEqual(primeira);
+      expect(await prisma.checkpointChunkIa.count({ where: { usuarioId: usuarioAId, arquivoId: arquivo.id } })).toBe(3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('OPENAI no extrator deve falhar explicitamente (sem fallback silencioso para Gemini)', async () => {
     const client = new GeminiIaExtratorClient('sk-proj-chave-gemini-fallback-1234567890');
     const fetchMock = vi.fn();
@@ -399,7 +438,7 @@ describe('OPENROUTER: extração de transações pelo worker de importação', (
           provedorIa: 'OPENAI',
           contexto,
         })
-      ).rejects.toThrow('OPENAI ainda não suportado neste fluxo, use GEMINI, DEEPSEEK ou OPENROUTER');
+      ).rejects.toThrow('chave de IA para o provedor OPENAI');
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       globalThis.fetch = originalFetch;

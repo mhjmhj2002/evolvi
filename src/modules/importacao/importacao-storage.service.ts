@@ -1,8 +1,10 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { env } from '../../config/env.js';
 import { prisma } from '../../infrastructure/database/prisma.js';
 import { importacaoEventBus } from '../../infrastructure/events/importacao-event-bus.js';
+import { importacaoDiagnosticoService } from './importacao-diagnostico.service.js';
 import {
   ImportacaoTentativasService,
   AlertaDuplicidadeArquivo,
@@ -11,8 +13,12 @@ import {
 
 export interface SalvarArquivoInput {
   nomeOriginal: string;
-  buffer: Buffer;
+  buffer?: Buffer;
+  caminhoTemporario?: string;
+  tamanhoBytes?: number;
+  hashConteudo?: string;
   mimeType?: string;
+  uploadIniciadoEm?: Date;
 }
 
 export interface RecepcionarLoteInput {
@@ -37,6 +43,14 @@ export interface ArquivoRecepcionadoResponse {
   jaImportadoAnteriormente?: boolean;
   arquivoOriginalId?: string | null;
   statusFinal?: string | null;
+  uploadIniciadoEm?: Date | null;
+  uploadFinalizadoEm?: Date | null;
+  extracaoIniciadaEm?: Date | null;
+  extracaoFinalizadaEm?: Date | null;
+  stagingIniciadoEm?: Date | null;
+  stagingFinalizadoEm?: Date | null;
+  consolidacaoIniciadaEm?: Date | null;
+  consolidacaoFinalizadaEm?: Date | null;
 }
 
 export interface LoteCriadoResponse {
@@ -78,7 +92,7 @@ export class ImportacaoStorageService {
 
     // Garante que o usuarioId seja um único segmento de path (sem barras nem '..')
     const usuarioSegmento = this.sanitizarSegmentoPath(usuarioId);
-    const folderName = `${yyyy}-${mm}-${dd}-${hh}-${min}-${ss}-${usuarioSegmento}`;
+    const folderName = `${yyyy}-${mm}-${dd}-${hh}-${min}-${ss}-${usuarioSegmento}-${randomUUID()}`;
     return path.join(this.baseUploadDir, usuarioSegmento, folderName);
   }
 
@@ -132,6 +146,8 @@ export class ImportacaoStorageService {
     if (!arquivos || arquivos.length === 0) {
       throw new Error('Nenhum arquivo enviado para importação.');
     }
+    // Cada importação começa com a pasta do usuário limpa.
+    await importacaoDiagnosticoService.limparTodosArtefatosUsuario(usuarioId);
 
     const agora = new Date();
     const caminhoDiretorio = this.gerarCaminhoDiretorioLote(usuarioId, agora);
@@ -140,17 +156,22 @@ export class ImportacaoStorageService {
     // Cria o diretório temporário no disco de forma recursiva
     await fs.mkdir(caminhoAbsolutoDiretorio, { recursive: true });
 
-    // Salva fisicamente cada arquivo no diretório temporário
+    // Promove arquivos do spool usando nomes físicos únicos. O nome recebido
+    // permanece apenas como metadado e nunca determina o destino no disco.
     const arquivosSalvos: {
       nomeArquivo: string;
       caminhoRelativo: string;
       tamanhoBytes: number;
       mimeType: string | null;
       hashConteudo: string;
+      uploadIniciadoEm: Date;
+      uploadFinalizadoEm: Date;
     }[] = [];
 
+    try {
     for (const arq of arquivos) {
-      const caminhoRelativo = this.sanitizarCaminhoRelativo(arq.nomeOriginal);
+      const nomeOriginalSeguro = this.sanitizarCaminhoRelativo(arq.nomeOriginal);
+      const caminhoRelativo = `${randomUUID()}${path.extname(nomeOriginalSeguro).toLowerCase()}`;
       const caminhoFisicoArquivo = path.join(caminhoAbsolutoDiretorio, caminhoRelativo);
 
       // Garante que subpastas (se houver no caminho relativo) sejam criadas
@@ -158,15 +179,24 @@ export class ImportacaoStorageService {
       await fs.mkdir(subpasta, { recursive: true });
 
       // Grava o arquivo físico
-      await fs.writeFile(caminhoFisicoArquivo, arq.buffer);
+      if (arq.caminhoTemporario) await fs.rename(arq.caminhoTemporario, caminhoFisicoArquivo);
+      else if (arq.buffer) await fs.writeFile(caminhoFisicoArquivo, arq.buffer, { flag: 'wx' });
+      else throw new Error('Arquivo sem conteúdo temporário para promoção.');
 
+      const uploadFinalizadoEm = new Date();
       arquivosSalvos.push({
-        nomeArquivo: path.basename(caminhoRelativo),
+        nomeArquivo: nomeOriginalSeguro,
         caminhoRelativo,
-        tamanhoBytes: arq.buffer.length,
+        tamanhoBytes: arq.tamanhoBytes ?? arq.buffer!.length,
         mimeType: arq.mimeType || 'application/octet-stream',
-        hashConteudo: ImportacaoTentativasService.calcularHashConteudo(arq.buffer),
+        hashConteudo: arq.hashConteudo || ImportacaoTentativasService.calcularHashConteudo(arq.buffer!),
+        uploadIniciadoEm: arq.uploadIniciadoEm || agora,
+        uploadFinalizadoEm,
       });
+    }
+    } catch (error) {
+      await fs.rm(caminhoAbsolutoDiretorio, { recursive: true, force: true });
+      throw error;
     }
 
     const origem: OrigemLote = input.origem || this.inferirOrigem(arquivos);
@@ -213,6 +243,8 @@ export class ImportacaoStorageService {
             mimeType: arq.mimeType,
             status: 'RECEPCIONADO',
             hashConteudo: arq.hashConteudo,
+            uploadIniciadoEm: arq.uploadIniciadoEm,
+            uploadFinalizadoEm: arq.uploadFinalizadoEm,
             // Com forçar reprocessamento o arquivo segue para o pipeline normal
             jaImportadoAnteriormente: duplicado && !forcar,
             arquivoOriginalId,
@@ -268,7 +300,26 @@ export class ImportacaoStorageService {
         arquivos: arquivosCriados,
         alertasDuplicidade,
       };
+    }).catch(async (error) => {
+      // A pasta desta requisição é exclusiva; remover apenas ela nunca afeta
+      // arquivos de outro lote ou usuário.
+      await fs.rm(caminhoAbsolutoDiretorio, { recursive: true, force: true });
+      throw error;
     });
+
+    // A cópia diagnóstica é independente da pasta temporária, que os workers apagam.
+    for (let indice = 0; indice < lote.arquivos.length; indice++) {
+      const arquivo = lote.arquivos[indice];
+      const salvo = arquivosSalvos[indice];
+      if (!salvo) continue;
+      const original = path.resolve(caminhoAbsolutoDiretorio, salvo.caminhoRelativo);
+      try {
+        await importacaoDiagnosticoService.iniciarArquivo(arquivo.id, original, input.provedorIa, input.modeloIa);
+        if (arquivo.statusFinal === 'DUPLICADO') await importacaoDiagnosticoService.finalizarArquivo(arquivo.id, 'DUPLICADO');
+      } catch (erro) {
+        console.error(`[evolvi-importacao-diagnostico] Falha ao copiar arquivo ${arquivo.id}:`, erro);
+      }
+    }
 
     // Emite evento no barramento assíncrono para os workers
     importacaoEventBus.emitLoteRecepcionado({
@@ -312,6 +363,14 @@ export class ImportacaoStorageService {
       jaImportadoAnteriormente: a.jaImportadoAnteriormente,
       arquivoOriginalId: a.arquivoOriginalId,
       statusFinal: a.statusFinal,
+      uploadIniciadoEm: a.uploadIniciadoEm,
+      uploadFinalizadoEm: a.uploadFinalizadoEm,
+      extracaoIniciadaEm: a.extracaoIniciadaEm,
+      extracaoFinalizadaEm: a.extracaoFinalizadaEm,
+      stagingIniciadoEm: a.stagingIniciadoEm,
+      stagingFinalizadoEm: a.stagingFinalizadoEm,
+      consolidacaoIniciadaEm: a.consolidacaoIniciadaEm,
+      consolidacaoFinalizadaEm: a.consolidacaoFinalizadaEm,
     };
   }
 
@@ -395,6 +454,14 @@ export class ImportacaoStorageService {
         jaImportadoAnteriormente: a.jaImportadoAnteriormente,
         arquivoOriginalId: a.arquivoOriginalId,
         ultimoProvedor: a.ultimoProvedor,
+        uploadIniciadoEm: a.uploadIniciadoEm,
+        uploadFinalizadoEm: a.uploadFinalizadoEm,
+        extracaoIniciadaEm: a.extracaoIniciadaEm,
+        extracaoFinalizadaEm: a.extracaoFinalizadaEm,
+        stagingIniciadoEm: a.stagingIniciadoEm,
+        stagingFinalizadoEm: a.stagingFinalizadoEm,
+        consolidacaoIniciadaEm: a.consolidacaoIniciadaEm,
+        consolidacaoFinalizadaEm: a.consolidacaoFinalizadaEm,
         criadoEm: a.criadoEm,
         atualizadoEm: a.atualizadoEm,
         stagingStats: stats,

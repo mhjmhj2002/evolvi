@@ -31,14 +31,30 @@ Diagramas em markdown devem **facilitar a compreensão imediata** da arquitetura
 - **Preservação de Contexto e Testes**: Sempre execute e garanta que suítes de testes (`npm run test:run`) e compilações (`npm run build:web`) passem com 100% de sucesso após alterações.
 - **Segurança Multi-Tenant**: Toda consulta e persistência no banco de dados deve sempre isolar registros pelo `usuarioId` autenticado.
 - **Clareza na Documentação**: Documentos devem ter seções bem delineadas, tabelas sintetizadas e passos cronológicos diretos.
+- **Atualização obrigatória de status de demandas**: Sempre que uma demanda/task for finalizada, atualizar seu status no documento de acompanhamento correspondente (por exemplo, `.local/documentacao/ANDAMENTO_DEMANDAS.md`) na mesma entrega. Atualizar também contagens ou resumos de progresso relacionados, quando existirem; não deixar a implementação concluída marcada como não iniciada ou em andamento.
 
 ---
 
-## 4. 🚫 Proibição de Regras Específicas por Instituição de Pagamento / Banco
+## 4. 🧭 Skills de Extração Financeira
 
-O sistema Evolvi adota arquitetura **100% agnóstica e universal** para ingestão e extração de documentos financeiros (extratos, faturas, comprovantes):
-- **PROIBIDO criar parsers, heurísticas ou lógicas determinísticas específicas por banco ou instituição de pagamento** (ex.: regras customizadas para Itaú, Banco do Brasil, Caixa, Bradesco, Santander, Nubank, etc.).
-- **Extração guiada por IA**: A interpretação de layout e campos em documentos não-estruturados (PDFs, imagens e textos livres) deve ser estritamente responsabilidade dos motores de IA (LLMs) via prompts universais e contextuais (contas do usuário, categorias POF, titularidade).
-- **Formatos universais padrão**: Regras determinísticas só são aceitas para formatos abertos e estruturados padronizados por norma (como especificação oficial OFX, CSVs padrão e Open Finance), nunca atreladas à marca, layout proprietário ou peculiaridades de uma instituição específica.
-- **Robustez universal**: Qualquer desafio de paginação, volume de dados ou layout deve ser resolvido através de estratégias genéricas (ex.: compactação de schema JSON, chunks universais por tamanho/página, diretrizes de exaustividade nos prompts), garantindo que funcione para qualquer uma das centenas de instituições financeiras do Brasil sem alteração de código.
+O sistema mantém uma base universal e pode acrescentar **skills de instrução para IA específicas por instituição**, com fallback genérico:
+- **Permitido:** skills em linguagem natural que ensinem o LLM a reconhecer as seções e o significado dos campos de um documento de instituição conhecida. Uma skill específica complementa a base genérica; não a substitui.
+- **Proibido:** parsers, filtros de linhas, regexes de extração, heurísticas ou outras lógicas determinísticas de conteúdo específicas por banco/instituição. A skill orienta a IA; não deve virar código que interprete lançamentos pelo layout proprietário.
+- **Fallback obrigatório:** se não houver skill compatível, aplicar a skill genérica e pedir revisão quando a função de uma seção ou data não puder ser identificada com confiança.
+- **Fonte canônica:** em extratos com movimentação contabilizada e comprovantes anexos, somente as linhas da movimentação contabilizada geram lançamentos. Comprovantes servem como evidência, não como uma segunda transação; a data e o valor do lançamento vêm da movimentação contabilizada.
+- **Formatos universais padrão:** regras determinísticas só são aceitas para formatos abertos e estruturados padronizados por norma (como especificação oficial OFX, CSVs padrão e Open Finance), nunca atreladas a layouts proprietários.
+- **Robustez universal:** paginação, volume e layout desconhecido devem continuar usando estratégias gerais (por exemplo, chunks por tamanho/página e validação de cobertura), sem código específico por instituição.
+
+---
+
+## 5. 🗄️ Pré-requisito obrigatório para testes com PostgreSQL
+
+Os testes de integração usam o PostgreSQL definido em `docker-compose.yml` e a conexão configurada em `.env` (`localhost:5432`). Antes de executar `npm run test:run`, o agente deve:
+
+1. Subir ou garantir o serviço: `docker compose up -d postgres`.
+2. Aguardar o healthcheck e validar a conexão: `docker exec evolvi_postgres pg_isready -U evolvi -d evolvi_db`.
+3. Aplicar migrações pendentes: `npx prisma migrate deploy`.
+4. Executar `npm run test:run` no mesmo contexto de rede que alcança `localhost:5432`.
+
+Se o sandbox não conseguir acessar `localhost:5432`, não concluir que a aplicação está sem banco nem repetir a suíte nesse contexto: solicitar/usar execução privilegiada para os comandos Docker, migrações e testes. Não usar `prisma migrate reset`, apagar volumes ou recriar o banco, pois isso pode destruir dados locais.
 

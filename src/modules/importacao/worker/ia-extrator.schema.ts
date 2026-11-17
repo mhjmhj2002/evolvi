@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const tipoContaIaSchema = z.enum(['CONTA_CORRENTE', 'CARTAO_CREDITO', 'INVESTIMENTO', 'OUTRO']);
+export const tipoContaIaSchema = z.enum(['CONTA_CORRENTE', 'POUPANCA', 'CARTAO_CREDITO', 'INVESTIMENTO', 'OUTRO']);
 export const naturezaIaSchema = z.enum([
   'DESPESA',
   'RECEITA',
@@ -24,6 +24,7 @@ export const lancamentoConsolidadoIaSchema = z.object({
   isPagamentoFatura: z.boolean().optional().default(false),
   observacao: z.string().optional().nullable(),
   confianca: z.number().min(0).max(1).optional().default(1.0),
+  paginaOrigem: z.number().int().positive().nullable().optional(),
 });
 
 export const arquivoConsolidadoIaSchema = z.object({

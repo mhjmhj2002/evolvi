@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { TipoConta } from '@prisma/client';
 
 export const tipoContaEnum = z.nativeEnum(TipoConta, {
-  message: 'Tipo de conta inválido. Opções: CONTA_CORRENTE, CARTAO_CREDITO, INVESTIMENTO, CARTEIRA_DINHEIRO',
+  message: 'Tipo de conta inválido. Opções: CONTA_CORRENTE, POUPANCA, CARTAO_CREDITO, INVESTIMENTO, CARTEIRA_DINHEIRO',
 });
 
 export const createContaSchema = z.object({

@@ -352,7 +352,7 @@ describe('TASK-49: Controle e Auditoria de Gastos de IA', () => {
       });
       expect(log!.status).toBe('FALHA');
       expect(log!.tokensTotal).toBe(0);
-      expect(log!.mensagemErro).toContain('DeepSeek');
+      expect(log!.mensagemErro?.toLowerCase()).toContain('deepseek');
     });
   });
 

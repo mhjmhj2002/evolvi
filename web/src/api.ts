@@ -310,6 +310,7 @@ export interface ItemCronogramaVencimento {
   essencial?: boolean;
   categoria?: { id: string; nome: string } | null;
   conta?: { id: string; nome: string; tipo: string } | null;
+  status?: 'PENDENTE' | 'AGENDADO' | 'PAGO';
   parcelamentoInfo?: {
     parcelaAtualNoMes: number;
     totalParcelas: number;
@@ -374,7 +375,7 @@ export interface RecorrenciasResponse {
 export interface ContaItem {
   id: string;
   nome: string;
-  tipo: 'CONTA_CORRENTE' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO' | string;
+  tipo: 'CONTA_CORRENTE' | 'POUPANCA' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO' | string;
   diaFechamento?: number | null;
   diaVencimento?: number | null;
   saldoInicial: number;
@@ -483,11 +484,20 @@ export interface SuspeitaCategorizacaoItem {
   totalSimilaresVendedor?: number;
 }
 
+export interface SuspeitaDataForaPeriodoItem {
+  id: string;
+  tipo: 'SUSPEITA_DATA_FORA_PERIODO';
+  confianca: number;
+  motivo: string;
+  movimento: MovimentoItem;
+}
+
 export interface SuspeitasResponse {
   totalPendentes: number;
   suspeitasDuplicatas: SuspeitaDuplicataItem[];
   suspeitasAportes: SuspeitaAporteItem[];
   suspeitasCategorizacao: SuspeitaCategorizacaoItem[];
+  suspeitasDatas: SuspeitaDataForaPeriodoItem[];
 }
 
 export interface VereditoPayload {
@@ -497,10 +507,13 @@ export interface VereditoPayload {
   | 'CONVERTER_APORTE_PATRIMONIAL'
   | 'CONVERTER_TRANSFERENCIA_PROPRIA'
   | 'CONFIRMAR_DESPESA_REGULAR'
-  | 'DEFINIR_CATEGORIA';
+  | 'DEFINIR_CATEGORIA'
+  | 'CONFIRMAR_DATA'
+  | 'CORRIGIR_DATA';
   duplicataId?: string | null;
   categoriaId?: string | null;
   observacao?: string | null;
+  dataMovimento?: string;
   propagarMesmoVendedor?: boolean;
   memorizarRegraVendedor?: boolean;
 }
@@ -1940,6 +1953,7 @@ export const apiService = {
       suspeitasDuplicatas: [],
       suspeitasAportes: [],
       suspeitasCategorizacao: [],
+      suspeitasDatas: [],
     });
   },
 
@@ -2166,25 +2180,9 @@ export const apiService = {
   },
 
   async getStatusIa(): Promise<StatusIaResponse> {
-    try {
-      return await apiFetch<StatusIaResponse>('/api/ia/status', undefined, {
-        configurada: false,
-        hasEnvKey: false,
-        provedorAtivo: null,
-        modeloPadrao: modeloPadraoDoProvedor('GEMINI'),
-        provedoresSuportados: PROVEDORES_IA_CATALOGO_OFFLINE,
-      });
-    } catch {
-      return {
-        configurada: false,
-        hasEnvKey: false,
-        hasUserKey: false,
-        chaveMascarada: null,
-        provedorAtivo: null,
-        modeloPadrao: modeloPadraoDoProvedor('GEMINI'),
-        provedoresSuportados: PROVEDORES_IA_CATALOGO_OFFLINE,
-      };
-    }
+    // Um erro de autenticação/API não significa que o usuário não tenha chave.
+    // Propaga a falha para a tela informar indisponibilidade em vez de ocultar configs.
+    return apiFetch<StatusIaResponse>('/api/ia/status');
   },
 
   async salvarConfiguracaoIa(payload: {
@@ -2585,16 +2583,26 @@ export const apiService = {
     });
   },
 
-  async getStagingLote(loteId: string): Promise<{
+  async getStagingLote(loteId: string, params?: { cursor?: string; limite?: number }): Promise<{
     loteId: string;
     totalItens: number;
     itens: StagingLancamentoItem[];
+    proximoCursor?: string | null;
+    limite?: number;
+    totaisPorStatus?: Record<string, number>;
   }> {
-    return apiFetch(`/api/importacao/lotes/${loteId}/staging`, undefined, {
+    const qs = new URLSearchParams();
+    if (params?.cursor) qs.set('cursor', params.cursor);
+    if (params?.limite) qs.set('limite', String(params.limite));
+    return apiFetch(`/api/importacao/lotes/${loteId}/staging${qs.size ? `?${qs}` : ''}`, undefined, {
       loteId,
       totalItens: 0,
       itens: [],
     });
+  },
+
+  async getMetricasOperacionaisLote(loteId: string): Promise<MetricasOperacionaisImportacao> {
+    return apiFetch(`/api/importacao/lotes/${loteId}/metricas`);
   },
 
   async getAlertasConciliacao(params?: { status?: 'PENDENTE' | 'RESOLVIDO' | 'DISPENSADO' }): Promise<{
@@ -2724,6 +2732,199 @@ export const apiService = {
       method: 'POST',
     });
   },
+
+  // --- MÓDULO DE ALERTAS DO SISTEMA ---
+  async getAlertas(params?: {
+    status?: 'PENDENTE' | 'VISUALIZADO' | 'CANCELADO' | 'RESOLVIDO';
+    tipo?: string;
+    apenasAtivos?: boolean;
+  }): Promise<{ alertas: AlertaSistemaItem[] }> {
+    const q = new URLSearchParams();
+    if (params?.status) q.append('status', params.status);
+    if (params?.tipo) q.append('tipo', params.tipo);
+    if (params?.apenasAtivos !== undefined) q.append('apenasAtivos', String(params.apenasAtivos));
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return apiFetch<{ alertas: AlertaSistemaItem[] }>(`/api/alertas${qs}`, undefined, { alertas: [] });
+  },
+
+  async getResumoAlertas(): Promise<{ totalPendentes: number; totalGeral: number }> {
+    return apiFetch<{ totalPendentes: number; totalGeral: number }>('/api/alertas/resumo', undefined, {
+      totalPendentes: 0,
+      totalGeral: 0,
+    });
+  },
+
+  async atualizarStatusAlerta(
+    id: string,
+    status: 'PENDENTE' | 'VISUALIZADO' | 'CANCELADO' | 'RESOLVIDO',
+    motivoCancelamento?: string
+  ): Promise<{ alerta: AlertaSistemaItem }> {
+    return apiFetch<{ alerta: AlertaSistemaItem }>(`/api/alertas/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, motivoCancelamento }),
+    });
+  },
+
+  async marcarTodosAlertasVisualizados(): Promise<any> {
+    return apiFetch<any>('/api/alertas/marcar-todos-visualizados', {
+      method: 'POST',
+    });
+  },
+
+  async excluirAlerta(id: string): Promise<{ success: boolean }> {
+    return apiFetch<{ success: boolean }>(`/api/alertas/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // --- CRUD DE REGRAS DE ALERTA (Data-Driven) ---
+  async getRegrasAlerta(): Promise<{ regras: RegraAlertaItem[] }> {
+    return apiFetch<{ regras: RegraAlertaItem[] }>('/api/alertas/regras', undefined, { regras: [] });
+  },
+
+  async criarRegraAlerta(payload: {
+    codigo: string;
+    nome: string;
+    descricao?: string | null;
+    tipoGatilho?: string;
+    severidadePadrao?: 'INFO' | 'ATENCAO' | 'URGENTE';
+    ativo?: boolean;
+    parametros?: Record<string, any>;
+    templateTitulo?: string | null;
+    templateMensagem?: string | null;
+  }): Promise<{ regra: RegraAlertaItem }> {
+    return apiFetch<{ regra: RegraAlertaItem }>('/api/alertas/regras', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async atualizarRegraAlerta(
+    id: string,
+    payload: {
+      nome?: string;
+      descricao?: string | null;
+      tipoGatilho?: string;
+      severidadePadrao?: 'INFO' | 'ATENCAO' | 'URGENTE';
+      ativo?: boolean;
+      parametros?: Record<string, any>;
+      templateTitulo?: string | null;
+      templateMensagem?: string | null;
+    }
+  ): Promise<{ regra: RegraAlertaItem }> {
+    return apiFetch<{ regra: RegraAlertaItem }>(`/api/alertas/regras/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async excluirRegraAlerta(id: string): Promise<{ success: boolean }> {
+    return apiFetch<{ success: boolean }>(`/api/alertas/regras/${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // --- CRUD DE CONTAS A PAGAR ---
+  async getContasPagar(params?: {
+    competencia?: string;
+    status?: 'PENDENTE' | 'AGENDADO' | 'PAGO' | 'CANCELADO';
+    dataInicio?: string;
+    dataFim?: string;
+  }): Promise<{ contas: ContaPagarItem[] }> {
+    const q = new URLSearchParams();
+    if (params?.competencia) q.append('competencia', params.competencia);
+    if (params?.status) q.append('status', params.status);
+    if (params?.dataInicio) q.append('dataInicio', params.dataInicio);
+    if (params?.dataFim) q.append('dataFim', params.dataFim);
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    return apiFetch<{ contas: ContaPagarItem[] }>(`/api/contas-pagar${qs}`, undefined, { contas: [] });
+  },
+
+  async criarContaPagar(payload: {
+    descricao: string;
+    valor?: number | null;
+    valorVariavel?: boolean;
+    tipoContaPagar?: 'FATURA_CARTAO' | 'CONTA_CONSUMO' | 'BOLETO' | 'OUTRO';
+    diaVencimento: number;
+    dataVencimento?: string | null;
+    status?: 'PENDENTE' | 'AGENDADO' | 'PAGO' | 'CANCELADO';
+    categoriaId?: string | null;
+    contaId?: string | null;
+    recorrenciaId?: string | null;
+    essencial?: boolean;
+    codigoBarras?: string | null;
+    observacoes?: string | null;
+  }): Promise<{ conta: ContaPagarItem }> {
+    return apiFetch<{ conta: ContaPagarItem }>('/api/contas-pagar', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async atualizarContaPagar(
+    id: string,
+    payload: {
+      descricao?: string;
+      valor?: number | null;
+      valorVariavel?: boolean;
+      tipoContaPagar?: 'FATURA_CARTAO' | 'CONTA_CONSUMO' | 'BOLETO' | 'OUTRO';
+      diaVencimento?: number;
+      dataVencimento?: string | null;
+      dataPagamento?: string | null;
+      status?: 'PENDENTE' | 'AGENDADO' | 'PAGO' | 'CANCELADO';
+      categoriaId?: string | null;
+      contaId?: string | null;
+      recorrenciaId?: string | null;
+      essencial?: boolean;
+      codigoBarras?: string | null;
+      observacoes?: string | null;
+    }
+  ): Promise<{ conta: ContaPagarItem }> {
+    return apiFetch<{ conta: ContaPagarItem }>(`/api/contas-pagar/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async sincronizarRecorrenciasContasPagar(): Promise<{
+    totalProcessadas: number;
+    totalImportadas: number;
+    totalExistentes: number;
+    contas: ContaPagarItem[];
+  }> {
+    return apiFetch<{
+      totalProcessadas: number;
+      totalImportadas: number;
+      totalExistentes: number;
+      contas: ContaPagarItem[];
+    }>('/api/contas-pagar/sincronizar-recorrencias', {
+      method: 'POST',
+    });
+  },
+
+  async verificarCicloMensalContasPagar(): Promise<{
+    usuarioId: string;
+    competenciaAtual: string;
+    renovado: boolean;
+    motivo: string;
+    totalContasRenovadas: number;
+  }> {
+    return apiFetch<{
+      usuarioId: string;
+      competenciaAtual: string;
+      renovado: boolean;
+      motivo: string;
+      totalContasRenovadas: number;
+    }>('/api/contas-pagar/verificar-ciclo-mensal', {
+      method: 'POST',
+    });
+  },
+
+  async excluirContaPagar(id: string): Promise<{ success: boolean }> {
+    return apiFetch<{ success: boolean }>(`/api/contas-pagar/${id}`, {
+      method: 'DELETE',
+    });
+  },
 };
 
 export interface AlertaConciliacaoItem {
@@ -2774,7 +2975,23 @@ export interface DetalhesLancamentosArquivoResponse {
     totalMovimentosOficiais: number;
     totalStagingItens: number;
     valorTotalMovimentos: number;
+    somaEntradas: number;
+    somaSaidas: number;
   };
+  inventarioIa?: {
+    paginasTotais?: number | null;
+    paginasComMovimentos: number[];
+    registrosPorPagina: Array<{ pagina: number; quantidade: number }>;
+    paginas: Array<{ pagina: number; possuiMovimentos: boolean; quantidadeEsperada: number | null; quantidadeExtraida?: number | null; somaAbsolutaEsperada?: number | null; somaAbsolutaExtraida?: number | null; divergencias?: unknown }>;
+    quantidadeEsperada?: number | null;
+    dataInicial?: string | null;
+    dataFinal?: string | null;
+    somaAbsolutaEsperada?: number | null;
+    tipoDocumento: string;
+    confianca: number;
+    observacoes?: string | null;
+    divergencias?: unknown;
+  } | null;
   movimentos: Array<{
     id: string;
     usuarioId: string;
@@ -2857,6 +3074,14 @@ export interface ArquivoImportacaoItem {
   mensagemErro?: string | null;
   criadoEm: string;
   atualizadoEm: string;
+  uploadIniciadoEm?: string | null;
+  uploadFinalizadoEm?: string | null;
+  extracaoIniciadaEm?: string | null;
+  extracaoFinalizadaEm?: string | null;
+  stagingIniciadoEm?: string | null;
+  stagingFinalizadoEm?: string | null;
+  consolidacaoIniciadaEm?: string | null;
+  consolidacaoFinalizadaEm?: string | null;
   /** TASK-50: rastreabilidade de tentativas e duplicidade */
   hashConteudo?: string | null;
   totalTentativas?: number;
@@ -2988,6 +3213,17 @@ export interface MetricasProgressoLote {
   };
 }
 
+export interface MetricasOperacionaisImportacao {
+  loteId: string;
+  fila: { aguardando: number; leaseAtivo: boolean; tentativasWorker: number };
+  arquivos: { total: number; bytes: number; porStatus: Record<string, number> };
+  staging: Record<string, number>;
+  etapas: { ia: { p50: number | null; p95: number | null }; staging: { p50: number | null; p95: number | null }; consolidacao: { p50: number | null; p95: number | null } };
+  ia: { chamadas: number; falhas: number; retries: number; duracaoMs: { p50: number | null; p95: number | null }; tokensPrompt: number; tokensResposta: number; tokensTotal: number; custoUsd: number | string; custoBrl: number | string };
+  processamento: { duracaoLoteMs: number; arquivosPorMinuto: number | null; linhasPorMinuto: number | null };
+  processo: { rssBytes: number };
+}
+
 export interface LoteImportacaoItem {
   id: string;
   usuarioId: string;
@@ -3027,6 +3263,7 @@ export interface StagingLancamentoItem {
   isPagamentoFatura?: boolean;
   statusProcessamento: 'PENDENTE' | 'PROCESSADO' | 'IGNORADO' | 'ERRO';
   observacao?: string | null;
+  paginaOrigem?: number | null;
   criadoEm: string;
 }
 
@@ -3251,4 +3488,64 @@ export interface IaMediaConsolidadaItem {
 export interface IaMediasConsolidadasResponse {
   itens: IaMediaConsolidadaItem[];
   total: number;
+}
+
+export interface RegraAlertaItem {
+  id: string;
+  usuarioId?: string | null;
+  codigo: string;
+  nome: string;
+  descricao?: string | null;
+  tipoGatilho: string;
+  severidadePadrao: 'INFO' | 'ATENCAO' | 'URGENTE';
+  ativo: boolean;
+  parametros: Record<string, any>;
+  templateTitulo?: string | null;
+  templateMensagem?: string | null;
+  criadoEm: string;
+  atualizadoEm: string;
+}
+
+export interface AlertaSistemaItem {
+  id: string;
+  usuarioId: string;
+  regraAlertaId?: string | null;
+  tipo: string;
+  severidade: 'INFO' | 'ATENCAO' | 'URGENTE';
+  titulo: string;
+  mensagem: string;
+  status: 'PENDENTE' | 'VISUALIZADO' | 'CANCELADO' | 'RESOLVIDO';
+  entidadeTipo?: string | null;
+  entidadeId?: string | null;
+  dataPrevisao?: string | null;
+  dataExpiracao?: string | null;
+  metadata?: any;
+  motivoCancelamento?: string | null;
+  criadoEm: string;
+  atualizadoEm: string;
+  contaPagar?: ContaPagarItem | null;
+  regraAlerta?: { id: string; codigo: string; nome: string } | null;
+}
+
+export interface ContaPagarItem {
+  id: string;
+  usuarioId: string;
+  descricao: string;
+  valor?: number | null;
+  valorVariavel?: boolean;
+  tipoContaPagar?: 'FATURA_CARTAO' | 'CONTA_CONSUMO' | 'BOLETO' | 'OUTRO';
+  diaVencimento: number;
+  dataVencimento?: string | null;
+  dataPagamento?: string | null;
+  status: 'PENDENTE' | 'AGENDADO' | 'PAGO' | 'CANCELADO';
+  essencial: boolean;
+  recorrenciaId?: string | null;
+  codigoBarras?: string | null;
+  observacoes?: string | null;
+  categoriaId?: string | null;
+  contaId?: string | null;
+  criadoEm: string;
+  atualizadoEm: string;
+  categoria?: { id: string; nome: string } | null;
+  conta?: { id: string; nome: string; tipo: string } | null;
 }

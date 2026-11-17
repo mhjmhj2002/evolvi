@@ -83,11 +83,11 @@ echo -e "${BLUE}${BOLD}=========================================================
 echo -e "${BLUE}${BOLD}      EVOLVI — LIMPEZA DE HISTÓRICO DE LANÇAMENTOS E IMPORTAÇÕES               ${NC}"
 echo -e "${BLUE}${BOLD}==============================================================================${NC}"
 echo -e "Este comando limpará todos os lançamentos financeiros, lotes, arquivos de"
-echo -e "importação, staging, histórico, alertas e tentativas de extração por arquivo"
+echo -e "importação, staging, histórico, vencimentos, parcelamentos, projeções, alertas e tentativas de extração por arquivo"
 echo -e "(tabela tentativas_arquivo_importacao) do usuário para reimportação limpa."
 echo -e "${GREEN}${BOLD}As configurações e credenciais de IA cadastradas serão estritamente preservadas.${NC}"
-echo -e "${GREEN}${BOLD}O histórico de gastos de IA (tabela uso_ia_logs) também será preservado:${NC}"
-echo -e "${GREEN}${BOLD}gasto de IA não é dado de importação e serve de base para auditoria.${NC}"
+echo -e "${GREEN}${BOLD}Configurações, histórico de uso e médias globais das IAs serão preservados:${NC}"
+echo -e "${GREEN}${BOLD}configuracoes_ia_usuario, uso_ia_logs e ia_medias_consolidadas não são apagadas.${NC}"
 echo ""
 
 # Pré-requisito: dependências instaladas (tsx + Prisma Client)

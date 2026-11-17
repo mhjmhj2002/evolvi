@@ -62,7 +62,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
   const [modalContaAberto, setModalContaAberto] = useState(false);
   const [contaEmEdicao, setContaEmEdicao] = useState<ContaItem | null>(null);
   const [formNomeConta, setFormNomeConta] = useState('');
-  const [formTipoConta, setFormTipoConta] = useState<'CONTA_CORRENTE' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO'>('CONTA_CORRENTE');
+  const [formTipoConta, setFormTipoConta] = useState<'CONTA_CORRENTE' | 'POUPANCA' | 'CARTAO_CREDITO' | 'INVESTIMENTO' | 'CARTEIRA_DINHEIRO'>('CONTA_CORRENTE');
   const [formSaldoInicial, setFormSaldoInicial] = useState('0.00');
   const [formDiaFechamento, setFormDiaFechamento] = useState<string>('1');
   const [formDiaVencimento, setFormDiaVencimento] = useState<string>('10');
@@ -814,7 +814,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
                     <div>
                       <div style={{ fontWeight: 600, fontSize: '0.95rem', color: 'var(--text-primary)' }}>{c.nome}</div>
                       <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                        Tipo: <strong style={{ color: 'var(--text-secondary)' }}>{c.tipo}</strong>{' '}
+                        Tipo: <strong style={{ color: 'var(--text-secondary)' }}>{c.tipo === 'POUPANCA' ? 'Poupança' : c.tipo === 'CONTA_CORRENTE' ? 'Conta Corrente' : c.tipo === 'CARTAO_CREDITO' ? 'Cartão de Crédito' : c.tipo === 'INVESTIMENTO' ? 'Investimento / Reserva' : c.tipo}</strong>{' '}
                         {c.diaFechamento ? `• Fecha dia ${c.diaFechamento} / Vence dia ${c.diaVencimento}` : ''}
                       </div>
                     </div>
@@ -937,6 +937,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
                       onChange={(e) => setFormTipoConta(e.target.value as any)}
                     >
                       <option value="CONTA_CORRENTE">Conta Corrente</option>
+                      <option value="POUPANCA">Poupança</option>
                       <option value="CARTAO_CREDITO">Cartão de Crédito</option>
                       <option value="INVESTIMENTO">Investimento / Reserva</option>
                       <option value="CARTEIRA_DINHEIRO">Carteira / Dinheiro Físico</option>
@@ -1436,7 +1437,7 @@ export const TelaCadastros: React.FC<TelaCadastrosProps> = ({
                   fontSize: '0.85rem',
                 }}
               >
-                Nenhuma regra de loja salva ainda. Ao categorizar um lançamento na <strong>Central de Suspeitas</strong> ou ao editar um lançamento com a opção <em>"Cadastrar regra no catálogo"</em>, o nome do estabelecimento será salvo aqui automaticamente.
+                Nenhuma regra de loja salva ainda. Ao categorizar um lançamento em <strong>Lançamentos com pendências</strong> ou ao editar um lançamento com a opção <em>"Cadastrar regra no catálogo"</em>, o nome do estabelecimento será salvo aqui automaticamente.
               </div>
             ) : (
               <div style={{ display: 'grid', gap: '8px' }}>

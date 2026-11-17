@@ -4,7 +4,7 @@ import {
   ContaItem,
   apiService,
 } from '../api.ts';
-import { formatarDataIso } from '../utils/data.ts';
+import { formatarDataIso, getCompetenciaAtual } from '../utils/data.ts';
 import {
   TrendingUp,
   Plus,
@@ -35,8 +35,8 @@ export const TelaInvestimentos: React.FC<TelaInvestimentosProps> = ({
   onAporteCriado,
   onNavigateTab: _onNavigateTab,
 }) => {
-  // Competência padrão (Ano-Mês atual ou 2026-10 de referência)
-  const [competencia, setCompetencia] = useState<string>('2026-10');
+  // Competência padrão: sempre o mês em andamento (AAAA-MM)
+  const [competencia, setCompetencia] = useState<string>(() => getCompetenciaAtual());
   const [busca, setBusca] = useState<string>('');
   const [filtroContaId, setFiltroContaId] = useState<string>('');
   const [carregando, setCarregando] = useState<boolean>(true);

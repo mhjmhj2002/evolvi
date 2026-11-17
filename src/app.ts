@@ -68,6 +68,8 @@ export async function buildApp() {
   const { importacaoRoutes } = await import('./modules/importacao/importacao.routes.js');
   const { investimentoRoutes } = await import('./modules/investimento/investimento.routes.js');
   const { mediaMensalRoutes } = await import('./modules/media-mensal/media-mensal.routes.js');
+  const { alertaRoutes } = await import('./modules/alerta/alerta.routes.js');
+  const { contaPagarRoutes } = await import('./modules/conta-pagar/conta-pagar.routes.js');
 
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(usuarioRoutes, { prefix: '/api/usuario' });
@@ -83,6 +85,8 @@ export async function buildApp() {
   await app.register(importacaoRoutes, { prefix: '/api/importacao' });
   await app.register(investimentoRoutes, { prefix: '/api/investimentos' });
   await app.register(mediaMensalRoutes, { prefix: '/api/media-mensal' });
+  await app.register(alertaRoutes, { prefix: '/api/alertas' });
+  await app.register(contaPagarRoutes, { prefix: '/api/contas-pagar' });
 
   return app;
 }

@@ -3,48 +3,48 @@ import {
   CronogramaVencimentosResponse,
   ParcelamentosResponse,
   ItemCronogramaVencimento,
-  PrevisaoSeisMesesResponse,
-  DecomposicaoCategoriasResponse,
   CategoriaTreeItem,
-  mockPrevisaoSeisMeses,
+  ContaItem,
 } from '../api.ts';
 import { formatarDataIso } from '../utils/data.ts';
-import { StatusBadge, ComponentePrevisao6M, GerenciadorRecorrencias } from '../components/index.ts';
+import {
+  StatusBadge,
+  GerenciadorRecorrencias,
+  GerenciadorContasPagar,
+} from '../components/index.ts';
 import {
   CheckCircle2,
   Circle,
   PlusCircle,
-  TrendingUp,
   RefreshCw,
   Repeat,
+  Calendar,
 } from 'lucide-react';
 
 interface TelaCompromissosProps {
   cronograma: CronogramaVencimentosResponse;
   parcelamentos: ParcelamentosResponse;
-  previsao?: PrevisaoSeisMesesResponse;
-  decomposicao?: DecomposicaoCategoriasResponse;
   categorias?: CategoriaTreeItem[];
+  contas?: ContaItem[];
   onRegistrarPagamento?: (item: ItemCronogramaVencimento) => void;
   onNovoCompromisso?: () => void;
-  onAtualizarPrevisao?: () => void;
   onAtualizarDados?: () => Promise<void> | void;
+  tabInicial?: 'vencimentos' | 'contasPagar' | 'recorrencias' | 'dividas';
 }
 
 export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
   cronograma,
   parcelamentos,
-  previsao = mockPrevisaoSeisMeses,
-  decomposicao,
   categorias = [],
+  contas = [],
   onRegistrarPagamento,
   onNovoCompromisso,
-  onAtualizarPrevisao,
   onAtualizarDados,
+  tabInicial = 'vencimentos',
 }) => {
   // Controle local de checkboxes de contas já quitadas no mês
   const [pagos, setPagos] = useState<{ [id: string]: boolean }>({});
-  const [tabInterna, setTabInterna] = useState<'vencimentos' | 'recorrencias' | 'dividas' | 'projecao'>('vencimentos');
+  const [tabInterna, setTabInterna] = useState<'vencimentos' | 'contasPagar' | 'recorrencias' | 'dividas'>(tabInicial);
   const [atualizando, setAtualizando] = useState(false);
 
   const handleAtualizar = async () => {
@@ -110,11 +110,11 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
         )}
       </div>
 
-      {/* 2. Switcher entre Vencimentos, Recorrências, Dívidas e Projeção 6M */}
+      {/* 2. Switcher entre Vencimentos, Contas a Pagar, Recorrências, Dívidas e Projeção 6M */}
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: '1fr 1fr 1fr 1fr',
+          gridTemplateColumns: 'repeat(5, 1fr)',
           gap: '6px',
           background: 'rgba(30, 41, 59, 0.6)',
           padding: '4px',
@@ -138,6 +138,27 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
           }}
         >
           Cronograma
+        </button>
+        <button
+          type="button"
+          onClick={() => setTabInterna('contasPagar')}
+          style={{
+            padding: '8px',
+            border: 'none',
+            borderRadius: 'var(--radius-sm)',
+            fontWeight: 700,
+            fontSize: '0.8rem',
+            cursor: 'pointer',
+            transition: 'all 0.2s ease',
+            backgroundColor: tabInterna === 'contasPagar' ? 'var(--brand-primary)' : 'transparent',
+            color: tabInterna === 'contasPagar' ? '#090d16' : 'var(--text-secondary)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '4px',
+          }}
+        >
+          <Calendar size={14} /> Contas a Pagar
         </button>
         <button
           type="button"
@@ -176,27 +197,6 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
           }}
         >
           Dívidas Ativas
-        </button>
-        <button
-          type="button"
-          onClick={() => setTabInterna('projecao')}
-          style={{
-            padding: '8px',
-            border: 'none',
-            borderRadius: 'var(--radius-sm)',
-            fontWeight: 700,
-            fontSize: '0.8rem',
-            cursor: 'pointer',
-            transition: 'all 0.2s ease',
-            backgroundColor: tabInterna === 'projecao' ? 'var(--brand-primary)' : 'transparent',
-            color: tabInterna === 'projecao' ? '#090d16' : 'var(--text-secondary)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '4px',
-          }}
-        >
-          <TrendingUp size={14} /> Projeção 6M
         </button>
       </div>
 
@@ -458,12 +458,12 @@ export const TelaCompromissos: React.FC<TelaCompromissosProps> = ({
         />
       )}
 
-      {/* CONTEÚDO 4: MOTOR DE PREVISÃO E PROJEÇÃO 6M (M-005 - TASK-14) */}
-      {tabInterna === 'projecao' && (
-        <ComponentePrevisao6M
-          previsao={previsao}
-          decomposicaoInicial={decomposicao}
-          onAtualizar={onAtualizarPrevisao}
+      {/* CONTEÚDO 2.5: GESTÃO DE CONTAS A PAGAR (CRUD & STATUS) */}
+      {tabInterna === 'contasPagar' && (
+        <GerenciadorContasPagar
+          categorias={categorias}
+          contas={contas}
+          onContasAtualizadas={onAtualizarDados}
         />
       )}
 

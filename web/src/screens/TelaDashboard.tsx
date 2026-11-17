@@ -1,15 +1,12 @@
 import React from 'react';
 import {
   TermometroRenda,
-  CardSemaforo,
   StatusBadge,
 } from '../components/index.ts';
 import {
   TrendingDown,
   ArrowUpRight,
   Calendar,
-  AlertCircle,
-  CreditCard,
   Receipt,
   Sparkles,
   ShieldAlert,
@@ -18,46 +15,76 @@ import {
 import {
   UsuarioPerfil,
   BaselineResponse,
-  SemaforoResponse,
-  CronogramaVencimentosResponse,
+  HistoricoResumoResponse,
+  ContaPagarItem,
 } from '../api.ts';
-import { formatarDataIso } from '../utils/data.ts';
 import { NavTab } from '../components/types.ts';
 
 interface TelaDashboardProps {
   perfil: UsuarioPerfil;
   baseline: BaselineResponse;
-  semaforo: SemaforoResponse;
-  cronograma: CronogramaVencimentosResponse;
   totalGastoMes: number;
+  contasPagar: ContaPagarItem[];
+  dadosGraficoMensal: Array<{ competencia: string; totalReceitas: number; totalDespesas: number }>;
+  historicoResumo: HistoricoResumoResponse;
   totalSuspeitasPendentes?: number;
   onNavigateTab: (tab: NavTab) => void;
+  onOpenContasPagar: () => void;
   onOpenNovaTransacao: () => void;
 }
 
 export const TelaDashboard: React.FC<TelaDashboardProps> = ({
   perfil,
   baseline,
-  semaforo,
-  cronograma,
   totalGastoMes,
+  contasPagar,
+  dadosGraficoMensal,
+  historicoResumo,
   totalSuspeitasPendentes = 0,
   onNavigateTab,
+  onOpenContasPagar,
   onOpenNovaTransacao,
 }) => {
-  // Próximos 3 vencimentos mais urgentes do cronograma
-  const proximosVencimentos = cronograma.itens.slice(0, 3);
+  // Exibe exclusivamente contas a pagar da competência atual.
+  const hoje = new Date();
+  const hojeIso = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+  const proximosVencimentos = Array.from(
+    new Map(
+      contasPagar
+        .filter((item) => item.status !== 'PAGO' && item.status !== 'CANCELADO')
+        .map((item) => [
+          `${item.id}-${item.dataVencimento || item.diaVencimento}`,
+          item,
+        ]),
+    ).values(),
+  )
+    .filter((item) => !item.dataVencimento || item.dataVencimento.slice(0, 10) >= hojeIso || item.status !== 'PAGO')
+    .sort((a, b) => (a.dataVencimento || '').localeCompare(b.dataVencimento || ''))
+    .slice(0, 5)
+    .map((item) => ({
+      tipo: 'CONTA_PAGAR' as const,
+      origemId: item.id,
+      descricao: item.descricao,
+      valor: Number(item.valor || 0),
+      diaVencimento: item.diaVencimento,
+      dataVencimentoPrevista: item.dataVencimento?.slice(0, 10) || '',
+      categoria: item.categoria,
+    }));
 
-  // Top categorias em alerta (vermelho primeiro, depois amarelo)
-  const categoriasEmAlerta = [...semaforo.categorias]
-    .sort((a, b) => {
-      const orderMap = { VERMELHO: 0, AMARELO: 1, VERDE: 2 };
-      if (orderMap[a.status_semaforo] !== orderMap[b.status_semaforo]) {
-        return orderMap[a.status_semaforo] - orderMap[b.status_semaforo];
-      }
-      return b.diferenca_pp - a.diferenca_pp;
-    })
-    .slice(0, 5);
+  const competenciaAtual = new Intl.DateTimeFormat('pt-BR', {
+    month: 'long',
+    year: 'numeric',
+  }).format(new Date());
+  const mesesJanela = baseline.meses_analisados?.length || perfil.mesesJanelaTemporal || 6;
+  const maxFluxo = Math.max(
+    ...dadosGraficoMensal.map((mes) => Math.max(mes.totalDespesas, mes.totalReceitas)),
+    1,
+  );
+  // Economia acumulada = entradas menos gastos do período.
+  const totalEconomizado = dadosGraficoMensal.reduce(
+    (total, mes) => total + mes.totalReceitas - mes.totalDespesas,
+    0,
+  );
 
   const situacaoGeral =
     baseline.gap_zero_a_zero <= 0 ? 'EQUILIBRADO' : 'ATENCAO';
@@ -80,7 +107,7 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
         />
       </div>
 
-      {/* Banner de Alerta de Divergências / Central de Validação */}
+      {/* Banner de lançamentos com pendências */}
       {totalSuspeitasPendentes > 0 && (
         <div
           onClick={() => onNavigateTab('suspeitas')}
@@ -115,10 +142,10 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
             </div>
             <div>
               <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                {totalSuspeitasPendentes} divergência(s) aguardando sua validação
+                {totalSuspeitasPendentes} lançamento(s) com pendência(s)
               </div>
               <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                Suspeitas de duplicatas ou aportes detectadas pela malha fina. Clique para arbitrar.
+                Há lançamentos que precisam de uma conferência sua. Clique para revisar.
               </div>
             </div>
           </div>
@@ -131,7 +158,7 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
         <TermometroRenda
           rendaBase={perfil.rendaBaseMensal}
           totalGasto={totalGastoMes}
-          label="Consumo da Renda Base (Mês Atual)"
+          label={`Consumo da Renda Base (${competenciaAtual})`}
           showDetails={true}
         />
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '14px', paddingTop: '12px', borderTop: '1px solid var(--border-subtle)' }}>
@@ -187,7 +214,7 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
             </span>
           </div>
           <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '3px' }}>
-            Média mensal N=6:{' '}
+            Média dos últimos {mesesJanela} meses:{' '}
             <strong>
               {baseline.media_mensal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
             </strong>{' '}
@@ -205,7 +232,7 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
           </div>
           <button
             type="button"
-            onClick={() => onNavigateTab('compromissos')}
+            onClick={onOpenContasPagar}
             style={{
               background: 'none',
               border: 'none',
@@ -242,29 +269,11 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  {item.tipo === 'PARCELAMENTO' ? (
-                    <CreditCard size={18} color="var(--brand-secondary)" />
-                  ) : (
-                    <Receipt size={18} color="var(--status-yellow)" />
-                  )}
+                  <Receipt size={18} color="var(--status-yellow)" />
                   <div>
                     <div style={{ fontWeight: 600, fontSize: '0.88rem' }}>{item.descricao}</div>
                     <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px' }}>
                       <span>Vencimento: Dia {item.diaVencimento} • {item.categoria?.nome || 'Geral'}</span>
-                      {item.tipo === 'PARCELAMENTO' && (
-                        <span
-                          style={{
-                            background: 'rgba(56, 189, 248, 0.12)',
-                            color: 'var(--brand-primary)',
-                            padding: '1px 5px',
-                            borderRadius: '3px',
-                            fontSize: '0.68rem',
-                            fontWeight: 600,
-                          }}
-                        >
-                          Compra: {formatarDataIso(item.dataCompra || item.parcelamentoInfo?.dataCompra || item.parcelamentoInfo?.primeiroVencimento || item.dataVencimentoPrevista)}
-                        </span>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -277,12 +286,12 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
         )}
       </div>
 
-      {/* 5. Top 5 Categorias em Atenção / Alerta */}
-      <div>
+      {/* 5. Visão visual de gastos e economias */}
+      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <AlertCircle size={18} color="var(--status-yellow)" />
-            <h2 style={{ fontSize: '0.98rem', fontWeight: 700 }}>Top 5 Categorias em Alerta</h2>
+            <TrendingDown size={18} color="var(--brand-primary)" />
+            <h2 style={{ fontSize: '0.98rem', fontWeight: 700 }}>Como está seu dinheiro</h2>
           </div>
           <button
             type="button"
@@ -299,28 +308,37 @@ export const TelaDashboard: React.FC<TelaDashboardProps> = ({
               gap: '3px',
             }}
           >
-            Diagnóstico completo <ArrowUpRight size={14} />
+            Ver detalhes <ArrowUpRight size={14} />
           </button>
         </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {categoriasEmAlerta.map((cat) => (
-            <CardSemaforo
-              key={cat.categoria_id}
-              status={cat.status_semaforo}
-              title={cat.nome}
-              subtitle={`Média mensal: ${cat.gasto_medio_mensal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`}
-              percentual={cat.pct_gasto_atual}
-              benchmark={cat.referencia_normalizada_pct}
-              badgeText={
-                cat.status_semaforo === 'VERMELHO'
-                  ? `Excesso (+${cat.diferenca_pp.toFixed(1)} p.p.)`
-                  : cat.status_semaforo === 'AMARELO'
-                  ? `Atenção (+${cat.diferenca_pp.toFixed(1)} p.p.)`
-                  : 'Equilibrado'
-              }
-            />
-          ))}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '10px' }}>
+          <div style={{ padding: '12px', borderRadius: 'var(--radius-sm)', background: 'rgba(34, 197, 94, 0.10)' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Entradas no período</div>
+            <strong style={{ fontSize: '1.05rem', color: 'var(--status-green)' }}>{historicoResumo.total_periodo_receitas.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</strong>
+          </div>
+          <div style={{ padding: '12px', borderRadius: 'var(--radius-sm)', background: 'rgba(239, 68, 68, 0.10)' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Gastos no período</div>
+            <strong style={{ fontSize: '1.05rem' }}>{historicoResumo.total_periodo_despesas.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</strong>
+          </div>
+          <div style={{ padding: '12px', borderRadius: 'var(--radius-sm)', background: 'rgba(34, 197, 94, 0.10)' }}>
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Economia acumulada</div>
+            <strong style={{ fontSize: '1.05rem', color: totalEconomizado >= 0 ? 'var(--status-green)' : 'var(--status-red)' }}>{totalEconomizado.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</strong>
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '8px' }}>Receitas x gastos</div>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', height: '170px' }}>
+            {dadosGraficoMensal.slice(-6).map((mes) => (
+              <div key={`fluxo-${mes.competencia}`} style={{ flex: 1, height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', gap: '5px' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: '3px', width: '100%', flex: 1 }}>
+                  <div title={`Receitas: ${mes.totalReceitas.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`} style={{ width: '40%', maxWidth: '22px', minHeight: '3px', height: `${Math.max((mes.totalReceitas / maxFluxo) * 100, 2)}%`, background: 'linear-gradient(180deg, var(--status-green), rgba(34, 197, 94, 0.35))', borderRadius: '4px 4px 1px 1px', cursor: 'help' }} />
+                  <div title={`Gastos: ${mes.totalDespesas.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`} style={{ width: '40%', maxWidth: '22px', minHeight: '3px', height: `${Math.max((mes.totalDespesas / maxFluxo) * 100, 2)}%`, background: 'linear-gradient(180deg, var(--status-red), rgba(239, 68, 68, 0.35))', borderRadius: '4px 4px 1px 1px', cursor: 'help' }} />
+                </div>
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>{new Intl.DateTimeFormat('pt-BR', { month: 'short' }).format(new Date(`${mes.competencia}-01T12:00:00`)).replace('.', '')}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: '12px', marginTop: '8px', fontSize: '0.7rem', color: 'var(--text-muted)' }}><span style={{ color: 'var(--status-green)' }}>● Receitas</span><span style={{ color: 'var(--status-red)' }}>● Gastos</span></div>
         </div>
       </div>
 

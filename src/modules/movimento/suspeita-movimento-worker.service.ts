@@ -275,6 +275,7 @@ export class SuspeitaMovimentoWorkerService {
         where: {
           usuarioId,
           status: 'PENDENTE',
+          tipo: { in: ['SUSPEITA_DUPLICATA', 'SUSPEITA_APORTE', 'SUSPEITA_CATEGORIZACAO'] },
         },
       });
 

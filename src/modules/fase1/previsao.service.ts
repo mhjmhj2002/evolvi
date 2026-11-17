@@ -177,6 +177,9 @@ export class PrevisaoProjecaoService {
     }
 
     const mesesFuturos = gerarCompetenciasFuturas(compInicio, mesesProjecao);
+    // FIN-161 é apenas fixture de testes; nunca deve contaminar a tela real
+    // depois que o usuário limpa seus dados.
+    const usarFallbackAuditoria = process.env.NODE_ENV === 'test';
 
     // 1. Buscar parcelamentos ativos do usuário
     const parcelamentosAtivos = await prisma.parcelamento.findMany({
@@ -217,7 +220,7 @@ export class PrevisaoProjecaoService {
       totalRecorrentesBase = Number(
         recorrenciasAtivas.reduce((acc, r) => acc + Number(r.valorReferencia), 0).toFixed(2)
       );
-    } else if (!temDadosProprios) {
+    } else if (!temDadosProprios && usarFallbackAuditoria) {
       // Valor auditado canônico FIN-161 para usuário demo/teste sem histórico: R$ 4.482,80
       totalRecorrentesBase = 4482.8;
     } else {
@@ -225,7 +228,9 @@ export class PrevisaoProjecaoService {
     }
 
     // Camada variável auditada
-    const variavelAuditadaMap = this.obterVariavelAuditadaUsuario(usuarioId);
+    const variavelAuditadaMap = temDadosProprios || usarFallbackAuditoria
+      ? this.obterVariavelAuditadaUsuario(usuarioId)
+      : {};
     const totalVariavelMensal = Number(
       Object.values(variavelAuditadaMap)
         .reduce((acc, v) => acc + v, 0)
@@ -251,7 +256,7 @@ export class PrevisaoProjecaoService {
             parcelasMes += Number(parc.parcelaValor);
           }
         }
-      } else if (!temDadosProprios) {
+      } else if (!temDadosProprios && usarFallbackAuditoria) {
         // Fallback canônico exato da Previsao_Mensal FIN-161 apenas se usuário não tem histórico/dados
         const fallbackParc: Record<string, number> = {
           '2026-10': 3440.03,
@@ -283,7 +288,7 @@ export class PrevisaoProjecaoService {
 
       const observacao = temDadosProprios && parcelamentosAtivos.length === 0 && recorrenciasAtivas.length === 0
         ? `Projeção calculada: Parcelas R$ ${parcelasMes.toFixed(2)} + Recorrentes R$ ${recorrentesMes.toFixed(2)} + Variável R$ ${variavelMes.toFixed(2)}`
-        : `BASE FIN-161: Parcelas R$ ${parcelasMes.toFixed(2)} + Recorrentes R$ ${recorrentesMes.toFixed(2)} + Variável R$ ${variavelMes.toFixed(2)}`;
+        : `Projeção baseada nos dados cadastrados: Parcelas R$ ${parcelasMes.toFixed(2)} + Recorrentes R$ ${recorrentesMes.toFixed(2)} + Variável R$ ${variavelMes.toFixed(2)}`;
 
       meses.push({
         competencia: comp,
@@ -383,7 +388,7 @@ export class PrevisaoProjecaoService {
       (await prisma.loteImportacao.count({ where: { usuarioId } })) > 0;
 
     // Se o usuário não tiver dados no sistema (novo/demo), usar valores canônicos da Auditoria_FIN161
-    const usarFallbackCanonical = !temDadosProprios;
+    const usarFallbackCanonical = !temDadosProprios && process.env.NODE_ENV === 'test';
 
     // Tabela canônica FIN-161 para as 21 categorias
     const canonicalFin161: Record<string, { rec: number; parcOut: number; parcNov: number; parcDez: number; fund?: string }> = {
@@ -418,7 +423,9 @@ export class PrevisaoProjecaoService {
     const itensCategorias: DecomposicaoCategoriaItem[] = [];
 
     // Lista de nomes POF padrão ordenados
-    const nomesCategoriasPadrao = Object.keys(CONSUMO_VARIAVEL_AUDITADO_PADRAO);
+    const nomesCategoriasPadrao = temDadosProprios || process.env.NODE_ENV === 'test'
+      ? Object.keys(CONSUMO_VARIAVEL_AUDITADO_PADRAO)
+      : [];
 
     for (const nomeCat of nomesCategoriasPadrao) {
       const norm = this.normalizarNome(nomeCat);

@@ -1416,6 +1416,13 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
       };
       totalSimilaresVendedor?: number;
     }> = [];
+    const suspeitasDatas: Array<{
+      id: string;
+      tipo: 'SUSPEITA_DATA_FORA_PERIODO';
+      confianca: number;
+      motivo: string;
+      movimento: any;
+    }> = [];
 
     const regrasVendedorUsuario = await prisma.regraVendedorCategoria.findMany({
       where: { usuarioId },
@@ -1533,17 +1540,31 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
           regraVendedorSalva: regraVendedorSalva || undefined,
           totalSimilaresVendedor,
         });
+      } else if ((s.tipo as string) === 'SUSPEITA_DATA_FORA_PERIODO' && s.movimento) {
+        const m = s.movimento;
+        suspeitasDatas.push({
+          id: s.id,
+          tipo: 'SUSPEITA_DATA_FORA_PERIODO',
+          confianca: confiancaNum,
+          motivo: s.motivo,
+          movimento: {
+            ...m,
+            valor: Number(m.valor),
+            dataMovimento: m.dataMovimento.toISOString().slice(0, 10),
+          },
+        });
       }
     }
 
     const totalPendentes =
-      suspeitasDuplicatas.length + suspeitasAportes.length + suspeitasCategorizacao.length;
+      suspeitasDuplicatas.length + suspeitasAportes.length + suspeitasCategorizacao.length + suspeitasDatas.length;
 
     return reply.status(200).send({
       totalPendentes,
       suspeitasDuplicatas,
       suspeitasAportes,
       suspeitasCategorizacao,
+      suspeitasDatas,
     });
   });
 
@@ -1666,7 +1687,9 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
                     status: 'PREVISTO',
                     origemDocumento: 'PROJECAO_PARCELAMENTO',
                     descricao: { contains: baseBusca, mode: 'insensitive' },
-                    id: { not: idParaPreservar || '' },
+                    // O lançamento descartado é removido explicitamente logo
+                    // abaixo; excluí-lo desta limpeza evita um segundo delete.
+                    id: { notIn: [idParaDescartar, ...(idParaPreservar ? [idParaPreservar] : [])] },
                   },
                 });
               }
@@ -1827,6 +1850,30 @@ export const movimentoRoutes: FastifyPluginAsync = async (app: FastifyInstance) 
           message: 'Lançamento confirmado como despesa regular e imunizado.',
           acaoAplicada: acao,
         });
+      }
+
+      case 'CONFIRMAR_DATA': {
+        await prisma.$transaction(async (tx) => {
+          await tx.movimento.update({ where: { id: movimentoAlvoId, usuarioId }, data: { validadoDedupe: 'S' } });
+          await marcarSuspeitaResolvida(tx);
+        });
+        return reply.status(200).send({ sucesso: true, message: 'Data atual confirmada pelo usuário.', acaoAplicada: acao });
+      }
+
+      case 'CORRIGIR_DATA': {
+        const dataMovimento = parseResult.data.dataMovimento;
+        const data = dataMovimento ? new Date(`${dataMovimento}T00:00:00.000Z`) : null;
+        if (!dataMovimento || !data || Number.isNaN(data.getTime()) || data.toISOString().slice(0, 10) !== dataMovimento) {
+          return reply.status(400).send({ statusCode: 400, error: 'Bad Request', message: 'Informe uma data válida no formato YYYY-MM-DD.' });
+        }
+        await prisma.$transaction(async (tx) => {
+          await tx.movimento.update({
+            where: { id: movimentoAlvoId, usuarioId },
+            data: { dataMovimento: data, competencia: dataMovimento.slice(0, 7), competenciaContabil: dataMovimento.slice(0, 7), dataCompra: data },
+          });
+          await marcarSuspeitaResolvida(tx);
+        });
+        return reply.status(200).send({ sucesso: true, message: 'Data do lançamento corrigida pelo usuário.', acaoAplicada: acao });
       }
 
       case 'DEFINIR_CATEGORIA': {

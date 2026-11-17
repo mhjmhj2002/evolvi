@@ -12,14 +12,35 @@ import {
   queryTentativasArquivoSchema,
 } from './importacao.schema.js';
 import { ImportacaoTentativasService } from './importacao-tentativas.service.js';
+import { prisma } from '../../infrastructure/database/prisma.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { createWriteStream } from 'node:fs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { env } from '../../config/env.js';
+
+async function removerSpoolSeVazio(): Promise<void> {
+  const spool = path.resolve(process.cwd(), env.UPLOADS_DIR, '.spool');
+  const raizUploads = path.resolve(process.cwd(), env.UPLOADS_DIR);
+  if (!spool.startsWith(`${raizUploads}${path.sep}`)) throw new Error('Caminho de spool inválido.');
+  try {
+    await fs.rmdir(spool);
+  } catch (erro: any) {
+    if (erro?.code !== 'ENOENT' && erro?.code !== 'ENOTEMPTY' && erro?.code !== 'EEXIST') throw erro;
+  }
+}
 
 export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance) => {
   const storageService = new ImportacaoStorageService();
 
   // Registra suporte a multipart/form-data com limites generosos para pastas e faturas
+  const maxArquivoBytes = 50 * 1024 * 1024;
+  const maxLoteBytes = 500 * 1024 * 1024;
   await app.register(multipart, {
     limits: {
-      fileSize: 50 * 1024 * 1024, // 50MB por arquivo individual
+      fileSize: maxArquivoBytes,
       files: 100, // até 100 arquivos simultâneos em lote
     },
   });
@@ -48,7 +69,17 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
       const queryParsed = uploadImportacaoQuerySchema.safeParse(request.query || {});
       const queryUpload = queryParsed.success ? queryParsed.data : { forcarReprocessamento: false };
 
+      const ativos = await prisma.arquivoImportacao.aggregate({
+        where: { usuarioId, status: { in: ['RECEPCIONADO', 'ENVIADO_IA', 'IA_CONCLUIDO', 'STAGING_CARREGADO'] } },
+        _sum: { tamanhoBytes: true },
+      });
+      const bytesAtivos = Number(ativos._sum.tamanhoBytes || 0);
+      const maxUsuarioBytes = 1024 * 1024 * 1024;
+      if (bytesAtivos >= maxUsuarioBytes) {
+        return reply.status(413).send({ message: 'Limite de 1 GB de uploads ativos por usuário atingido.' });
+      }
       const files: SalvarArquivoInput[] = [];
+      let totalBytes = 0;
       let provedorIa: string | undefined =
         queryUpload.provedorIa || (request.query as any)?.provedorIa;
       let modeloIa: string | undefined = queryUpload.modeloIa || (request.query as any)?.modeloIa;
@@ -56,15 +87,53 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
       let origem: 'UPLOAD' | 'PASTA' | undefined = queryUpload.origem;
       const parts = request.parts();
 
+      try {
       for await (const part of parts) {
         if (part.type === 'file') {
-          const buffer = await part.toBuffer();
+          if (files.length >= 100) throw new Error('O lote pode conter no máximo 100 arquivos.');
+          const extensao = path.extname(path.basename(part.filename || '')).toLowerCase();
+          if (extensao !== '.pdf' && extensao !== '.csv') {
+            throw new Error('Formato não suportado. Envie somente arquivos PDF ou CSV.');
+          }
+          const tempDir = path.join(env.UPLOADS_DIR, '.spool');
+          await fs.mkdir(tempDir, { recursive: true });
+          const caminhoTemporario = path.join(tempDir, randomUUID());
+          const uploadIniciadoEm = new Date();
+          let tamanhoBytes = 0;
+          const hash = createHash('sha256');
+          const contador = new Transform({ transform(chunk, _encoding, callback) {
+            tamanhoBytes += chunk.length;
+            totalBytes += chunk.length;
+            if (tamanhoBytes > maxArquivoBytes || totalBytes > maxLoteBytes || bytesAtivos + totalBytes > maxUsuarioBytes) {
+              callback(new Error(tamanhoBytes > maxArquivoBytes
+                ? 'Cada arquivo pode ter no máximo 50 MB.'
+                : totalBytes > maxLoteBytes ? 'O lote pode ter no máximo 500 MB.' : 'O limite de 1 GB de uploads ativos por usuário seria excedido.'));
+              return;
+            }
+            hash.update(chunk);
+            callback(null, chunk);
+          }});
+          try {
+            await pipeline(part.file, contador, createWriteStream(caminhoTemporario, { flags: 'wx' }));
+          } catch (error) {
+            await fs.rm(caminhoTemporario, { force: true });
+            await removerSpoolSeVazio();
+            throw error;
+          }
+          if (part.file.truncated) {
+            await fs.rm(caminhoTemporario, { force: true });
+            await removerSpoolSeVazio();
+            throw new Error('O arquivo excede o limite de 50 MB.');
+          }
           // filename pode vir com caminho relativo se enviado via input com webkitdirectory
           const nomeOriginal = part.filename || `arquivo_${Date.now()}`;
           files.push({
             nomeOriginal,
-            buffer,
+            caminhoTemporario,
+            tamanhoBytes,
+            hashConteudo: hash.digest('hex'),
             mimeType: part.mimetype,
+            uploadIniciadoEm,
           });
         } else if (part.type === 'field') {
           if (part.fieldname === 'provedorIa' && typeof part.value === 'string' && part.value.trim()) {
@@ -85,8 +154,19 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
           }
         }
       }
+      } catch (error) {
+        await Promise.all(files.map((file) => file.caminhoTemporario
+          ? fs.rm(file.caminhoTemporario, { force: true }) : Promise.resolve()));
+        await removerSpoolSeVazio();
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.includes('somente arquivos PDF ou CSV')) {
+          return reply.status(400).send({ statusCode: 400, error: 'Bad Request', message });
+        }
+        return reply.status(413).send({ statusCode: 413, error: 'Payload Too Large', message });
+      }
 
       if (files.length === 0) {
+        await removerSpoolSeVazio();
         return reply.status(400).send({
           statusCode: 400,
           error: 'Bad Request',
@@ -103,6 +183,7 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
           forcarReprocessamento,
           origem,
         });
+        await removerSpoolSeVazio();
 
         // Bloqueante apenas quando a duplicidade ainda exige confirmação explícita.
         const temAlertaDuplicidade = resultado.requerConfirmacaoReprocessamento;
@@ -147,6 +228,9 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
 
         return reply.status(temAlertaDuplicidade ? 409 : 202).send(resposta);
       } catch (err: any) {
+        await Promise.all(files.map((file) => file.caminhoTemporario
+          ? fs.rm(file.caminhoTemporario, { force: true }) : Promise.resolve()));
+        await removerSpoolSeVazio();
         request.log.error(err, 'Erro ao recepcionar lote de arquivos para importação');
         return reply.status(500).send({
           statusCode: 500,
@@ -383,6 +467,24 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
       });
     });
 
+    authApp.get('/arquivos/:id/inventario-ia', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const params = arquivoIdParamSchema.safeParse(request.params);
+      if (!params.success) return reply.status(400).send({ message: 'ID do arquivo inválido.' });
+      const inventarios = await prisma.inventarioIaArquivo.findMany({
+        where: { arquivoId: params.data.id, usuarioId },
+        include: { paginas: { where: { usuarioId }, orderBy: { pagina: 'asc' } } },
+        orderBy: { criadoEm: 'desc' }, take: 10,
+      });
+      if (inventarios.length === 0) return reply.status(404).send({ message: 'Inventário IA não encontrado.' });
+      const arquivo = await prisma.arquivoImportacao.findFirst({
+        where: { id: params.data.id, usuarioId },
+        select: { id: true, nomeArquivo: true, status: true, statusFinal: true },
+      });
+      if (!arquivo) return reply.status(404).send({ message: 'Arquivo de importação não encontrado.' });
+      return reply.send({ arquivo, inventarios });
+    });
+
     /**
      * POST /api/importacao/arquivos/:id/confirmar-reprocessamento
      * TASK-50: confirma explicitamente o reprocessamento de um arquivo sinalizado como
@@ -565,6 +667,18 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
       });
     });
 
+    authApp.post('/arquivos/:id/reprocessar-consolidacao', async (request, reply) => {
+      const params = arquivoIdParamSchema.safeParse(request.params);
+      if (!params.success) return reply.status(400).send({ statusCode: 400, message: 'ID do arquivo inválido.' });
+      const { importacaoConsolidacaoWorkerService } = await import('./worker/importacao-consolidacao-worker.service.js');
+      try {
+        const resultado = await importacaoConsolidacaoWorkerService.reprocessarArquivoInconsistente(params.data.id, request.user.sub);
+        return reply.status(200).send({ statusCode: 200, message: 'Arquivo reprocessado com validação de persistência.', resultado });
+      } catch (err) {
+        return reply.status(404).send({ statusCode: 404, message: err instanceof Error ? err.message : 'Arquivo não encontrado.' });
+      }
+    });
+
     /**
      * GET /api/importacao/lotes/:id/staging
      * Consulta registros da tabela de staging do lote para auditoria e monitoramento.
@@ -591,16 +705,87 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
         });
       }
 
-      const { prisma } = await import('../../infrastructure/database/prisma.js');
-      const stagingItens = await prisma.stagingLancamentoImportacao.findMany({
-        where: { loteId: lote.id },
-        orderBy: { dataMovimento: 'asc' },
+      const query = (request.query || {}) as { cursor?: string; limite?: string; arquivoId?: string; status?: string };
+      const limite = Math.min(200, Math.max(1, Number.parseInt(query.limite || '100', 10) || 100));
+      const where: any = { loteId: lote.id };
+      if (query.arquivoId) where.arquivoId = query.arquivoId;
+      if (query.status) where.statusProcessamento = query.status;
+      const staging = await prisma.stagingLancamentoImportacao.findMany({
+        where,
+        orderBy: [{ dataMovimento: 'asc' }, { id: 'asc' }],
+        take: limite + 1,
+        ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
       });
+      const temProximaPagina = staging.length > limite;
+      const stagingItens = temProximaPagina ? staging.slice(0, limite) : staging;
+      const [totalItens, totais] = await Promise.all([
+        prisma.stagingLancamentoImportacao.count({ where }),
+        prisma.stagingLancamentoImportacao.groupBy({ by: ['statusProcessamento'], where, _count: { _all: true } }),
+      ]);
 
       return reply.status(200).send({
         loteId: lote.id,
-        totalItens: stagingItens.length,
+        totalItens,
+        limite,
+        proximoCursor: temProximaPagina ? stagingItens[stagingItens.length - 1]?.id ?? null : null,
+        totaisPorStatus: Object.fromEntries(totais.map((item) => [item.statusProcessamento, item._count._all])),
         itens: stagingItens,
+      });
+    });
+
+    authApp.get('/lotes/:id/metricas', async (request, reply) => {
+      const usuarioId = request.user.sub;
+      const params = loteIdParamSchema.safeParse(request.params);
+      if (!params.success) return reply.status(400).send({ statusCode: 400, message: 'ID do lote inválido.' });
+      const lote = await prisma.loteImportacao.findFirst({
+        where: { id: params.data.id, usuarioId },
+        select: { id: true, criadoEm: true, iniciadoEm: true, finalizadoEm: true, workerAttempts: true, workerLeaseUntil: true },
+      });
+      if (!lote) return reply.status(404).send({ statusCode: 404, message: 'Lote de importação não encontrado.' });
+
+      const [arquivos, stagingPorStatus] = await Promise.all([
+        prisma.arquivoImportacao.findMany({ where: { loteId: lote.id, usuarioId }, select: { id: true, status: true, tamanhoBytes: true, duracaoStagingMs: true, duracaoConsolidacaoMs: true } }),
+        prisma.stagingLancamentoImportacao.groupBy({ by: ['statusProcessamento'], where: { loteId: lote.id }, _count: { _all: true } }),
+      ]);
+      const arquivoIds = arquivos.map((arquivo) => arquivo.id);
+      const [tentativas, usoIa] = await Promise.all([
+        prisma.tentativaArquivoImportacao.findMany({
+          where: { usuarioId, arquivoId: { in: arquivoIds } },
+          select: { status: true, duracaoMs: true, totalTransacoesExtraidas: true, numeroTentativa: true, arquivoId: true },
+          orderBy: { criadoEm: 'asc' },
+          take: 5000,
+        }),
+        prisma.usoIaLog.aggregate({
+          where: { usuarioId, loteId: lote.id },
+          _sum: { tokensPrompt: true, tokensResposta: true, tokensTotal: true, custoUsd: true, custoBrl: true, duracaoMs: true },
+          _count: { _all: true },
+        }),
+      ]);
+      const duracoes = tentativas.map((t) => t.duracaoMs).sort((a, b) => a - b);
+      const percentil = (p: number) => duracoes.length ? duracoes[Math.min(duracoes.length - 1, Math.ceil(duracoes.length * p) - 1)] : null;
+      const resumoDuracoes = (valores: number[]) => {
+        const ordenadas = valores.filter((valor) => valor > 0).sort((a, b) => a - b);
+        return { p50: ordenadas.length ? ordenadas[Math.min(ordenadas.length - 1, Math.ceil(ordenadas.length * 0.5) - 1)] : null,
+          p95: ordenadas.length ? ordenadas[Math.min(ordenadas.length - 1, Math.ceil(ordenadas.length * 0.95) - 1)] : null };
+      };
+      const janelasMs = lote.finalizadoEm
+        ? lote.finalizadoEm.getTime() - (lote.iniciadoEm ?? lote.criadoEm).getTime()
+        : Date.now() - (lote.iniciadoEm ?? lote.criadoEm).getTime();
+      const totalBytes = arquivos.reduce((soma, arquivo) => soma + Number(arquivo.tamanhoBytes), 0);
+      const falhas = tentativas.filter((t) => t.status === 'FALHA').length;
+      const maiorTentativaPorArquivo = new Map<string, number>();
+      for (const tentativa of tentativas) maiorTentativaPorArquivo.set(tentativa.arquivoId, Math.max(maiorTentativaPorArquivo.get(tentativa.arquivoId) || 0, tentativa.numeroTentativa));
+      const retries = [...maiorTentativaPorArquivo.values()].reduce((soma, numero) => soma + Math.max(0, numero - 1), 0);
+
+      return reply.status(200).send({
+        loteId: lote.id,
+        fila: { aguardando: arquivos.filter((a) => a.status === 'RECEPCIONADO' || a.status === 'ENVIADO_IA').length, leaseAtivo: Boolean(lote.workerLeaseUntil && lote.workerLeaseUntil > new Date()), tentativasWorker: lote.workerAttempts },
+        arquivos: { total: arquivos.length, bytes: totalBytes, porStatus: Object.fromEntries([...new Set(arquivos.map((a) => a.status))].map((status) => [status, arquivos.filter((a) => a.status === status).length])) },
+        staging: Object.fromEntries(stagingPorStatus.map((item) => [item.statusProcessamento, item._count._all])),
+        etapas: { ia: resumoDuracoes(tentativas.map((t) => t.duracaoMs)), staging: resumoDuracoes(arquivos.map((a) => a.duracaoStagingMs)), consolidacao: resumoDuracoes(arquivos.map((a) => a.duracaoConsolidacaoMs)) },
+        ia: { chamadas: usoIa._count._all, falhas, retries, duracaoMs: { p50: percentil(0.5), p95: percentil(0.95) }, tokensPrompt: usoIa._sum.tokensPrompt ?? 0, tokensResposta: usoIa._sum.tokensResposta ?? 0, tokensTotal: usoIa._sum.tokensTotal ?? 0, custoUsd: usoIa._sum.custoUsd ?? 0, custoBrl: usoIa._sum.custoBrl ?? 0 },
+        processamento: { duracaoLoteMs: Math.max(0, janelasMs), arquivosPorMinuto: janelasMs > 0 ? arquivos.length * 60_000 / janelasMs : null, linhasPorMinuto: janelasMs > 0 ? tentativas.reduce((soma, t) => soma + t.totalTransacoesExtraidas, 0) * 60_000 / janelasMs : null },
+        processo: { rssBytes: process.memoryUsage().rss },
       });
     });
 
@@ -781,12 +966,43 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
       reply.raw.setHeader('Connection', 'keep-alive');
       reply.raw.flushHeaders?.();
 
-      const sendEvent = (event: string, data: any) => {
-        reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      let encerrado = false;
+      let heartbeatTimer: NodeJS.Timeout | undefined;
+      const listeners: Array<[string, (...args: any[]) => void]> = [];
+      const limpar = () => {
+        if (encerrado) return;
+        encerrado = true;
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        for (const [event, listener] of listeners) importacaoEventBus.removeListener(event, listener);
+        request.raw.off('close', limpar);
+        request.raw.off('aborted', limpar);
+        reply.raw.off('close', limpar);
+        reply.raw.off('error', limpar);
+      };
+      const sendEvent = (event: string, data: any): boolean => {
+        if (encerrado || reply.raw.destroyed || reply.raw.writableEnded) return false;
+        try {
+          if (reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)) return true;
+        } catch {
+          // O socket já pode ter sido encerrado pelo cliente.
+        }
+        // Sem fila ilimitada: o cliente lento reconecta e recupera o estado via API.
+        limpar();
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+        return false;
       };
 
+      const { importacaoEventBus } = await import('../../infrastructure/events/importacao-event-bus.js');
+      request.raw.on('close', limpar);
+      request.raw.on('aborted', limpar);
+      reply.raw.on('close', limpar);
+      reply.raw.on('error', limpar);
+
       // Ping inicial de conexão
-      sendEvent('connected', { usuarioId, timestamp: new Date() });
+      if (!sendEvent('connected', { usuarioId, timestamp: new Date() })) {
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+        return;
+      }
 
       // Se solicitado em ambiente de teste, encerra a resposta para evitar timeout de inject
       if ((request.query as any)?.testClose === 'true') {
@@ -795,7 +1011,7 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
       }
 
       const onArquivoProgresso = (ev: any) => {
-        sendEvent('arquivo_progresso', ev);
+        if (ev.usuarioId === usuarioId) sendEvent('arquivo_progresso', ev);
       };
 
       const onArquivoConsolidado = (ev: any) => {
@@ -822,26 +1038,27 @@ export const importacaoRoutes: FastifyPluginAsync = async (app: FastifyInstance)
         }
       };
 
-      const { importacaoEventBus } = await import('../../infrastructure/events/importacao-event-bus.js');
-      importacaoEventBus.on('importacao:arquivo_progresso', onArquivoProgresso);
-      importacaoEventBus.on('importacao:arquivo_consolidado_pronto', onArquivoConsolidado);
-      importacaoEventBus.on('importacao:arquivo_staging_carregado', onStagingCarregado);
-      importacaoEventBus.on('importacao:transacao_consolidada', onTransacaoConsolidada);
-      importacaoEventBus.on('importacao:lote_concluido', onLoteConcluido);
+      listeners.push(
+        ['importacao:arquivo_progresso', onArquivoProgresso],
+        ['importacao:arquivo_consolidado_pronto', onArquivoConsolidado],
+        ['importacao:arquivo_staging_carregado', onStagingCarregado],
+        ['importacao:transacao_consolidada', onTransacaoConsolidada],
+        ['importacao:lote_concluido', onLoteConcluido],
+      );
+      for (const [event, listener] of listeners) importacaoEventBus.on(event, listener);
 
       // Heartbeat a cada 20s para manter conexão viva
-      const heartbeatTimer = setInterval(() => {
-        reply.raw.write(': heartbeat\n\n');
+      heartbeatTimer = setInterval(() => {
+        if (encerrado || reply.raw.destroyed || reply.raw.writableEnded) return limpar();
+        try {
+          if (!reply.raw.write(': heartbeat\n\n')) {
+            limpar();
+            if (!reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end();
+          }
+        } catch {
+          limpar();
+        }
       }, 20000);
-
-      request.raw.on('close', () => {
-        clearInterval(heartbeatTimer);
-        importacaoEventBus.removeListener('importacao:arquivo_progresso', onArquivoProgresso);
-        importacaoEventBus.removeListener('importacao:arquivo_consolidado_pronto', onArquivoConsolidado);
-        importacaoEventBus.removeListener('importacao:arquivo_staging_carregado', onStagingCarregado);
-        importacaoEventBus.removeListener('importacao:transacao_consolidada', onTransacaoConsolidada);
-        importacaoEventBus.removeListener('importacao:lote_concluido', onLoteConcluido);
-      });
     });
   });
 };

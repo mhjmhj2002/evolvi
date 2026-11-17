@@ -24,6 +24,7 @@ import {
   SuspeitaDuplicataItem,
   SuspeitaAporteItem,
   SuspeitaCategorizacaoItem,
+  SuspeitaDataForaPeriodoItem,
   CategoriaTreeItem,
   VereditoPayload,
 } from '../api.ts';
@@ -55,9 +56,10 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
     suspeitasDuplicatas: [],
     suspeitasAportes: [],
     suspeitasCategorizacao: [],
+    suspeitasDatas: [],
   });
 
-  const [abaAtiva, setAbaAtiva] = useState<'TODOS' | 'DUPLICATAS' | 'APORTES' | 'CATEGORIAS'>('TODOS');
+  const [abaAtiva, setAbaAtiva] = useState<'TODOS' | 'DUPLICATAS' | 'APORTES' | 'CATEGORIAS' | 'DATAS'>('TODOS');
   const [ordenacao, setOrdenacao] = useState<CriterioOrdenacao>('VALOR_DESC');
   const [processandoId, setProcessandoId] = useState<string | null>(null);
   const [toastFeedback, setToastFeedback] = useState<{ tipo: 'sucesso' | 'erro'; texto: string } | null>(null);
@@ -67,12 +69,13 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
   // Mapeamento de checkboxes de propagação e memorização por movimento
   const [propagarVendedorMap, setPropagarVendedorMap] = useState<Record<string, boolean>>({});
   const [memorizarVendedorMap, setMemorizarVendedorMap] = useState<Record<string, boolean>>({});
+  const [datasCorrigidasMap, setDatasCorrigidasMap] = useState<Record<string, string>>({});
 
   const carregarSuspeitas = async () => {
     setCarregando(true);
     try {
       const data = await apiService.getSuspeitas();
-      setSuspeitas(data);
+      setSuspeitas({ ...data, suspeitasDatas: data.suspeitasDatas || [] });
     } catch (err: any) {
       console.error('Erro ao carregar suspeitas:', err);
       setToastFeedback({
@@ -120,7 +123,7 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
       const res = await apiService.reprocessarSuspeitas();
       setToastFeedback({
         tipo: 'sucesso',
-        texto: res.message || 'Malha fina e recálculo reprocessados com sucesso!',
+        texto: res.message || 'Verificação dos lançamentos atualizada com sucesso!',
       });
       await carregarSuspeitas();
       onVereditoAplicado?.();
@@ -128,7 +131,7 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
       console.error('Erro ao reprocessar suspeitas:', err);
       setToastFeedback({
         tipo: 'erro',
-        texto: err?.message || 'Falha ao reprocessar malha fina.',
+        texto: err?.message || 'Falha ao atualizar a verificação dos lançamentos.',
       });
     } finally {
       setReprocessando(false);
@@ -219,6 +222,24 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
     });
   }, [suspeitas.suspeitasCategorizacao, ordenacao]);
 
+  const renderSuspeitaData = (item: SuspeitaDataForaPeriodoItem) => {
+    const movimento = item.movimento;
+    const dataCorrigida = datasCorrigidasMap[item.id] ?? movimento.dataMovimento;
+    const ocupado = processandoId === item.id;
+    return (
+      <div key={item.id} className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 16, border: '1px solid rgba(245, 158, 11, 0.4)' }}>
+        <strong style={{ color: 'var(--status-yellow)' }}>Data fora do período do extrato</strong>
+        <div>{movimento.descricao} • R$ {movimento.valor.toFixed(2)} • Data atual: {formatarDataIso(movimento.dataMovimento)}</div>
+        <p style={{ margin: 0, color: 'var(--text-secondary)' }}>{item.motivo}</p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input type="date" value={dataCorrigida} onChange={(event) => setDatasCorrigidasMap({ ...datasCorrigidasMap, [item.id]: event.target.value })} />
+          <button type="button" disabled={ocupado} onClick={() => aplicarVeredito(item.id, { acao: 'CORRIGIR_DATA', dataMovimento: dataCorrigida })}>Corrigir data</button>
+          <button type="button" disabled={ocupado} onClick={() => aplicarVeredito(item.id, { acao: 'CONFIRMAR_DATA' })}>Manter data atual</button>
+        </div>
+      </div>
+    );
+  };
+
   // Cálculo dos valores totais das pendências
   const totaisValores = React.useMemo(() => {
     // Para duplicatas, considera o valor em disputa de cada par (item.movimentoA.valor ou o maior entre eles)
@@ -234,14 +255,16 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
       (acc, item) => acc + (item.movimento?.valor || 0),
       0
     );
+    const totalDatas = (suspeitas.suspeitasDatas || []).reduce((acc, item) => acc + (item.movimento?.valor || 0), 0);
 
-    const totalGeral = totalDuplicatas + totalAportes + totalCategorizacao;
+    const totalGeral = totalDuplicatas + totalAportes + totalCategorizacao + totalDatas;
 
     return {
       totalGeral,
       totalDuplicatas,
       totalAportes,
       totalCategorizacao,
+      totalDatas,
     };
   }, [suspeitas]);
 
@@ -987,11 +1010,11 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <ShieldAlert size={22} color="var(--status-yellow)" />
             <h1 style={{ fontSize: '1.4rem', fontWeight: 800, margin: 0, letterSpacing: '-0.02em' }}>
-              Central de Validação de Suspeitas
+              Lançamentos com pendências
             </h1>
           </div>
           <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', margin: '4px 0 0 0' }}>
-            Decisões humanas soberanas para resolução de duplicatas, naturezas e categorização com imunização definitiva.
+            Confira os lançamentos que precisam de uma decisão sua sobre categoria, natureza ou possível duplicidade.
           </p>
         </div>
 
@@ -1015,7 +1038,7 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
             }}
           >
             <Sparkles size={14} className={reprocessando ? 'spin' : ''} />
-            <span>{reprocessando ? 'Reprocessando...' : 'Reprocessar Malha Fina'}</span>
+            <span>{reprocessando ? 'Atualizando...' : 'Atualizar verificações'}</span>
           </button>
 
           <button
@@ -1300,6 +1323,10 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
             </span>
           )}
         </button>
+
+        <button type="button" onClick={() => setAbaAtiva('DATAS')} style={{ padding: '8px 14px', borderRadius: 'var(--radius-sm)', border: 'none', fontSize: '0.82rem', fontWeight: 700, cursor: 'pointer', background: abaAtiva === 'DATAS' ? 'var(--status-yellow)' : 'rgba(30, 41, 59, 0.5)', color: abaAtiva === 'DATAS' ? '#000' : 'var(--text-secondary)' }}>
+          Datas fora do período ({suspeitas.suspeitasDatas.length})
+        </button>
       </div>
 
       {/* Barra de Ordenação */}
@@ -1383,10 +1410,10 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
             <CheckCircle2 size={32} />
           </div>
           <h2 style={{ fontSize: '1.1rem', fontWeight: 800, margin: 0 }}>
-            Tudo em ordem! Nenhuma suspeita pendente
+            Tudo em ordem! Nenhum lançamento com pendência
           </h2>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', maxWidth: '420px', margin: 0 }}>
-            Todos os seus lançamentos importados foram validados pela malha fina e não há duplicatas ou inconsistências de natureza a arbitrar.
+            Todos os seus lançamentos importados estão conferidos. Não há duplicidades ou classificações aguardando sua decisão.
           </p>
           {onNavigateTab && (
             <button
@@ -1409,6 +1436,9 @@ export const TelaValidacaoSuspeitas: React.FC<TelaValidacaoSuspeitasProps> = ({
 
           {(abaAtiva === 'TODOS' || abaAtiva === 'CATEGORIAS') &&
             categorizacoesOrdenadas.map(renderCategorizacaoCard)}
+
+          {(abaAtiva === 'TODOS' || abaAtiva === 'DATAS') &&
+            suspeitas.suspeitasDatas.map(renderSuspeitaData)}
         </div>
       )}
     </div>

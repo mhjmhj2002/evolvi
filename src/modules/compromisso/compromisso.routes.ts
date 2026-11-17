@@ -156,8 +156,85 @@ export const compromissoRoutes: FastifyPluginAsync = async (app: FastifyInstance
       }
     }
 
+    // 3. Buscar contas a pagar cadastradas (recorrentes por diaVencimento ou na competência)
+    const contasPagar = await prisma.contaPagar.findMany({
+      where: {
+        usuarioId,
+        status: { in: ['PENDENTE', 'AGENDADO', 'PAGO'] },
+      },
+      include: {
+        categoria: {
+          select: {
+            id: true,
+            nome: true,
+          },
+        },
+        conta: {
+          select: {
+            id: true,
+            nome: true,
+            tipo: true,
+          },
+        },
+      },
+    });
+
+    for (const cp of contasPagar) {
+      // Se tiver dataVencimento explícita, só inclui se for da competência consultada
+      if (cp.dataVencimento) {
+        const vDate = new Date(cp.dataVencimento);
+        const compConta = `${vDate.getUTCFullYear()}-${String(vDate.getUTCMonth() + 1).padStart(2, '0')}`;
+        if (compConta !== competencia) {
+          continue;
+        }
+      }
+
+      const dia = cp.diaVencimento ? Math.min(cp.diaVencimento, ultimoDiaDoMes) : 10;
+      const dataVencimentoPrevista = `${competencia}-${String(dia).padStart(2, '0')}`;
+      const valor = cp.valor !== null && cp.valor !== undefined ? Number(cp.valor) : 0;
+
+      itens.push({
+        tipo: 'CONTA_PAGAR',
+        origemId: cp.id,
+        descricao: cp.descricao,
+        valor,
+        diaVencimento: dia,
+        dataVencimentoPrevista,
+        essencial: cp.essencial,
+        status: cp.status,
+        categoria: cp.categoria,
+        conta: cp.conta,
+      });
+    }
+
+    // Uma mesma obrigação pode existir como recorrência e também como conta a pagar
+    // (por exemplo, após uma migração/importação). Para o usuário, isso é um único
+    // vencimento. Parcelamentos ficam fora dessa regra, pois cada parcela é distinta.
+    const compromissosUnicos = new Map<string, ItemCronogramaVencimento>();
+    for (const item of itens) {
+      const ehCompromissoComparavel = item.tipo === 'RECORRENCIA' || item.tipo === 'CONTA_PAGAR';
+      const descricaoNormalizada = item.descricao
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+      const categoriaId = item.categoria?.id || 'sem-categoria';
+      const chave = ehCompromissoComparavel
+        ? `${item.diaVencimento}|${item.valor.toFixed(2)}|${categoriaId}|${descricaoNormalizada}`
+        : `${item.tipo}|${item.origemId}`;
+
+      // Em caso de colisão, prioriza a conta a pagar, que representa o compromisso
+      // explícito do usuário e pode carregar status de pagamento.
+      const anterior = compromissosUnicos.get(chave);
+      if (!anterior || (item.tipo === 'CONTA_PAGAR' && anterior.tipo === 'RECORRENCIA')) {
+        compromissosUnicos.set(chave, item);
+      }
+    }
+    const itensSemDuplicidade = Array.from(compromissosUnicos.values());
+
     // Ordenar itens unificados por dia de vencimento crescente e descrição
-    itens.sort((a, b) => {
+    itensSemDuplicidade.sort((a, b) => {
       if (a.diaVencimento !== b.diaVencimento) {
         return a.diaVencimento - b.diaVencimento;
       }
@@ -165,27 +242,35 @@ export const compromissoRoutes: FastifyPluginAsync = async (app: FastifyInstance
     });
 
     const totalRecorrencias = Number(
-      itens
+      itensSemDuplicidade
         .filter((i) => i.tipo === 'RECORRENCIA')
         .reduce((sum, i) => sum + i.valor, 0)
         .toFixed(2)
     );
 
     const totalParcelamentos = Number(
-      itens
+      itensSemDuplicidade
         .filter((i) => i.tipo === 'PARCELAMENTO')
         .reduce((sum, i) => sum + i.valor, 0)
         .toFixed(2)
     );
 
-    const totalPrevistoMes = Number((totalRecorrencias + totalParcelamentos).toFixed(2));
+    const totalContasPagar = Number(
+      itensSemDuplicidade
+        .filter((i) => i.tipo === 'CONTA_PAGAR')
+        .reduce((sum, i) => sum + i.valor, 0)
+        .toFixed(2)
+    );
+
+    const totalPrevistoMes = Number((totalRecorrencias + totalParcelamentos + totalContasPagar).toFixed(2));
 
     const responsePayload: CronogramaVencimentosResponse = {
       competencia,
       totalPrevistoMes,
       totalRecorrencias,
       totalParcelamentos,
-      itens,
+      totalContasPagar,
+      itens: itensSemDuplicidade,
     };
 
     return reply.status(200).send(responsePayload);

@@ -451,7 +451,7 @@ export class ParcelamentoSincronizacaoService {
           descricao: novoMov.descricao,
           chaveDedupe: novoMov.chaveDedupe,
           origemDocumento: novoMov.origemDocumento,
-          conta: parc.conta,
+          conta: parc.conta!,
         });
 
         totalCriados++;

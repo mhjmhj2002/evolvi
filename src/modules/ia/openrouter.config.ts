@@ -155,7 +155,7 @@ export function modeloPadraoPorProvedor(provedor?: string | null): string {
 }
 
 /** Provedores já implementados no fluxo de parsing/extração. */
-export const PROVEDORES_SUPORTADOS_NO_FLUXO = ['GEMINI', 'DEEPSEEK', 'OPENROUTER'] as const;
+export const PROVEDORES_SUPORTADOS_NO_FLUXO = ['GEMINI', 'DEEPSEEK', 'OPENAI', 'OPENROUTER'] as const;
 
 /**
  * Erro explícito para provedores ainda não implementados neste fluxo
@@ -163,7 +163,7 @@ export const PROVEDORES_SUPORTADOS_NO_FLUXO = ['GEMINI', 'DEEPSEEK', 'OPENROUTER
  */
 export function mensagemProvedorNaoSuportado(provedor?: string | null): string {
   const prov = (provedor || '').trim().toUpperCase() || 'DESCONHECIDO';
-  return `O provedor ${prov} ainda não suportado neste fluxo, use GEMINI, DEEPSEEK ou OPENROUTER.`;
+  return `O provedor ${prov} ainda não suportado neste fluxo, use GEMINI, DEEPSEEK, OPENAI ou OPENROUTER.`;
 }
 
 /** `true` quando o provedor pode ser despachado no fluxo de parsing/extração. */

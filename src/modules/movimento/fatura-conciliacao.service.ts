@@ -5,6 +5,7 @@ import {
   ImportacaoEventBus,
   ImportacaoLoteConcluidoEvent,
 } from '../../infrastructure/events/importacao-event-bus.js';
+import { descricaoIndicaPagamentoFatura } from './natureza-movimento.util.js';
 
 export interface FaturaConciliacaoResultado {
   usuarioId: string;
@@ -24,11 +25,11 @@ export interface FaturaConciliacaoResultado {
  *
  * Avalia faturas pendentes de validação contra movimentos da conta corrente do usuário:
  * Critério a: Débito com mesmo valor da fatura (tolerância R$ 0,05) e data entre 10 dias antes do vencimento até o vencimento.
- * Critério b: Descrição contém termos como `pag`, `pagamento`, `boleto`, `pgto`, `fatura`.
+ * Critério b: Descrição identifica explicitamente pagamento de fatura/cartão.
  * Critério c: Débito com data após o vencimento (até 30 dias) com valor igual ou até 5% maior que a fatura (juros/multa).
  *
  * Decisão:
- * - (a E b) OU c: CONCILIADO automaticamente -> converte o movimento em TRANSFERENCIA_PROPRIA (isPagamentoFatura = true),
+ * - (a OU c) E b: CONCILIADO automaticamente -> converte o movimento em TRANSFERENCIA_PROPRIA (isPagamentoFatura = true),
  *   vincula faturaPagamentoMovimentoId no arquivo e atualiza status para CONCILIADO.
  * - Caso contrário (ex: a isolado, b isolado): encaminha para a Central de Suspeitas do Usuário.
  */
@@ -89,12 +90,7 @@ export class FaturaConciliacaoService {
 
       for (const mov of movimentosCandidatos) {
         const valorMov = Number(mov.valor);
-        const descUpper = mov.descricao.toUpperCase();
-
-        const descTemTermoPagamento =
-          /pag(amento|to)?\s*(de)?\s*(fat(ura)?|cart[aã]o|boleto)|pgto\s*fat|pag\s*boleto|debito\s*automatico\s*fatura|pagamento\s*fatura|pagamento\s*efetuado/i.test(
-            descUpper
-          ) || /bradescard|c6\s*bank|nubank|itaucard|santander/i.test(descUpper);
+        const descTemTermoPagamento = descricaoIndicaPagamentoFatura(mov.descricao);
 
         // Se temos data de vencimento da fatura
         if (dataVencimento) {
@@ -116,7 +112,7 @@ export class FaturaConciliacaoService {
             valorMov >= valorFatura - 0.05 &&
             valorMov <= valorFatura * 1.05 + 0.05;
 
-          if ((atendeA && atendeB) || atendeC) {
+          if ((atendeA || atendeC) && atendeB) {
             melhorCandidato = mov;
             atendeRegraAutomatica = true;
             motivoDecisao = atendeC
@@ -126,7 +122,7 @@ export class FaturaConciliacaoService {
           }
 
           // Se atende critério isolado (ex: a isolado sem termo de pagamento claro, ou b isolado)
-          if (atendeA || (atendeB && diffValor <= 0.05)) {
+          if (atendeA || atendeC || (atendeB && diffValor <= 0.05)) {
             candidatoSuspeito = mov;
           }
         } else {

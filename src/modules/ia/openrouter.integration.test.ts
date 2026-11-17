@@ -91,8 +91,8 @@ describe('OPENROUTER: configuração por ambiente, testar-conexao e parse', () =
       // DeepSeek continua puramente textual
       const deepseek = suportados.find((p) => p.id === 'DEEPSEEK');
       expect(deepseek.suportaImagens).toBe(false);
-      // OpenAI/Anthropic existem no catálogo mas não no fluxo de extração
-      expect(suportados.find((p) => p.id === 'OPENAI').suportadoNoFluxo).toBe(false);
+      // OpenAI está ativo no fluxo; Anthropic permanece apenas no catálogo.
+      expect(suportados.find((p) => p.id === 'OPENAI').suportadoNoFluxo).toBe(true);
       expect(suportados.find((p) => p.id === 'ANTHROPIC').suportadoNoFluxo).toBe(false);
     });
 
@@ -357,8 +357,10 @@ describe('OPENROUTER: configuração por ambiente, testar-conexao e parse', () =
       }
     });
 
-    it('deve recusar OPENAI explicitamente (HTTP 400) em vez de cair silenciosamente no Gemini', async () => {
-      const fetchMock = vi.fn();
+    it('deve despachar OPENAI para seu endpoint sem cair silenciosamente no Gemini', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(respostaOpenAiCompativel(JSON.stringify({
+        descricao: 'Café', valor: 10, dataMovimento: '2026-10-21', natureza: 'DESPESA', confianca: 0.9,
+      })) as any);
       const originalFetch = globalThis.fetch;
       globalThis.fetch = fetchMock as any;
 
@@ -375,11 +377,11 @@ describe('OPENROUTER: configuração por ambiente, testar-conexao e parse', () =
           },
         });
 
-        expect(res.statusCode).toBe(400);
+        expect(res.statusCode).toBe(200);
         const body = JSON.parse(res.body);
-        expect(body.message).toContain('OPENAI ainda não suportado neste fluxo');
-        expect(body.message).toContain('GEMINI, DEEPSEEK ou OPENROUTER');
-        expect(fetchMock).not.toHaveBeenCalled();
+        expect(body.lancamento.descricao).toBe('Café');
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock.mock.calls[0][0]).toBe('https://api.openai.com/v1/chat/completions');
       } finally {
         globalThis.fetch = originalFetch;
       }

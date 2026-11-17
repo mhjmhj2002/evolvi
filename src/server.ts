@@ -12,7 +12,10 @@ import { faturaConciliacaoWorkerService } from './modules/movimento/fatura-conci
 import { parcelamentoSincronizacaoWorkerService } from './modules/parcelamento/parcelamento-sincronizacao-worker.service.js';
 import { iaMediasConsolidadasWorkerService } from './modules/ia/ia-medias-consolidadas.service.js';
 import { mediaMensalWorkerService } from './modules/media-mensal/media-mensal-worker.service.js';
+import { limpezaUploadsLoginWorkerService } from './modules/importacao/worker/limpeza-uploads-login-worker.service.js';
 import { recorrenciaSincronizacaoWorkerService } from './modules/recorrencia/recorrencia-sincronizacao-worker.service.js';
+import { alertaContasVencerWorkerService } from './modules/alerta/worker/alerta-contas-vencer-worker.service.js';
+import { prisma } from './infrastructure/database/prisma.js';
 
 // Inicializa formatação padronizada de logs (data/hora yyyy-mm-dd-hh:mm:ss.sss e app de origem)
 setupConsoleLogger('evolvi-backend');
@@ -24,9 +27,51 @@ async function bootstrap() {
     // Iniciar agendador de busca e workers de processamento em background
     openFinanceSchedulerService.start();
     openFinanceWorkerService.start();
+    alertaContasVencerWorkerService.startSweep();
+    alertaContasVencerWorkerService.setupEventListener();
     importacaoIaWorkerService.setupEventListener();
     importacaoStagingWorkerService.setupEventListener();
     importacaoConsolidacaoWorkerService.setupEventListener();
+    // O event bus acelera o fluxo normal; varreduras periódicas retomam etapas
+    // que ficaram pendentes após reinício ou perda de evento.
+    let recuperacaoImportacoesAtiva = false;
+    const recuperarImportacoes = async () => {
+      if (recuperacaoImportacoesAtiva) return;
+      recuperacaoImportacoesAtiva = true;
+      try {
+        const iaPendentes = await prisma.arquivoImportacao.findMany({
+          where: { status: { in: ['RECEPCIONADO', 'ENVIADO_IA'] }, jaImportadoAnteriormente: false,
+            OR: [{ workerLeaseUntil: null }, { workerLeaseUntil: { lt: new Date() } }] },
+          select: { loteId: true }, distinct: ['loteId'], take: 50, orderBy: { criadoEm: 'asc' },
+        });
+        for (const item of iaPendentes) {
+          void importacaoIaWorkerService.processarLote(item.loteId).catch((err) => console.error('[recuperacao-importacao] IA:', err));
+        }
+        const stagingPendentes = await prisma.arquivoImportacao.findMany({
+          where: { status: 'IA_CONCLUIDO', OR: [{ workerLeaseUntil: null }, { workerLeaseUntil: { lt: new Date() } }] },
+          select: { id: true, lote: { select: { usuarioId: true } } },
+          take: 50, orderBy: { criadoEm: 'asc' },
+        });
+        for (const item of stagingPendentes) {
+          void importacaoStagingWorkerService.carregarArquivoParaStaging(item.id, item.lote.usuarioId)
+            .catch((err) => console.error('[recuperacao-importacao] staging:', err));
+        }
+        const lotesStaging = await prisma.stagingLancamentoImportacao.findMany({
+          where: { statusProcessamento: 'PENDENTE' }, select: { loteId: true }, distinct: ['loteId'], take: 50,
+        });
+        for (const item of lotesStaging) {
+          const lote = await prisma.loteImportacao.findUnique({ where: { id: item.loteId }, select: { usuarioId: true } });
+          if (lote) void importacaoConsolidacaoWorkerService.consolidarLote(item.loteId, lote.usuarioId)
+            .catch((err) => console.error('[recuperacao-importacao] consolidação:', err));
+        }
+      } catch (err) {
+        console.error('[recuperacao-importacao] Falha na varredura:', err);
+      } finally {
+        recuperacaoImportacoesAtiva = false;
+      }
+    };
+    void recuperarImportacoes();
+    const timerRecuperacaoImportacoes = setInterval(recuperarImportacoes, 30_000);
     movimentoRecalculoWorkerService.setupEventListener();
     validacaoDeduplicacaoWorkerService.setupEventListener();
     faturaConciliacaoWorkerService.setupEventListener();
@@ -34,6 +79,7 @@ async function bootstrap() {
     recorrenciaSincronizacaoWorkerService.setupEventListener();
     iaMediasConsolidadasWorkerService.setupEventListener();
     mediaMensalWorkerService.setupEventListener();
+    limpezaUploadsLoginWorkerService.setupEventListener();
 
     await app.listen({ port: env.PORT, host: env.HOST });
     console.log(`🚀 Servidor evolvi rodando em http://${env.HOST}:${env.PORT}`);
@@ -43,9 +89,11 @@ async function bootstrap() {
       console.log('🛑 Encerrando servidor, agendadores e workers...');
       openFinanceSchedulerService.stop();
       openFinanceWorkerService.stop();
+      alertaContasVencerWorkerService.removeEventListener();
       importacaoIaWorkerService.removeEventListener();
       importacaoStagingWorkerService.removeEventListener();
       importacaoConsolidacaoWorkerService.removeEventListener();
+      clearInterval(timerRecuperacaoImportacoes);
       movimentoRecalculoWorkerService.removeEventListener();
       validacaoDeduplicacaoWorkerService.removeEventListener();
       faturaConciliacaoWorkerService.removeEventListener();
@@ -53,6 +101,7 @@ async function bootstrap() {
       recorrenciaSincronizacaoWorkerService.removeEventListener();
       iaMediasConsolidadasWorkerService.removeEventListener();
       mediaMensalWorkerService.removeEventListener();
+      limpezaUploadsLoginWorkerService.removeEventListener();
       app.close().then(() => {
         process.exit(0);
       });
